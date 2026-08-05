@@ -1,0 +1,62 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
+npm-debug.log
+yarn.lock
+pnpm-lock.yaml
+
+# Build
+dist/
+build/
+*.exe
+*.dll
+
+# Git
+.git/
+.gitignore
+
+# Logs
+*.log
+logs/
+
+# Cache
+.cache/
+.temp/
+
+# Database
+*.sqlite
+*.db
+
+# Large files
+*.zip
+*.rar
+*.7z
+*.tar
+
+# Browser data
+browser_data/
+chrome_profile/
+playwright/
+
+# AI models
+models/
+ollama_models/
+
+# Environment
+.env
+.env.*
+
+# Test output
+coverage/
+htmlcov/
+
+# Documents
+*.pdf
+*.docx
+*.xlsx

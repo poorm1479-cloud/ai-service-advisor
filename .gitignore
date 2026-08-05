@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+apps/web/.next/
+apps/web/out/
+apps/api/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Env & secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# IDE / OS
+.cursor/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs / coverage
+*.log
+coverage/
+htmlcov/
+.coverage
+.nyc_output/
+
+# Misc
+*.tsbuildinfo
+next-env.d.ts
+.turbo/
+apps/api/storage/

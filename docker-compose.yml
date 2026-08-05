@@ -1,0 +1,36 @@
+# Local development — databases only (existing workflow)
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: asa-postgres
+    environment:
+      POSTGRES_USER: asa
+      POSTGRES_PASSWORD: asa
+      POSTGRES_DB: ai_service_advisor
+    ports:
+      - "5432:5432"
+    volumes:
+      - asa_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U asa -d ai_service_advisor"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: asa-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - asa_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    command: ["redis-server", "--appendonly", "yes"]
+
+volumes:
+  asa_pg_data:
+  asa_redis_data:

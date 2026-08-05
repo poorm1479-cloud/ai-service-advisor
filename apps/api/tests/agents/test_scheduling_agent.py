@@ -1,0 +1,384 @@
+"""Scheduling agent tests — AI decides; Workflow executes."""
+
+from __future__ import annotations
+
+from datetime import timedelta
+
+import pytest
+
+from app.agents.base.agent import AgentResult
+from app.agents.decisions.bridge import apply_decisions, collect_decision, ports_from_agents
+from app.agents.scheduling.models import SchedulingAction, SchedulingRequest
+from app.agents.scheduling.service import SchedulingAgent
+
+
+async def _decide_and_apply(agent: SchedulingAgent, request: SchedulingRequest, context):
+    result = await agent.process(request, context)
+    decision = collect_decision(result)
+    if decision is None:
+        return result
+    applied = await apply_decisions(
+        shop_id=context.shop_id,
+        decisions=[decision],
+        ports=ports_from_agents(scheduling=agent),
+        context=context,
+    )
+    if applied and applied.scheduling_result:
+        return AgentResult.ok(applied.scheduling_result)
+    return result
+
+
+@pytest.mark.asyncio
+async def test_list_slots_and_book(context):
+    agent = SchedulingAgent()
+    slots = await agent.process(
+        SchedulingRequest(action=SchedulingAction.LIST_SLOTS, days_ahead=14),
+        context,
+    )
+    assert slots.success
+    assert len(slots.data.available_slots) > 0
+    start = slots.data.available_slots[0].start
+
+    booked = await _decide_and_apply(
+        agent,
+        SchedulingRequest(
+            action=SchedulingAction.BOOK,
+            preferred_start=start,
+            time_precision="clock",
+        ),
+        context,
+    )
+    assert booked.success
+    assert booked.data.success
+    assert booked.data.appointment is not None
+    assert len(booked.data.reminders) == 2
+
+
+@pytest.mark.asyncio
+async def test_reschedule_and_cancel(context):
+    agent = SchedulingAgent()
+    openings = await agent.process(
+        SchedulingRequest(action=SchedulingAction.LIST_SLOTS, days_ahead=14),
+        context,
+    )
+    start = openings.data.available_slots[0].start
+    booked = await _decide_and_apply(
+        agent,
+        SchedulingRequest(
+            action=SchedulingAction.BOOK,
+            preferred_start=start,
+            time_precision="clock",
+        ),
+        context,
+    )
+    appt_id = booked.data.appointment.id
+
+    rescheduled = await _decide_and_apply(
+        agent,
+        SchedulingRequest(action=SchedulingAction.RESCHEDULE, appointment_id=appt_id),
+        context,
+    )
+    assert rescheduled.success
+    assert rescheduled.data.appointment is not None
+
+    cancelled = await _decide_and_apply(
+        agent,
+        SchedulingRequest(
+            action=SchedulingAction.CANCEL,
+            appointment_id=rescheduled.data.appointment.id,
+            reason="customer request",
+        ),
+        context,
+    )
+    assert cancelled.success
+    assert cancelled.data.appointment.status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_intent_maps_book_to_ask_preferred_time(context):
+    agent = SchedulingAgent()
+    result = await agent.process(
+        SchedulingRequest(action=SchedulingAction.NOOP, intent="book_appointment"),
+        context,
+    )
+    assert result.data.action == "list_slots"
+    assert result.data.success
+    assert result.data.message == "ask_preferred_time"
+    assert result.data.available_slots == []
+    assert result.data.decision is not None
+    assert result.data.decision.action == "list_slots"
+
+
+@pytest.mark.asyncio
+async def test_intent_maps_availability_to_list_slots(context):
+    agent = SchedulingAgent()
+    result = await agent.process(
+        SchedulingRequest(action=SchedulingAction.NOOP, intent="check_availability"),
+        context,
+    )
+    assert result.data.action == "list_slots"
+    assert result.data.success
+    assert len(result.data.available_slots) > 0
+
+
+@pytest.mark.asyncio
+async def test_confirmed_book_intent_books(context):
+    agent = SchedulingAgent()
+    openings = await agent.process(
+        SchedulingRequest(action=SchedulingAction.LIST_SLOTS, days_ahead=14),
+        context,
+    )
+    start = openings.data.available_slots[0].start
+    result = await _decide_and_apply(
+        agent,
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="book_appointment",
+            preferred_start=start,
+            time_precision="clock",
+            confirm_booking=True,
+        ),
+        context,
+    )
+    assert result.data.action == "book"
+    assert result.data.success
+    assert result.data.appointment is not None
+
+
+@pytest.mark.asyncio
+async def test_book_without_preferred_time_asks_for_time(context):
+    """Must ask when they want to come — never invent or volunteer the first slot."""
+    agent = SchedulingAgent()
+    result = await agent.process(
+        SchedulingRequest(action=SchedulingAction.BOOK),
+        context,
+    )
+    assert result.data.action == "list_slots"
+    assert result.data.message == "ask_preferred_time"
+    assert result.data.available_slots == []
+    assert result.data.decision is not None
+    assert result.data.decision.recommended_slot_start is None
+    assert result.data.appointment is None
+
+
+@pytest.mark.asyncio
+async def test_prefer_earliest_selects_first_opening(context):
+    """Explicit earliest/first-available may select the first free opening to confirm."""
+    agent = SchedulingAgent()
+    openings = await agent.process(
+        SchedulingRequest(action=SchedulingAction.LIST_SLOTS, days_ahead=14),
+        context,
+    )
+    first = openings.data.available_slots[0]
+    result = await agent.process(
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="book_appointment",
+            preferred_start=first.start,
+            time_precision="day",
+            prefer_earliest=True,
+        ),
+        context,
+    )
+    assert result.data.message == "awaiting_booking_confirmation"
+    assert result.data.decision is not None
+    assert result.data.decision.recommended_slot_start == first.start
+    assert result.data.metadata.get("prefer_earliest") is True
+
+
+@pytest.mark.asyncio
+async def test_prefer_latest_selects_last_opening(context):
+    """Explicit last-available may select the last free opening to confirm."""
+    agent = SchedulingAgent()
+    openings = await agent.process(
+        SchedulingRequest(action=SchedulingAction.LIST_SLOTS, days_ahead=7),
+        context,
+    )
+    day_slots = openings.data.available_slots
+    assert day_slots
+    # Prefer latest within the first shop day so day-filter + days_ahead agree.
+    first_day = day_slots[0].start.date()
+    same_day = [s for s in day_slots if s.start.date() == first_day]
+    last = same_day[-1]
+    result = await agent.process(
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="book_appointment",
+            preferred_start=last.start.replace(hour=8, minute=0),
+            preferred_end=last.start.replace(hour=17, minute=0),
+            time_precision="day",
+            prefer_latest=True,
+            days_ahead=7,
+        ),
+        context,
+    )
+    assert result.data.message == "awaiting_booking_confirmation"
+    assert result.data.decision is not None
+    assert result.data.decision.recommended_slot_start == last.start
+    assert result.data.metadata.get("prefer_latest") is True
+
+
+@pytest.mark.asyncio
+async def test_part_of_day_asks_for_clock_time(context):
+    """'tomorrow morning' must not invent 9am or volunteer openings."""
+    agent = SchedulingAgent()
+    all_slots = await agent.process(
+        SchedulingRequest(action=SchedulingAction.LIST_SLOTS, days_ahead=14),
+        context,
+    )
+    assert all_slots.data.available_slots
+    preferred = all_slots.data.available_slots[0].start.replace(
+        hour=9, minute=0, second=0, microsecond=0
+    )
+    preferred_end = preferred.replace(hour=11)
+
+    pending = await agent.process(
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="book_appointment",
+            preferred_start=preferred,
+            preferred_end=preferred_end,
+            time_precision="part_of_day",
+            days_ahead=14,
+        ),
+        context,
+    )
+    assert pending.data.action == "list_slots"
+    assert pending.data.message == "ask_preferred_time"
+    assert not pending.data.metadata.get("pending_slot_start")
+    assert pending.data.available_slots == []
+
+
+@pytest.mark.asyncio
+async def test_preferred_start_awaits_confirmation_then_books(context):
+    agent = SchedulingAgent()
+    slots = await agent.process(
+        SchedulingRequest(action=SchedulingAction.LIST_SLOTS, days_ahead=14),
+        context,
+    )
+    assert slots.data.available_slots
+    # Prefer a mid-list opening so we know selection isn't always slot[0].
+    target = slots.data.available_slots[min(3, len(slots.data.available_slots) - 1)].start
+    pending = await agent.process(
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="book_appointment",
+            preferred_start=target,
+            time_precision="clock",
+        ),
+        context,
+    )
+    assert pending.data.action == "list_slots"
+    assert pending.data.message == "awaiting_booking_confirmation"
+    assert pending.data.metadata.get("pending_slot_start") == target.isoformat()
+
+    result = await _decide_and_apply(
+        agent,
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="book_appointment",
+            preferred_start=target,
+            time_precision="clock",
+            confirm_booking=True,
+        ),
+        context,
+    )
+    assert result.data.action == "book"
+    assert result.data.appointment is not None
+    assert result.data.appointment.start == target
+
+
+@pytest.mark.asyncio
+async def test_unavailable_preferred_start_rejects_without_suggesting(context):
+    """Taken clock time → unavailable; do not auto-pick the next opening."""
+    agent = SchedulingAgent()
+    openings = await agent.process(
+        SchedulingRequest(action=SchedulingAction.LIST_SLOTS, days_ahead=14),
+        context,
+    )
+    start = openings.data.available_slots[0].start
+    # Book the opening so a later request for the same clock time fails.
+    booked = await _decide_and_apply(
+        agent,
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="book_appointment",
+            preferred_start=start,
+            time_precision="clock",
+            confirm_booking=True,
+        ),
+        context,
+    )
+    assert booked.data.appointment is not None
+
+    pending = await agent.process(
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="book_appointment",
+            preferred_start=start,
+            time_precision="clock",
+        ),
+        context,
+    )
+    assert pending.data.message == "preferred_time_unavailable"
+    assert pending.data.available_slots == []
+    assert not pending.data.metadata.get("pending_slot_start")
+
+
+@pytest.mark.asyncio
+async def test_outside_business_hours_preferred_is_unavailable(context):
+    """Clock time outside shop hours must not become a booking confirmation."""
+    from zoneinfo import ZoneInfo
+
+    agent = SchedulingAgent()
+    openings = await agent.process(
+        SchedulingRequest(action=SchedulingAction.LIST_SLOTS, days_ahead=14),
+        context,
+    )
+    assert openings.data.available_slots
+    day = openings.data.available_slots[0].start
+    la = ZoneInfo("America/Los_Angeles")
+    outside = day.astimezone(la).replace(hour=20, minute=0, second=0, microsecond=0)
+
+    pending = await agent.process(
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="book_appointment",
+            preferred_start=outside,
+            time_precision="clock",
+            days_ahead=14,
+        ),
+        context,
+    )
+    assert pending.data.message == "preferred_time_unavailable"
+    assert pending.data.available_slots == []
+    assert not pending.data.metadata.get("pending_slot_start")
+
+
+@pytest.mark.asyncio
+async def test_day_only_preference_asks_for_clock_time(context):
+    """Day-only must ask for a clock time — not volunteer day's openings."""
+    agent = SchedulingAgent()
+    all_slots = await agent.process(
+        SchedulingRequest(action=SchedulingAction.LIST_SLOTS, days_ahead=14),
+        context,
+    )
+    assert all_slots.data.available_slots
+    preferred = all_slots.data.available_slots[0].start.replace(
+        hour=8, minute=0, second=0, microsecond=0
+    )
+
+    pending = await agent.process(
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="book_appointment",
+            preferred_start=preferred,
+            time_precision="day",
+            days_ahead=14,
+        ),
+        context,
+    )
+    assert pending.data.action == "list_slots"
+    assert pending.data.message == "ask_preferred_time"
+    assert not pending.data.metadata.get("pending_slot_start")
+    assert pending.data.available_slots == []

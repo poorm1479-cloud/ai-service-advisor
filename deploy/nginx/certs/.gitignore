@@ -1,0 +1,3 @@
+# TLS certificates (generate with deploy/scripts/generate-certs.sh)
+*
+!.gitignore

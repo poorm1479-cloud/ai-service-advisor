@@ -1,0 +1,51 @@
+replicaCount:
+  api: 2
+  web: 2
+
+image:
+  api: ghcr.io/example/ai-service-advisor/api:latest
+  web: ghcr.io/example/ai-service-advisor/web:latest
+  pullPolicy: IfNotPresent
+
+service:
+  apiPort: 8000
+  webPort: 3000
+
+ingress:
+  enabled: true
+  className: nginx
+  host: app.example.com
+  tlsSecretName: asa-tls
+
+env:
+  NEXT_PUBLIC_API_URL: https://api.example.com
+  READY_REQUIRE_REDIS: "true"
+
+resources:
+  api:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  web:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+externalSecrets:
+  enabled: false
+  secretStoreName: cluster-secret-store
+  secretStoreKind: ClusterSecretStore
+  remoteKey: ai-service-advisor/prod
+
+postgresql:
+  enabled: false
+  # Prefer external managed Postgres in production.
+
+redis:
+  enabled: false

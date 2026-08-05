@@ -1,0 +1,7 @@
+# AI Service Advisor Helm chart (starter)
+apiVersion: v2
+name: ai-service-advisor
+description: Starter Helm chart for AI Service Advisor API + Web
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

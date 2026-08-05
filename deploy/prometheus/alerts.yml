@@ -1,0 +1,39 @@
+groups:
+  - name: asa-api
+    rules:
+      - alert: ApiDown
+        expr: up{job="asa-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ASA API is down"
+          description: "Prometheus cannot scrape asa-api for 2 minutes."
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(asa_http_requests_total{status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(asa_http_requests_total[5m])), 0.001)
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated 5xx rate on ASA API"
+
+      - alert: DatabaseDown
+        expr: asa_db_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ASA database connectivity lost"
+
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, sum(rate(asa_http_request_duration_seconds_bucket[5m])) by (le)) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API p95 latency > 2s"

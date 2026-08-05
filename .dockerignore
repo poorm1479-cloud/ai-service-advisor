@@ -1,0 +1,36 @@
+# Python
+apps/api/.venv/
+apps/api/.pytest_cache/
+**/__pycache__/
+*.pyc
+
+# Node
+node_modules/
+apps/web/node_modules/
+
+# Build
+dist/
+build/
+.next/
+
+# Database
+*.sqlite
+*.db
+
+# Docker
+*.log
+
+# Environment
+.env
+.env.*
+
+# Monitoring data
+prometheus/data/
+grafana/data/
+
+# IDE
+.vscode/
+.idea/
+
+# Git
+.git/

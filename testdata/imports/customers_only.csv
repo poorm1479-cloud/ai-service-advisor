@@ -1,0 +1,7 @@
+external_id,name,phone,email,address
+C001,Alex Rivera,555-0100,alex.rivera@example.com,"120 Main St, Austin, TX"
+C002,Jordan Lee,555-0142,jordan.lee@example.com,"88 Oak Ave, Dallas, TX"
+C003,Sam Patel,555-0199,sam.patel@example.com,"41 Pine Rd, Houston, TX"
+C004,Casey Nguyen,555-0221,casey.nguyen@example.com,"9 Cedar Ln, San Antonio, TX"
+C005,Morgan Blake,555-0288,morgan.blake@example.com,"72 Willow Dr, Austin, TX"
+C006,Riley Chen,555-0330,riley.chen@example.com,"15 Maple Ct, Plano, TX"
