@@ -80,14 +80,15 @@ class ContextualReplyGenerator:
             customer_name or snapshot.get("name")
         ) or None
         schedule_bit = _next_appointment_bit(upcoming)
-        # Shop intro only on the first AI reply; later turns skip it.
+        # Shop intro + name only on the first AI reply; later turns skip both.
         is_first_reply = not any(t.role == "assistant" for t in memory.turns)
+        address_name = name if is_first_reply else None
         if is_first_reply:
             greeting = counselor.first_reply_prefix(
-                shop_name=shop_name, customer_name=name
+                shop_name=shop_name, customer_name=address_name
             )
         else:
-            greeting = f"{name}, " if name else ""
+            greeting = ""
 
         if pipeline.escalate:
             reason = (
@@ -131,7 +132,7 @@ class ContextualReplyGenerator:
         if entities.get("service_needs_disambiguation") and candidates:
             return ReplyDraft(
                 body=counselor.offer_service_candidates(
-                    candidates, customer_name=name
+                    candidates, customer_name=address_name
                 ),
                 follow_up_question="Which service?",
             )
@@ -155,7 +156,7 @@ class ContextualReplyGenerator:
             return ReplyDraft(
                 body=counselor.summarize_done(
                     action="book",
-                    customer_name=name,
+                    customer_name=address_name,
                     service_name=service_name,
                     when=sched_data.appointment.start,
                 ),
@@ -166,7 +167,7 @@ class ContextualReplyGenerator:
         # Booking without a service → ask which service first (before day/time).
         if intent == CustomerIntent.BOOK_APPOINTMENT and not service_name:
             ask = counselor.ask_service(
-                customer_name=None if is_first_reply else (name)
+                customer_name=None
             )
             body = f"{greeting}{ask}" if is_first_reply else ask
             return ReplyDraft(
@@ -189,7 +190,7 @@ class ContextualReplyGenerator:
             )
         ):
             ask = counselor.ask_service(
-                customer_name=None if is_first_reply else (name)
+                customer_name=None
             )
             body = f"{greeting}{ask}" if is_first_reply else ask
             return ReplyDraft(
@@ -207,7 +208,7 @@ class ContextualReplyGenerator:
                 ]
                 body = counselor.offer_slots_spoken(
                     ranges,
-                    customer_name=name,
+                    customer_name=address_name,
                     service_name=service_name,
                     limit=4,
                 )
@@ -221,7 +222,7 @@ class ContextualReplyGenerator:
                 )
             return ReplyDraft(
                 body=counselor.ask_time(
-                    customer_name=name, service_name=service_name
+                    customer_name=address_name, service_name=service_name
                 ),
                 follow_up_question="Preferred day/time for your appointment?",
             )
@@ -232,7 +233,7 @@ class ContextualReplyGenerator:
                 if counselor.looks_like_booking_desire(last_customer):
                     return ReplyDraft(
                         body=counselor.ask_service(
-                            customer_name=name
+                            customer_name=address_name
                         ),
                         follow_up_question="What service do you need?",
                     )
@@ -263,7 +264,7 @@ class ContextualReplyGenerator:
                 )
                 return ReplyDraft(
                     body=counselor.time_unavailable(
-                        preferred, customer_name=name
+                        preferred, customer_name=address_name
                     ),
                     follow_up_question="What other day or time works?",
                 )
@@ -308,7 +309,7 @@ class ContextualReplyGenerator:
             ):
                 return ReplyDraft(
                     body=counselor.summarize_booking_confirm(
-                        customer_name=name,
+                        customer_name=address_name,
                         service_name=service_name,
                         when=pending_when,
                     ),
@@ -323,7 +324,7 @@ class ContextualReplyGenerator:
                     ]
                     body = counselor.offer_slots_spoken(
                         ranges,
-                        customer_name=name,
+                        customer_name=address_name,
                         service_name=service_name,
                         limit=4,
                     )
@@ -354,7 +355,7 @@ class ContextualReplyGenerator:
                 )
             return ReplyDraft(
                 body=counselor.ask_time(
-                    customer_name=name, service_name=service_name
+                    customer_name=address_name, service_name=service_name
                 ),
                 follow_up_question="What day and time work best?",
             )
@@ -366,7 +367,7 @@ class ContextualReplyGenerator:
                 return ReplyDraft(
                     body=counselor.summarize_done(
                         action="reschedule",
-                        customer_name=name,
+                        customer_name=address_name,
                         service_name=service_name,
                         when=sched_data.appointment.start,
                     )
@@ -379,7 +380,7 @@ class ContextualReplyGenerator:
             if pending_when:
                 return ReplyDraft(
                     body=counselor.summarize_reschedule_confirm(
-                        customer_name=name,
+                        customer_name=address_name,
                         service_name=service_name,
                         when=pending_when,
                     ),
@@ -392,7 +393,7 @@ class ContextualReplyGenerator:
                 ]
                 body = counselor.offer_slots_spoken(
                     ranges,
-                    customer_name=name,
+                    customer_name=address_name,
                     service_name=service_name,
                     limit=4,
                 )
@@ -408,7 +409,7 @@ class ContextualReplyGenerator:
                 )
             return ReplyDraft(
                 body=counselor.summarize_reschedule_confirm(
-                    customer_name=name,
+                    customer_name=address_name,
                     service_name=service_name,
                     when=None,
                 ),
@@ -420,7 +421,7 @@ class ContextualReplyGenerator:
                 return ReplyDraft(
                     body=counselor.summarize_done(
                         action="cancel",
-                        customer_name=name,
+                        customer_name=address_name,
                         service_name=service_name,
                     )
                 )
@@ -431,7 +432,7 @@ class ContextualReplyGenerator:
                 when = _format_appt_when(upcoming[0].get("start"))
                 svc = upcoming[0].get("service_name") or svc
             body = counselor.summarize_cancel_confirm(
-                customer_name=name,
+                customer_name=address_name,
                 service_name=svc,
                 when=when,
             )
@@ -480,7 +481,7 @@ class ContextualReplyGenerator:
                     follow_up_question="Book this service?",
                 )
             return ReplyDraft(
-                body=counselor.ask_service(customer_name=name),
+                body=counselor.ask_service(customer_name=address_name),
                 follow_up_question="Which service do you need priced?",
             )
 
@@ -521,7 +522,7 @@ class ContextualReplyGenerator:
             shop = (shop_name or "").strip()
             if counselor.looks_like_booking_desire(last_customer):
                 ask = counselor.ask_service(
-                    customer_name=None if is_first_reply else (name)
+                    customer_name=None
                 )
                 body = f"{greeting}{ask}" if is_first_reply else ask
                 return ReplyDraft(
@@ -554,7 +555,7 @@ class ContextualReplyGenerator:
             )
         if counselor.looks_like_booking_desire(last_customer):
             ask = counselor.ask_service(
-                customer_name=None if is_first_reply else (name)
+                customer_name=None
             )
             body = f"{greeting}{ask}" if is_first_reply else ask
             return ReplyDraft(

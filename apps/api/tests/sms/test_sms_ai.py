@@ -752,8 +752,9 @@ async def test_reply_generator_references_customer_and_schedule():
         ),
         shop_name="Main Street Auto",
     )
-    assert follow_up.body.startswith("Jordan,")
+    assert not follow_up.body.startswith("Jordan")
     assert not follow_up.body.startswith("Hello")
+    assert "Oil Change" in follow_up.body
 
 @pytest.mark.asyncio
 async def test_reply_asks_name_before_booking_new_customer():

@@ -95,6 +95,53 @@ async def test_reschedule_and_cancel(context):
 
 
 @pytest.mark.asyncio
+async def test_book_after_conversation_booking_reschedules_previous(context):
+    """Time change after AI already booked must not leave the old slot active."""
+    agent = SchedulingAgent()
+    openings = await agent.process(
+        SchedulingRequest(action=SchedulingAction.LIST_SLOTS, days_ahead=14),
+        context,
+    )
+    first_start = openings.data.available_slots[0].start
+    second_start = openings.data.available_slots[3].start
+
+    booked = await _decide_and_apply(
+        agent,
+        SchedulingRequest(
+            action=SchedulingAction.BOOK,
+            preferred_start=first_start,
+            time_precision="clock",
+        ),
+        context,
+    )
+    assert booked.data.appointment is not None
+    old_id = booked.data.appointment.id
+    context.metadata["appointment_id"] = str(old_id)
+
+    moved = await _decide_and_apply(
+        agent,
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="book_appointment",
+            appointment_id=old_id,
+            preferred_start=second_start,
+            time_precision="clock",
+            confirm_booking=True,
+        ),
+        context,
+    )
+    assert moved.success
+    assert moved.data.success
+    assert moved.data.appointment is not None
+    assert moved.data.appointment.id != old_id
+    assert moved.data.action == "reschedule"
+
+    old = await agent.store.get(context.shop_id, old_id)
+    assert old is not None
+    assert old.status == "rescheduled"
+
+
+@pytest.mark.asyncio
 async def test_intent_maps_book_to_ask_preferred_time(context):
     agent = SchedulingAgent()
     result = await agent.process(

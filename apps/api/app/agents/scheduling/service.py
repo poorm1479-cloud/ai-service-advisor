@@ -197,6 +197,18 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
             action = self._action_from_intent(request.intent)
             inferred_from_intent = True
 
+        # Conversation already created a booking (SMS/voice memory appointment_id).
+        # A later "book" for that same id is a time change — reschedule so the
+        # previous slot is marked rescheduled instead of leaving a duplicate.
+        mem_appt = (context.metadata or {}).get("appointment_id")
+        if (
+            action == SchedulingAction.BOOK
+            and request.appointment_id is not None
+            and mem_appt
+            and str(request.appointment_id) == str(mem_appt)
+        ):
+            action = SchedulingAction.RESCHEDULE
+
         # Chat path: never mutate until the customer confirms (YES / summary OK).
         # Preferred time alone selects a candidate slot; confirmation still required.
         if (

@@ -205,6 +205,24 @@ async def test_reschedule_time_ask_does_not_attach_other_service(context):
 
 
 @pytest.mark.asyncio
+async def test_new_time_after_conversation_booking_is_reschedule(context):
+    """After AI booked in-chat, a new day/time is a move — not a second booking."""
+    context.metadata["appointment_id"] = str(uuid4())
+    context.metadata["upcoming_appointments"] = [
+        {
+            "id": context.metadata["appointment_id"],
+            "service_name": "Oil Change",
+            "status": "booked",
+        }
+    ]
+    agent = IntentAgent()
+    result = await agent.detect(_msg("Actually make it Friday at 3pm"), context)
+    assert result.data is not None
+    assert result.data.intent == CustomerIntent.RESCHEDULE
+    assert result.data.entities.get("preferred_start")
+
+
+@pytest.mark.asyncio
 async def test_reschedule_with_named_service_keeps_service(context):
     catalog = InMemoryServiceCatalog()
     catalog.seed_from_starter(context.shop_id)

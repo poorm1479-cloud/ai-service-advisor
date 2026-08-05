@@ -502,6 +502,13 @@ def _refine_with_time_preference(
         return primary, confidence, secondary
 
     meta = context.metadata or {}
+    # Already booked in this conversation + new time → move that visit
+    # (unless they clearly named a different service for a second booking).
+    if meta.get("appointment_id") and _is_same_visit_time_change(entities, meta):
+        if primary != CustomerIntent.RESCHEDULE and primary not in secondary:
+            secondary = [primary, *secondary][:3]
+        return CustomerIntent.RESCHEDULE, max(confidence, 0.9), secondary
+
     has_pending = bool(
         meta.get("pending_service")
         or meta.get("pending_service_id")
@@ -518,6 +525,27 @@ def _refine_with_time_preference(
             secondary = [primary, *secondary][:3]
         return CustomerIntent.BOOK_APPOINTMENT, max(confidence, 0.86), secondary
     return primary, confidence, secondary
+
+
+def _is_same_visit_time_change(
+    entities: dict[str, Any], meta: dict[str, Any]
+) -> bool:
+    """True when a new time should replace the conversation's existing booking."""
+    requested = (
+        entities.get("requested_service") or entities.get("service") or ""
+    ).strip().casefold()
+    if not requested:
+        return True
+    upcoming = list(meta.get("upcoming_appointments") or [])
+    existing = ""
+    if upcoming:
+        existing = str(upcoming[0].get("service_name") or "").strip().casefold()
+    if not existing and meta.get("pending_service"):
+        existing = str(meta.get("pending_service") or "").strip().casefold()
+    if not existing:
+        # We booked something this chat; no catalog name to compare — treat as move.
+        return True
+    return requested == existing or requested in existing or existing in requested
 
 
 def _refine_earliest_booking(

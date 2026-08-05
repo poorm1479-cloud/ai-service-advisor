@@ -59,13 +59,15 @@ class VoiceReplyGenerator:
     ) -> VoiceReplyDraft:
         # Speak only real names — never CRM placeholders / false extractions (e.g. Going).
         name = counselor.spoken_first_name(customer_name) or None
-        customer_name = name
+        # Address by name only on the first AI turn (opening); later turns skip it.
+        is_first_reply = not any(t.role == "assistant" for t in memory.turns)
+        address_name = name if is_first_reply else None
         _ = shop_name  # reserved for future persona injection in mid-call turns
         meta = pipeline.context.metadata or {}
         snapshot = meta.get("customer_snapshot") or {}
 
         if pipeline.escalate:
-            who = f"{name}, hang tight — " if name else "Hang tight — "
+            who = f"{address_name}, hang tight — " if address_name else "Hang tight — "
             return VoiceReplyDraft(
                 text=(
                     f"{who}I'm grabbing someone from the shop who can help. "
@@ -105,7 +107,7 @@ class VoiceReplyGenerator:
         if entities.get("service_needs_disambiguation") and candidates:
             return VoiceReplyDraft(
                 text=counselor.offer_service_candidates(
-                    candidates, customer_name=customer_name
+                    candidates, customer_name=address_name
                 ),
                 follow_up_question="Which service?",
             )
@@ -129,7 +131,7 @@ class VoiceReplyGenerator:
             return VoiceReplyDraft(
                 text=counselor.summarize_done(
                     action="book",
-                    customer_name=customer_name,
+                    customer_name=address_name,
                     service_name=service_name,
                     when=sched.appointment.start,
                 ),
@@ -143,7 +145,7 @@ class VoiceReplyGenerator:
         # Booking without a service → ask which service first (before day/time).
         if intent == CustomerIntent.BOOK_APPOINTMENT and not service_name:
             return VoiceReplyDraft(
-                text=counselor.ask_service(customer_name=customer_name),
+                text=counselor.ask_service(customer_name=address_name),
                 follow_up_question="What service do you need?",
             )
 
@@ -162,7 +164,7 @@ class VoiceReplyGenerator:
             )
         ):
             return VoiceReplyDraft(
-                text=counselor.ask_service(customer_name=customer_name),
+                text=counselor.ask_service(customer_name=address_name),
                 follow_up_question="What service do you need?",
             )
 
@@ -177,14 +179,14 @@ class VoiceReplyGenerator:
                 return VoiceReplyDraft(
                     text=counselor.offer_slots_spoken(
                         ranges,
-                        customer_name=customer_name,
+                        customer_name=address_name,
                         service_name=service_name,
                     ),
                     follow_up_question="Which time works?",
                 )
             return VoiceReplyDraft(
                 text=counselor.ask_time(
-                    customer_name=customer_name, service_name=service_name
+                    customer_name=address_name, service_name=service_name
                 ),
                 follow_up_question="Preferred day and time?",
             )
@@ -204,7 +206,7 @@ class VoiceReplyGenerator:
                 )
                 return VoiceReplyDraft(
                     text=counselor.time_unavailable(
-                        preferred, customer_name=customer_name
+                        preferred, customer_name=address_name
                     ),
                     follow_up_question="What other day or time works?",
                 )
@@ -247,7 +249,7 @@ class VoiceReplyGenerator:
             ):
                 return VoiceReplyDraft(
                     text=counselor.summarize_booking_confirm(
-                        customer_name=customer_name,
+                        customer_name=address_name,
                         service_name=service_name,
                         when=pending_when,
                     ),
@@ -262,12 +264,12 @@ class VoiceReplyGenerator:
                     return VoiceReplyDraft(
                         text=counselor.offer_slots_spoken(
                             ranges,
-                            customer_name=customer_name,
+                            customer_name=address_name,
                             service_name=service_name,
                         ),
                         follow_up_question="Which time works?",
                     )
-                who = f"{name}, " if name else ""
+                who = f"{address_name}, " if address_name else ""
                 return VoiceReplyDraft(
                     text=(
                         f"{who}I'm not seeing openings in the next week. "
@@ -277,7 +279,7 @@ class VoiceReplyGenerator:
                 )
             return VoiceReplyDraft(
                 text=counselor.ask_time(
-                    customer_name=customer_name, service_name=service_name
+                    customer_name=address_name, service_name=service_name
                 ),
                 follow_up_question="Preferred day and time?",
             )
@@ -287,7 +289,7 @@ class VoiceReplyGenerator:
                 return VoiceReplyDraft(
                     text=counselor.summarize_done(
                         action="reschedule",
-                        customer_name=customer_name,
+                        customer_name=address_name,
                         service_name=service_name,
                         when=sched.appointment.start,
                     ),
@@ -301,7 +303,7 @@ class VoiceReplyGenerator:
             if pending_when and service_name:
                 return VoiceReplyDraft(
                     text=counselor.summarize_reschedule_confirm(
-                        customer_name=customer_name,
+                        customer_name=address_name,
                         service_name=service_name,
                         when=pending_when,
                     ),
@@ -313,7 +315,7 @@ class VoiceReplyGenerator:
                     for slot in sched.available_slots[:3]
                 ]
                 spoken = counselor.offer_slots_spoken(
-                    ranges, customer_name=customer_name, service_name=service_name
+                    ranges, customer_name=address_name, service_name=service_name
                 )
                 return VoiceReplyDraft(
                     text=spoken.replace("I've got", "no problem — I've got").replace(
@@ -324,7 +326,7 @@ class VoiceReplyGenerator:
                 )
             return VoiceReplyDraft(
                 text=counselor.summarize_reschedule_confirm(
-                    customer_name=customer_name,
+                    customer_name=address_name,
                     service_name=service_name,
                     when=None,
                 ),
@@ -336,21 +338,21 @@ class VoiceReplyGenerator:
                 return VoiceReplyDraft(
                     text=counselor.summarize_done(
                         action="cancel",
-                        customer_name=customer_name,
+                        customer_name=address_name,
                         service_name=service_name,
                     ),
                     end_call=True,
                 )
             return VoiceReplyDraft(
                 text=counselor.summarize_cancel_confirm(
-                    customer_name=customer_name,
+                    customer_name=address_name,
                     service_name=service_name,
                 ),
                 follow_up_question="Confirm cancellation?",
             )
 
         if intent == CustomerIntent.ASK_REPAIR_STATUS:
-            who = f"{name}, " if name else ""
+            who = f"{address_name}, " if address_name else ""
             return VoiceReplyDraft(
                 text=(
                     f"{who}let me check on that. "
@@ -362,7 +364,7 @@ class VoiceReplyGenerator:
 
         if intent == CustomerIntent.PRICE_QUESTION:
             return VoiceReplyDraft(
-                text=counselor.ask_service(customer_name=customer_name),
+                text=counselor.ask_service(customer_name=address_name),
                 follow_up_question="Which service?",
             )
 
@@ -370,7 +372,7 @@ class VoiceReplyGenerator:
             tip = "oil changes every five thousand miles"
             if rev and rev.maintenance_reminders:
                 tip = rev.maintenance_reminders[0].get("service", tip).replace("_", " ")
-            who = f"{name}, " if name else ""
+            who = f"{address_name}, " if address_name else ""
             return VoiceReplyDraft(
                 text=(
                     f"{who}we usually recommend {tip}. "
@@ -381,7 +383,7 @@ class VoiceReplyGenerator:
 
         text_blob = " ".join(t.text.lower() for t in memory.turns[-3:])
         if "approve" in text_blob or "estimate" in text_blob:
-            who = f"{name}, " if name else ""
+            who = f"{address_name}, " if address_name else ""
             return VoiceReplyDraft(
                 text=(
                     f"{who}got it — I've noted your estimate decision. "
@@ -390,7 +392,7 @@ class VoiceReplyGenerator:
             )
 
         if intent == CustomerIntent.EMERGENCY:
-            who = f"{name}, " if name else ""
+            who = f"{address_name}, " if address_name else ""
             return VoiceReplyDraft(
                 text=(
                     f"{who}I'm sorry you're dealing with that. "
@@ -401,7 +403,7 @@ class VoiceReplyGenerator:
             )
 
         if intent == CustomerIntent.COMPLAINT:
-            who = f"{name}, " if name else ""
+            who = f"{address_name}, " if address_name else ""
             return VoiceReplyDraft(
                 text=(
                     f"{who}I'm really sorry about that. "
@@ -412,11 +414,11 @@ class VoiceReplyGenerator:
             )
 
         if memory.pending_question and intent == CustomerIntent.OTHER:
-            who = f"{name}, " if name else ""
+            who = f"{address_name}, " if address_name else ""
             if counselor.is_purpose_question(memory.pending_question):
                 if counselor.looks_like_booking_desire(last_customer):
                     return VoiceReplyDraft(
-                        text=counselor.ask_service(customer_name=customer_name),
+                        text=counselor.ask_service(customer_name=address_name),
                         follow_up_question="What service do you need?",
                     )
                 return VoiceReplyDraft(
@@ -433,11 +435,11 @@ class VoiceReplyGenerator:
 
         if counselor.looks_like_booking_desire(last_customer) and not service_name:
             return VoiceReplyDraft(
-                text=counselor.ask_service(customer_name=customer_name),
+                text=counselor.ask_service(customer_name=address_name),
                 follow_up_question="What service do you need?",
             )
 
-        who = f"{name}, " if name else ""
+        who = f"{address_name}, " if address_name else ""
         return VoiceReplyDraft(
             text=(
                 f"{who}no worries — what do you need? "
