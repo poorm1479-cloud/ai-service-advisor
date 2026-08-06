@@ -50,6 +50,19 @@ def test_usage_shop_scope_sets_and_resets() -> None:
     assert get_usage_shop_id() is None
 
 
+def test_shop_ai_scope_sets_quota_and_usage() -> None:
+    from app.saas.quota_context import get_quota_shop_id, shop_ai_scope
+
+    shop_id = uuid4()
+    assert get_quota_shop_id() is None
+    assert get_usage_shop_id() is None
+    with shop_ai_scope(shop_id):
+        assert get_quota_shop_id() == shop_id
+        assert get_usage_shop_id() == shop_id
+    assert get_quota_shop_id() is None
+    assert get_usage_shop_id() is None
+
+
 @pytest.mark.asyncio
 async def test_record_ai_usage_noop_without_shop() -> None:
     # Must not raise when no shop is scoped.

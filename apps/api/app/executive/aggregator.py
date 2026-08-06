@@ -478,17 +478,17 @@ def _repair_column_status(appt: Any, *, now: datetime) -> str:
         return "waiting"
     if raw == "completed":
         return "scheduled"
-    if "progress" in raw or raw == "active" or "bay" in raw:
-        return "active"
     start = _as_utc(_appt_field(appt, "start"))
     end = _as_utc(_appt_field(appt, "end"))
     now_utc = _as_utc(now) or datetime.now(timezone.utc)
     if start is not None and now_utc < start:
         return "scheduled"
-    if start is not None and (end is None or now_utc < end):
-        return "active"
+    # Slot ended — leave Active even if status is still in_progress / bay.
     if start is not None and end is not None and now_utc >= end:
-        # Past end but not completed — still on the floor.
+        return "waiting"
+    if "progress" in raw or raw == "active" or "bay" in raw:
+        return "active"
+    if start is not None and (end is None or now_utc < end):
         return "active"
     if raw in {"booked", "confirmed", "rescheduled"}:
         return "scheduled"

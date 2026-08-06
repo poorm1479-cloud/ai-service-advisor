@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, exists, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities import (
@@ -26,8 +26,10 @@ from app.infrastructure.models import (
     RepairHistoryModel,
     ShopMembershipModel,
     ShopModel,
+    SmsConversationModel,
     UserModel,
     VehicleModel,
+    VoiceCallModel,
     VoiceNoteModel,
     WalkInVisitModel,
 )
@@ -182,6 +184,15 @@ class SqlAlchemyShopRepository:
         row = await self._session.scalar(select(ShopModel).where(ShopModel.slug == slug))
         return _shop(row) if row else None
 
+    async def get_by_name(self, name: str) -> Shop | None:
+        needle = (name or "").strip().lower()
+        if not needle:
+            return None
+        row = await self._session.scalar(
+            select(ShopModel).where(func.lower(ShopModel.name) == needle)
+        )
+        return _shop(row) if row else None
+
     async def add(self, shop: Shop) -> Shop:
         model = ShopModel(id=shop.id, name=shop.name, slug=shop.slug, timezone=shop.timezone)
         self._session.add(model)
@@ -193,6 +204,7 @@ class SqlAlchemyShopRepository:
         if row is None:
             raise ValueError("Shop not found")
         row.name = shop.name
+        row.slug = shop.slug
         row.timezone = shop.timezone
         await self._session.flush()
         return _shop(row)
@@ -556,6 +568,168 @@ class SqlAlchemyCustomerRepository:
         )
         return _customer(row) if row else None
 
+    async def delete(self, shop_id: UUID, customer_id: UUID) -> bool:
+        """Hard-delete customer and all shop-scoped related records."""
+        vehicle_ids = list(
+            await self._session.scalars(
+                select(VehicleModel.id).where(
+                    VehicleModel.shop_id == shop_id,
+                    VehicleModel.customer_id == customer_id,
+                )
+            )
+        )
+        walk_in_filter = [WalkInVisitModel.customer_id == customer_id]
+        if vehicle_ids:
+            walk_in_filter.append(WalkInVisitModel.vehicle_id.in_(vehicle_ids))
+        walk_in_ids = list(
+            await self._session.scalars(
+                select(WalkInVisitModel.id).where(
+                    WalkInVisitModel.shop_id == shop_id,
+                    or_(*walk_in_filter),
+                )
+            )
+        )
+
+        # Appointments (no ORM model) — remove rows tied to this customer graph
+        await self._session.execute(
+            text(
+                "DELETE FROM appointments WHERE shop_id = :shop_id AND customer_id = :customer_id"
+            ),
+            {"shop_id": shop_id, "customer_id": customer_id},
+        )
+        if vehicle_ids:
+            await self._session.execute(
+                text(
+                    "DELETE FROM appointments WHERE shop_id = :shop_id AND vehicle_id = ANY(:vehicle_ids)"
+                ),
+                {"shop_id": shop_id, "vehicle_ids": vehicle_ids},
+            )
+        if walk_in_ids:
+            await self._session.execute(
+                text(
+                    "DELETE FROM appointments WHERE shop_id = :shop_id AND walk_in_id = ANY(:walk_in_ids)"
+                ),
+                {"shop_id": shop_id, "walk_in_ids": walk_in_ids},
+            )
+
+        # Walk-ins must go before vehicles (vehicle_id ON DELETE RESTRICT)
+        if walk_in_ids:
+            await self._session.execute(
+                delete(WalkInVisitModel).where(
+                    WalkInVisitModel.shop_id == shop_id,
+                    WalkInVisitModel.id.in_(walk_in_ids),
+                )
+            )
+
+        repair_filter = [RepairHistoryModel.customer_id == customer_id]
+        if vehicle_ids:
+            repair_filter.append(RepairHistoryModel.vehicle_id.in_(vehicle_ids))
+        await self._session.execute(
+            delete(RepairHistoryModel).where(
+                RepairHistoryModel.shop_id == shop_id,
+                or_(*repair_filter),
+            )
+        )
+        await self._session.execute(
+            delete(CommunicationHistoryModel).where(
+                CommunicationHistoryModel.shop_id == shop_id,
+                CommunicationHistoryModel.customer_id == customer_id,
+            )
+        )
+        # SMS messages / voice turns cascade from parent rows
+        await self._session.execute(
+            delete(SmsConversationModel).where(
+                SmsConversationModel.shop_id == shop_id,
+                SmsConversationModel.customer_id == customer_id,
+            )
+        )
+        await self._session.execute(
+            delete(VoiceCallModel).where(
+                VoiceCallModel.shop_id == shop_id,
+                VoiceCallModel.customer_id == customer_id,
+            )
+        )
+
+        await self._session.execute(
+            text(
+                "DELETE FROM ai_memories WHERE shop_id = :shop_id AND customer_id = :customer_id"
+            ),
+            {"shop_id": shop_id, "customer_id": customer_id},
+        )
+        if vehicle_ids:
+            await self._session.execute(
+                text(
+                    "DELETE FROM ai_memories WHERE shop_id = :shop_id AND vehicle_id = ANY(:vehicle_ids)"
+                ),
+                {"shop_id": shop_id, "vehicle_ids": vehicle_ids},
+            )
+        await self._session.execute(
+            text(
+                "DELETE FROM marketing_messages WHERE shop_id = :shop_id AND customer_id = :customer_id"
+            ),
+            {"shop_id": shop_id, "customer_id": customer_id},
+        )
+        await self._session.execute(
+            text(
+                "DELETE FROM revenue_opportunities WHERE shop_id = :shop_id AND customer_id = :customer_id"
+            ),
+            {"shop_id": shop_id, "customer_id": customer_id},
+        )
+        if vehicle_ids:
+            await self._session.execute(
+                text(
+                    "DELETE FROM revenue_opportunities "
+                    "WHERE shop_id = :shop_id AND vehicle_id = ANY(:vehicle_ids)"
+                ),
+                {"shop_id": shop_id, "vehicle_ids": vehicle_ids},
+            )
+        entity_ids = [customer_id, *vehicle_ids]
+        await self._session.execute(
+            text(
+                "DELETE FROM revenue_health_scores "
+                "WHERE shop_id = :shop_id AND entity_id = ANY(:entity_ids)"
+            ),
+            {"shop_id": shop_id, "entity_ids": entity_ids},
+        )
+        await self._session.execute(
+            text(
+                "DELETE FROM revenue_retention_insights "
+                "WHERE shop_id = :shop_id AND customer_id = :customer_id"
+            ),
+            {"shop_id": shop_id, "customer_id": customer_id},
+        )
+        await self._session.execute(
+            text(
+                "DELETE FROM learning_decision_results "
+                "WHERE shop_id = :shop_id AND customer_id = :customer_id"
+            ),
+            {"shop_id": shop_id, "customer_id": customer_id},
+        )
+        await self._session.execute(
+            text(
+                "DELETE FROM learning_feedback "
+                "WHERE shop_id = :shop_id AND customer_id = :customer_id"
+            ),
+            {"shop_id": shop_id, "customer_id": customer_id},
+        )
+
+        if vehicle_ids:
+            await self._session.execute(
+                delete(VehicleModel).where(
+                    VehicleModel.shop_id == shop_id,
+                    VehicleModel.id.in_(vehicle_ids),
+                )
+            )
+
+        result = await self._session.execute(
+            delete(CustomerModel).where(
+                CustomerModel.id == customer_id,
+                CustomerModel.shop_id == shop_id,
+            )
+        )
+        await self._session.flush()
+        return bool(result.rowcount)
+
 
 class SqlAlchemyVehicleRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -598,6 +772,28 @@ class SqlAlchemyVehicleRepository:
         await self._session.refresh(model)
         return _vehicle(model)
 
+    async def delete(self, shop_id: UUID, vehicle_id: UUID) -> bool:
+        result = await self._session.execute(
+            delete(VehicleModel).where(
+                VehicleModel.id == vehicle_id,
+                VehicleModel.shop_id == shop_id,
+            )
+        )
+        await self._session.flush()
+        return bool(result.rowcount)
+
+    async def has_walk_in_visits(self, shop_id: UUID, vehicle_id: UUID) -> bool:
+        return bool(
+            await self._session.scalar(
+                select(
+                    exists().where(
+                        WalkInVisitModel.shop_id == shop_id,
+                        WalkInVisitModel.vehicle_id == vehicle_id,
+                    )
+                )
+            )
+        )
+
     async def get_by_id(self, shop_id: UUID, vehicle_id: UUID) -> Vehicle | None:
         row = await self._session.scalar(
             select(VehicleModel).where(
@@ -613,6 +809,17 @@ class SqlAlchemyVehicleRepository:
             .where(
                 VehicleModel.shop_id == shop_id,
                 VehicleModel.customer_id == customer_id,
+            )
+            .order_by(VehicleModel.created_at.desc())
+        )
+        return [_vehicle(r) for r in rows]
+
+    async def list_by_shop(self, shop_id: UUID) -> list[Vehicle]:
+        rows = await self._session.scalars(
+            select(VehicleModel)
+            .where(
+                VehicleModel.shop_id == shop_id,
+                VehicleModel.customer_id.is_not(None),
             )
             .order_by(VehicleModel.created_at.desc())
         )
@@ -699,6 +906,51 @@ class SqlAlchemyRepairHistoryRepository:
         )
         return [_repair(r) for r in rows]
 
+    async def list_by_vehicle_ids(
+        self, shop_id: UUID, vehicle_ids: list[UUID]
+    ) -> list[RepairHistory]:
+        if not vehicle_ids:
+            return []
+        rows = await self._session.scalars(
+            select(RepairHistoryModel)
+            .where(
+                RepairHistoryModel.shop_id == shop_id,
+                RepairHistoryModel.vehicle_id.in_(vehicle_ids),
+            )
+            .order_by(RepairHistoryModel.created_at.desc())
+        )
+        return [_repair(r) for r in rows]
+
+    async def latest_by_customer_for_shop(self, shop_id: UUID) -> dict[UUID, RepairHistory]:
+        """Return the most recent repair per customer for a shop (one query)."""
+        customer_key = RepairHistoryModel.customer_id
+        rows = await self._session.scalars(
+            select(RepairHistoryModel)
+            .where(
+                RepairHistoryModel.shop_id == shop_id,
+                customer_key.is_not(None),
+            )
+            .distinct(customer_key)
+            .order_by(customer_key, RepairHistoryModel.created_at.desc())
+        )
+        result: dict[UUID, RepairHistory] = {}
+        for row in rows:
+            if row.customer_id is None:
+                continue
+            result[row.customer_id] = _repair(row)
+        return result
+
+    async def delete(self, shop_id: UUID, vehicle_id: UUID, repair_id: UUID) -> bool:
+        result = await self._session.execute(
+            delete(RepairHistoryModel).where(
+                RepairHistoryModel.id == repair_id,
+                RepairHistoryModel.shop_id == shop_id,
+                RepairHistoryModel.vehicle_id == vehicle_id,
+            )
+        )
+        await self._session.flush()
+        return bool(result.rowcount)
+
 
 class SqlAlchemyCommunicationHistoryRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -781,10 +1033,17 @@ class SqlAlchemyWalkInVisitRepository:
         )
         return _walk_in(row) if row else None
 
-    async def list_by_shop(self, shop_id: UUID, status: str | None = None) -> list[WalkInVisit]:
+    async def list_by_shop(
+        self,
+        shop_id: UUID,
+        status: str | None = None,
+        arrived_after: datetime | None = None,
+    ) -> list[WalkInVisit]:
         stmt = select(WalkInVisitModel).where(WalkInVisitModel.shop_id == shop_id)
         if status:
             stmt = stmt.where(WalkInVisitModel.status == status)
+        if arrived_after is not None:
+            stmt = stmt.where(WalkInVisitModel.arrived_at >= arrived_after)
         stmt = stmt.order_by(WalkInVisitModel.arrived_at.desc())
         rows = await self._session.scalars(stmt)
         return [_walk_in(r) for r in rows]

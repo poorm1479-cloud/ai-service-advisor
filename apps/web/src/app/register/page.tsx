@@ -21,7 +21,6 @@ import { PasswordField } from "@/components/PasswordField";
 
 type DraftFields = {
   shopName: string;
-  shopSlug: string;
   ownerFullName: string;
   ownerPhone: string;
   ownerEmail: string;
@@ -31,7 +30,6 @@ type DraftFields = {
 
 const EMPTY_DRAFT: DraftFields = {
   shopName: "",
-  shopSlug: "",
   ownerFullName: "",
   ownerPhone: "",
   ownerEmail: "",
@@ -44,7 +42,6 @@ export default function RegisterPage() {
   const { register, session, loading } = useAuth();
   const [authMethod, setAuthMethod] = useState<AuthMethod>("phone");
   const [shopName, setShopName] = useState("");
-  const [shopSlug, setShopSlug] = useState("");
   const [ownerFullName, setOwnerFullName] = useState("");
   const [ownerPhone, setOwnerPhone] = useState("");
   const [ownerEmail, setOwnerEmail] = useState("");
@@ -58,8 +55,8 @@ export default function RegisterPage() {
   const [hydrated, setHydrated] = useState(false);
   const [fieldEpoch, setFieldEpoch] = useState(0);
   const [showSecrets, setShowSecrets] = useState(false);
-  const userEditedSlug = useRef(false);
   const userEditedPassword = useRef(false);
+  const userEditedShopName = useRef(false);
 
   useEffect(() => {
     const store = loadRememberedRegisterStore();
@@ -85,22 +82,20 @@ export default function RegisterPage() {
     }
   }, [loading, session, router]);
 
-  // Browser password managers re-inject the email draft (e.g. asd / Albert824@)
-  // into Phone-tab fields. Keep forcing the phone draft (or empty) until the user types.
+  // Browser password managers re-inject the email draft into Phone-tab fields.
   useEffect(() => {
     if (!hydrated) return;
     const ownDraft = draftStore?.[authMethod];
     const otherDraft = authMethod === "phone" ? draftStore?.email : draftStore?.phone;
-    const expectedSlug = ownDraft?.shopSlug ?? "";
+    const expectedName = ownDraft?.shopName ?? "";
     const expectedPassword = ownDraft?.password ?? "";
 
     const scrub = () => {
-      if (!userEditedSlug.current) {
-        setShopSlug((current) => {
-          if (ownDraft) return expectedSlug;
+      if (!userEditedShopName.current) {
+        setShopName((current) => {
+          if (ownDraft) return expectedName;
           if (!current) return current;
-          if (otherDraft?.shopSlug && current === otherDraft.shopSlug) return "";
-          // No own draft for this method: reject autofill entirely during the lock window.
+          if (otherDraft?.shopName && current === otherDraft.shopName) return "";
           return "";
         });
       }
@@ -132,7 +127,6 @@ export default function RegisterPage() {
   function draftToFields(draft: RememberedRegister): DraftFields {
     return {
       shopName: draft.shopName,
-      shopSlug: draft.shopSlug,
       ownerFullName: draft.ownerFullName,
       ownerPhone:
         draft.authMethod === "phone" ? formatPhoneInput(draft.ownerPhone ?? "") : "",
@@ -143,19 +137,16 @@ export default function RegisterPage() {
   }
 
   function applyDraft(fields: DraftFields, method: AuthMethod) {
-    userEditedSlug.current = false;
+    userEditedShopName.current = false;
     userEditedPassword.current = false;
     setAuthMethod(method);
     setShopName(fields.shopName);
-    setShopSlug(fields.shopSlug);
     setOwnerFullName(fields.ownerFullName);
     setOwnerPhone(method === "phone" ? fields.ownerPhone : "");
     setOwnerEmail(method === "email" ? fields.ownerEmail : "");
     setPassword(fields.password);
     setConfirmPassword(fields.confirmPassword);
     setFieldEpoch((n) => n + 1);
-    // Only mount password inputs when this method actually has a remembered secret.
-    // Otherwise keep them unmounted so the browser cannot autofill Albert824@ onto Phone.
     setShowSecrets(Boolean(fields.password));
   }
 
@@ -163,7 +154,6 @@ export default function RegisterPage() {
     return {
       authMethod: method,
       shopName: shopName.trim(),
-      shopSlug: normalizeSlug(shopSlug),
       ownerFullName: ownerFullName.trim(),
       ownerPhone: method === "phone" ? ownerPhone.trim() : undefined,
       ownerEmail: method === "email" ? ownerEmail.trim() : undefined,
@@ -175,11 +165,11 @@ export default function RegisterPage() {
     if (!store) return false;
     const other = draft.authMethod === "phone" ? store.email : store.phone;
     if (!other) return false;
-    const sameSlug = Boolean(draft.shopSlug && draft.shopSlug === other.shopSlug);
+    const sameShop = Boolean(draft.shopName && draft.shopName === other.shopName);
     const samePassword = Boolean(draft.password && draft.password === other.password);
     const hasOwnContact =
       draft.authMethod === "phone" ? Boolean(draft.ownerPhone) : Boolean(draft.ownerEmail);
-    return (sameSlug || samePassword) && !hasOwnContact;
+    return (sameShop || samePassword) && !hasOwnContact;
   }
 
   function persistCurrentMethod(method: AuthMethod = authMethod) {
@@ -254,16 +244,6 @@ export default function RegisterPage() {
     setError(null);
   }
 
-  function normalizeSlug(raw: string) {
-    return raw
-      .trim()
-      .toLowerCase()
-      .replace(/\s+/g, "-")
-      .replace(/[^a-z0-9-]/g, "")
-      .replace(/-+/g, "-")
-      .replace(/^-+|-+$/g, "");
-  }
-
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
@@ -275,9 +255,9 @@ export default function RegisterPage() {
       setError("Password must be at least 8 characters.");
       return;
     }
-    const slug = normalizeSlug(shopSlug);
-    if (slug.length < 2) {
-      setError("Shop slug must use lowercase letters, numbers, and hyphens (e.g. acme-auto).");
+    const name = shopName.trim();
+    if (name.length < 2) {
+      setError("Shop name must be at least 2 characters.");
       return;
     }
     if (authMethod === "phone" && ownerPhone.trim().length < 8) {
@@ -288,22 +268,19 @@ export default function RegisterPage() {
       setError("Owner email is required.");
       return;
     }
-    setShopSlug(slug);
     setSubmitting(true);
     persistCurrentMethod(authMethod);
     try {
       await register({
-        shopName: shopName.trim(),
-        shopSlug: slug,
+        shopName: name,
         authMethod,
         ownerFullName: ownerFullName.trim(),
         password,
         ownerPhone: authMethod === "phone" ? ownerPhone.trim() : undefined,
         ownerEmail: authMethod === "email" ? ownerEmail.trim() : undefined,
       });
-      // Replace any stale login remember with this new account (not leftover wrong credentials).
       saveRememberedLogin({
-        shopSlug: slug,
+        shopName: name,
         method: authMethod,
         phone: authMethod === "phone" ? ownerPhone.trim() : undefined,
         email: authMethod === "email" ? ownerEmail.trim() : undefined,
@@ -363,7 +340,6 @@ export default function RegisterPage() {
           className="mt-6 grid gap-4 sm:grid-cols-2"
           autoComplete="off"
         >
-          {/* Decoy fields: absorb browser password-manager autofill away from real inputs. */}
           <div aria-hidden="true" className="pointer-events-none absolute -left-[9999px] h-0 w-0 opacity-0">
             <input type="text" name="username" tabIndex={-1} defaultValue="" />
             <input type="email" name="email" tabIndex={-1} defaultValue="" />
@@ -376,28 +352,13 @@ export default function RegisterPage() {
               name="asa-reg-shop-name"
               autoComplete="off"
               value={shopName}
-              onChange={setShopName}
-              required
-              guardAutofill
-            />
-          </div>
-          <div className="sm:col-span-2" key={`slug-${authMethod}-${fieldEpoch}`}>
-            <Field
-              label="Shop slug"
-              name={`asa-reg-shop-slug-${authMethod}-${fieldEpoch}`}
-              autoComplete="off"
-              value={shopSlug}
               onChange={(v) => {
-                userEditedSlug.current = true;
-                setShopSlug(v.toLowerCase().replace(/\s+/g, "-"));
+                userEditedShopName.current = true;
+                setShopName(v);
               }}
-              placeholder="acme-auto"
               required
               guardAutofill
             />
-            <p className="mt-1 text-xs text-[var(--muted)]">
-              Lowercase letters, numbers, and hyphens only.
-            </p>
           </div>
           <div className="sm:col-span-2">
             <Field

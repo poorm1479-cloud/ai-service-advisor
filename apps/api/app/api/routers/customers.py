@@ -8,8 +8,10 @@ from app.api.schemas import (
     CommunicationOut,
     CustomerCreate,
     CustomerDetailOut,
+    CustomerDirectoryItemOut,
     CustomerOut,
     CustomerUpdate,
+    RepairHistoryOut,
     VehicleCreate,
     VehicleOut,
 )
@@ -61,6 +63,29 @@ async def search_customers(
     return [CustomerOut.model_validate(c) for c in customers]
 
 
+@router.get("/directory", response_model=list[CustomerDirectoryItemOut])
+async def list_customer_directory(
+    q: str | None = Query(default=None, max_length=200),
+    current: CurrentUser = Depends(get_current_user),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> list[CustomerDirectoryItemOut]:
+    """Customers + vehicles + latest repair in a few queries (list-page friendly)."""
+    service = CrmService(uow)
+    items = await service.list_customer_directory(shop_id=current.shop_id, query=q)
+    return [
+        CustomerDirectoryItemOut(
+            customer=CustomerOut.model_validate(item.customer),
+            vehicles=[VehicleOut.model_validate(v) for v in item.vehicles],
+            last_service=(
+                RepairHistoryOut.model_validate(item.last_service)
+                if item.last_service
+                else None
+            ),
+        )
+        for item in items
+    ]
+
+
 @router.get("/{customer_id}", response_model=CustomerDetailOut)
 async def get_customer_detail(
     customer_id: UUID,
@@ -76,12 +101,18 @@ async def get_customer_detail(
         communications = await service.communication_timeline(
             shop_id=current.shop_id, customer_id=customer_id
         )
+        repairs = await service.customer_repair_history(
+            shop_id=current.shop_id,
+            customer_id=customer_id,
+            vehicle_ids=[v.id for v in vehicles],
+        )
     except NotFoundError as exc:
         raise _http_error(exc) from exc
     return CustomerDetailOut(
         customer=CustomerOut.model_validate(customer),
         vehicles=[VehicleOut.model_validate(v) for v in vehicles],
         communications=[CommunicationOut.model_validate(c) for c in communications],
+        repair_history=[RepairHistoryOut.model_validate(r) for r in repairs],
     )
 
 
@@ -106,6 +137,19 @@ async def update_customer(
     except (ValidationError, NotFoundError) as exc:
         raise _http_error(exc) from exc
     return CustomerOut.model_validate(customer)
+
+
+@router.delete("/{customer_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_customer(
+    customer_id: UUID,
+    current: CurrentUser = Depends(get_current_user),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> None:
+    service = CrmService(uow)
+    try:
+        await service.delete_customer(shop_id=current.shop_id, customer_id=customer_id)
+    except NotFoundError as exc:
+        raise _http_error(exc) from exc
 
 
 @router.post(

@@ -62,12 +62,9 @@ async def upload_and_process_voice_note(
 ) -> VoiceNoteProcessOut:
     data = await audio.read()
     service = _service(uow)
-    from app.saas.quota_context import reset_quota_shop_id, set_quota_shop_id
-    from app.saas.usage_tracking import reset_usage_shop_id, set_usage_shop_id
+    from app.saas.quota_context import shop_ai_scope
 
-    token = set_quota_shop_id(current.shop_id)
-    usage_token = set_usage_shop_id(current.shop_id)
-    try:
+    with shop_ai_scope(current.shop_id):
         try:
             result = await service.process_upload(
                 shop_id=current.shop_id,
@@ -95,9 +92,6 @@ async def upload_and_process_voice_note(
             repair_history=RepairHistoryOut.model_validate(result.repair_history),
             vehicle=VehicleOut.model_validate(result.vehicle),
         )
-    finally:
-        reset_usage_shop_id(usage_token)
-        reset_quota_shop_id(token)
 
 
 @router.get("", response_model=list[VoiceNoteOut])

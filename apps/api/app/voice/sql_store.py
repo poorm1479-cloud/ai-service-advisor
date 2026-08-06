@@ -193,3 +193,20 @@ class SqlAlchemyVoiceStore:
             .order_by(VoiceTurnModel.created_at.asc())
         )
         return [_turn(r) for r in rows]
+
+    async def delete_call(self, shop_id: UUID, call_id: UUID) -> bool:
+        await self._session.execute(
+            text("SELECT set_config('app.shop_id', :sid, true)"),
+            {"sid": str(shop_id)},
+        )
+        row = await self._session.scalar(
+            select(VoiceCallModel).where(
+                VoiceCallModel.shop_id == shop_id,
+                VoiceCallModel.id == call_id,
+            )
+        )
+        if row is None:
+            return False
+        await self._session.delete(row)
+        await self._session.flush()
+        return True

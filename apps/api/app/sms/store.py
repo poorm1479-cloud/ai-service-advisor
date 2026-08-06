@@ -48,6 +48,8 @@ class SmsStorePort(Protocol):
         self, shop_id: UUID, conversation_id: UUID, *, limit: int = 200
     ) -> list[SmsMessage]: ...
 
+    async def delete_conversation(self, shop_id: UUID, conversation_id: UUID) -> bool: ...
+
     async def find_shop_id_by_sms_number(self, phone_e164: str) -> UUID | None: ...
 
 
@@ -135,3 +137,14 @@ class InMemorySmsStore:
             return []
         msgs = list(self.messages.get(conversation_id, []))
         return msgs[-limit:]
+
+    async def delete_conversation(self, shop_id: UUID, conversation_id: UUID) -> bool:
+        conv = await self.get_conversation(shop_id, conversation_id)
+        if conv is None:
+            return False
+        key = (shop_id, conv.customer_phone)
+        if self._by_phone.get(key) == conversation_id:
+            del self._by_phone[key]
+        self.conversations.pop(conversation_id, None)
+        self.messages.pop(conversation_id, None)
+        return True

@@ -83,6 +83,11 @@ class AppointmentIntelligenceService:
         )
 
     async def book(self, request: BookingRequest) -> BookingResult:
+        # Walk-in "start service" books at the counter moment onto the schedule.
+        # Only source=walk_in (not reschedule of a prior walk-in appointment).
+        if request.source == "walk_in":
+            return await self._book_walk_in_start(request)
+
         preferred: datetime | None = None
         if request.preferred_start is not None:
             preferred = request.preferred_start
@@ -381,6 +386,208 @@ class AppointmentIntelligenceService:
             },
         )
 
+    async def _book_walk_in_start(self, request: BookingRequest) -> BookingResult:
+        """Book a walk-in at the counter moment — only during business hours."""
+        now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        preferred = request.preferred_start
+        if preferred is not None:
+            if preferred.tzinfo is None:
+                preferred = preferred.replace(tzinfo=self._availability._shop_tz)
+            preferred = preferred.replace(second=0, microsecond=0)
+            # Counter clock skew: clamp slightly-past times up to now.
+            if preferred.astimezone(timezone.utc) < now - timedelta(minutes=2):
+                preferred = now.astimezone(preferred.tzinfo)
+            elif preferred.astimezone(timezone.utc) < now:
+                preferred = now.astimezone(preferred.tzinfo)
+        else:
+            preferred = now.astimezone(self._availability._shop_tz)
+
+        request.preferred_start = preferred
+        duration = self._availability.estimate_duration(
+            repair_type=request.repair_type,
+            override_min=request.estimated_duration_min,
+        )
+        end = preferred + timedelta(minutes=duration)
+
+        hours = await self._store.list_business_hours(request.shop_id)
+        window = self._availability.day_window(
+            hours, self._availability.local_date(preferred)
+        )
+        if window is None:
+            return BookingResult(
+                success=False,
+                message="Shop is closed today — walk-in service cannot start outside business hours.",
+                conflicts=ConflictReport(
+                    has_conflict=True,
+                    conflicts=["Shop is closed"],
+                    overbooked=False,
+                    severity="high",
+                ),
+            )
+        if preferred < window[0] or end > window[1]:
+            return BookingResult(
+                success=False,
+                message="Walk-in service can only start during business hours.",
+                conflicts=ConflictReport(
+                    has_conflict=True,
+                    conflicts=["Outside business hours"],
+                    overbooked=False,
+                    severity="high",
+                ),
+            )
+
+        mechanics = await self._store.list_mechanics(request.shop_id)
+        bays = await self._store.list_bays(request.shop_id)
+        existing = await self._store.list_appointments(request.shop_id)
+
+        pool = mechanics
+        if request.mechanic_id:
+            pool = [m for m in mechanics if m.id == request.mechanic_id] or mechanics
+
+        mechanic, m_reasons = self._optimization.recommend_mechanic(
+            mechanics=pool,
+            repair_type=request.repair_type,
+            start=preferred,
+            end=end,
+            existing=existing,
+            priority="emergency",
+            require_skill=False,
+        )
+        if mechanic is None and pool:
+            mechanic = pool[0]
+            m_reasons = ["Walk-in assigned first available teammate"]
+
+        bay: Bay | None = None
+        b_reasons: list[str] = []
+        if request.bay_id:
+            bay = next((b for b in bays if b.id == request.bay_id), None)
+        if bay is None:
+            bay, b_reasons = self._optimization.recommend_bay(
+                bays=bays,
+                vehicle_type=request.vehicle_type,
+                repair_type=request.repair_type,
+                start=preferred,
+                end=end,
+                existing=existing,
+                required_bay=None,
+            )
+        if bay is None and bays:
+            bay = bays[0]
+            b_reasons = ["Walk-in assigned first available bay"]
+
+        revenue = self._optimization.estimate_revenue(
+            request.repair_type, request.estimated_revenue
+        )
+        reasons = list(m_reasons) + list(b_reasons) + ["Walk-in service started now"]
+        meta: dict = {
+            "ai_reasons": reasons,
+            "score": 100.0,
+            "required_skill": request.repair_type,
+            "walk_in_start": True,
+        }
+        if request.required_bay:
+            meta["required_bay"] = request.required_bay
+        if request.service_id:
+            meta["service_id"] = str(request.service_id)
+        if request.service_name:
+            meta["service_name"] = request.service_name
+
+        appt = Appointment(
+            id=uuid4(),
+            shop_id=request.shop_id,
+            start=preferred,
+            end=end,
+            status=AppointmentStatus.IN_PROGRESS.value,
+            priority=request.priority or "normal",
+            repair_type=request.repair_type,
+            vehicle_type=request.vehicle_type,
+            estimated_duration_min=duration,
+            service_id=request.service_id,
+            customer_id=request.customer_id,
+            vehicle_id=request.vehicle_id,
+            mechanic_id=mechanic.id if mechanic else None,
+            bay_id=bay.id if bay else None,
+            walk_in_id=request.walk_in_id,
+            source="walk_in",
+            notes=request.notes,
+            estimated_revenue=revenue,
+            estimated_completion=end,
+            wait_time_min=0,
+            created_at=datetime.now(timezone.utc),
+            metadata=meta,
+        )
+        saved = await self._store.save_appointment(appt)
+        mech_name = next((m.name for m in mechanics if m.id == saved.mechanic_id), None)
+        bay_name = next((b.name for b in bays if b.id == saved.bay_id), None)
+
+        logger.info(
+            "scheduling.walk_in_started id=%s mechanic=%s bay=%s",
+            saved.id,
+            mech_name,
+            bay_name,
+        )
+        try:
+            from app.workflows.emitter import emit_domain_event
+            from app.workflows.enums import DomainEventType
+
+            await emit_domain_event(
+                shop_id=request.shop_id,
+                event_type=DomainEventType.APPOINTMENT_BOOKED,
+                payload={
+                    "appointment_id": str(saved.id),
+                    "service_id": str(saved.service_id) if saved.service_id else None,
+                    "service_name": saved.metadata.get("service_name"),
+                    "customer_id": str(saved.customer_id) if saved.customer_id else None,
+                    "vehicle_id": str(saved.vehicle_id) if saved.vehicle_id else None,
+                    "mechanic_id": str(saved.mechanic_id) if saved.mechanic_id else None,
+                    "bay_id": str(saved.bay_id) if saved.bay_id else None,
+                    "walk_in_id": str(saved.walk_in_id) if saved.walk_in_id else None,
+                    "repair_type": saved.repair_type,
+                    "priority": saved.priority,
+                    "estimated_duration_min": saved.estimated_duration_min,
+                    "estimated_revenue": str(saved.estimated_revenue),
+                    "start_time": saved.start.isoformat(),
+                    "end_time": saved.end.isoformat(),
+                    "start": saved.start.isoformat(),
+                    "end": saved.end.isoformat(),
+                    "source": "walk_in",
+                },
+                source="scheduling",
+                correlation_id=str(saved.id),
+            )
+        except Exception:  # noqa: BLE001 — workflows must not break booking
+            logger.exception("workflow.emit walk-in appointment.booked failed")
+
+        slot = SlotCandidate(
+            start=preferred,
+            end=end,
+            mechanic_id=saved.mechanic_id,
+            bay_id=saved.bay_id,
+            score=100.0,
+            reasons=reasons,
+            estimated_wait_min=0,
+            estimated_completion=end,
+        )
+        return BookingResult(
+            success=True,
+            appointment=saved,
+            recommended_slot=slot,
+            message="Walk-in service started",
+            ai_decisions={
+                "preferred_start": preferred.isoformat(),
+                "walk_in_start": True,
+                "mechanic_id": str(saved.mechanic_id) if saved.mechanic_id else None,
+                "mechanic_name": mech_name,
+                "bay_id": str(saved.bay_id) if saved.bay_id else None,
+                "bay_name": bay_name,
+                "estimated_duration_min": duration,
+                "estimated_completion": end.isoformat(),
+                "estimated_wait_min": 0,
+                "estimated_revenue": str(saved.estimated_revenue),
+                "reasons": reasons,
+            },
+        )
+
     async def reschedule(
         self,
         *,
@@ -413,7 +620,8 @@ class AppointmentIntelligenceService:
             vehicle_type=existing.vehicle_type,
             priority=existing.priority,
             estimated_duration_min=existing.estimated_duration_min,
-            source=existing.source,
+            # Never re-enter walk-in start path (forces "now" + in_progress).
+            source="dashboard" if existing.source == "walk_in" else existing.source,
             notes=f"Rescheduled from {existing.id}",
             walk_in_id=existing.walk_in_id,
             estimated_revenue=existing.estimated_revenue,
@@ -431,8 +639,111 @@ class AppointmentIntelligenceService:
 
         if result.appointment:
             result.appointment.metadata["rescheduled_from"] = str(existing.id)
+            if existing.source == "walk_in":
+                result.appointment.source = "walk_in"
             await self._store.update_appointment(result.appointment)
         return result
+
+    async def change_service(
+        self,
+        *,
+        shop_id: UUID,
+        appointment_id: UUID,
+        service_id: UUID,
+        service_name: str,
+        repair_type: str,
+        required_bay: str | None,
+        estimated_duration_min: int,
+        estimated_revenue: Decimal,
+    ) -> BookingResult:
+        """Update catalog service on an active appointment (same start time)."""
+        existing = await self._store.get_appointment(shop_id, appointment_id)
+        if existing is None:
+            return BookingResult(success=False, message="Appointment not found")
+
+        active = {
+            AppointmentStatus.BOOKED.value,
+            AppointmentStatus.CONFIRMED.value,
+            AppointmentStatus.IN_PROGRESS.value,
+        }
+        if existing.status not in active:
+            return BookingResult(
+                success=False,
+                message=f"Cannot change service on {existing.status} appointment",
+            )
+
+        duration = max(1, int(estimated_duration_min))
+        new_end = existing.start + timedelta(minutes=duration)
+
+        hours = await self._store.list_business_hours(shop_id)
+        window = self._availability.day_window(
+            hours, self._availability.local_date(existing.start)
+        )
+        if window is None or existing.start < window[0] or new_end > window[1]:
+            return BookingResult(
+                success=False,
+                message="New service duration falls outside business hours. Reschedule instead.",
+                conflicts=ConflictReport(
+                    has_conflict=True,
+                    conflicts=["Outside business hours"],
+                    overbooked=False,
+                    severity="high",
+                ),
+            )
+
+        existing_list = await self._store.list_appointments(shop_id)
+        report = self._conflict.check_appointment(
+            start=existing.start,
+            end=new_end,
+            mechanic_id=existing.mechanic_id,
+            bay_id=existing.bay_id,
+            existing=existing_list,
+            ignore_id=existing.id,
+            priority=existing.priority,
+        )
+        if report.has_conflict and existing.priority != "emergency":
+            return BookingResult(
+                success=False,
+                message="New service duration conflicts with another appointment. Reschedule instead.",
+                conflicts=report,
+            )
+
+        meta = dict(existing.metadata or {})
+        meta["service_id"] = str(service_id)
+        meta["service_name"] = service_name
+        meta["required_skill"] = repair_type
+        if required_bay:
+            meta["required_bay"] = required_bay
+        elif "required_bay" in meta:
+            del meta["required_bay"]
+
+        existing.service_id = service_id
+        existing.repair_type = repair_type
+        existing.estimated_duration_min = duration
+        existing.end = new_end
+        existing.estimated_completion = new_end
+        existing.estimated_revenue = estimated_revenue
+        existing.metadata = meta
+
+        saved = await self._store.update_appointment(existing)
+        logger.info(
+            "scheduling.service_changed id=%s service=%s duration=%s",
+            saved.id,
+            service_name,
+            duration,
+        )
+        return BookingResult(
+            success=True,
+            appointment=saved,
+            message="Service updated",
+            ai_decisions={
+                "service_id": str(service_id),
+                "service_name": service_name,
+                "estimated_duration_min": duration,
+                "estimated_revenue": str(estimated_revenue),
+                "end": new_end.isoformat(),
+            },
+        )
 
     async def cancel(
         self, *, shop_id: UUID, appointment_id: UUID, reason: str | None = None

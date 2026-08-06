@@ -1,28 +1,56 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import {
   ConversationDetail,
+  deleteSmsConversation,
   getSmsConversation,
   listSmsConversations,
-  sendSmsReply,
   setSmsTakeover,
   simulateInboundSms,
   SmsConversation,
 } from "@/lib/sms";
 import { formatPhoneInput, PHONE_PLACEHOLDER } from "@/lib/phone";
 
+/** Only honor ?id= when the URL is on the SMS tab (avoids race on tab switch). */
+function smsIdFromSearchParams(searchParams: { get: (key: string) => string | null }): string | null {
+  const tab = searchParams.get("tab");
+  if (tab && tab !== "sms") return null;
+  return searchParams.get("id");
+}
+
 export function SmsInboxPanel() {
   const { session, loading: authLoading } = useAuth();
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [conversations, setConversations] = useState<SmsConversation[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(() =>
+    smsIdFromSearchParams(searchParams),
+  );
   const [detail, setDetail] = useState<ConversationDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [reply, setReply] = useState("");
   const [simFrom, setSimFrom] = useState(PHONE_PLACEHOLDER);
   const [simBody, setSimBody] = useState("I need to book an appointment for an oil change");
+  const [deleting, setDeleting] = useState(false);
+
+  const selectConversation = useCallback(
+    (id: string | null) => {
+      setSelectedId(id);
+      const params = new URLSearchParams(searchParams.toString());
+      if (id) {
+        params.set("id", id);
+      } else {
+        params.delete("id");
+      }
+      params.set("tab", "sms");
+      router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+    },
+    [pathname, router, searchParams],
+  );
 
   const refreshList = useCallback(async () => {
     const items = await listSmsConversations();
@@ -32,8 +60,11 @@ export function SmsInboxPanel() {
   const loadDetail = useCallback(async (id: string) => {
     const data = await getSmsConversation(id);
     setDetail(data);
-    setReply(data.reply_preview ?? "");
   }, []);
+
+  useEffect(() => {
+    setSelectedId(smsIdFromSearchParams(searchParams));
+  }, [searchParams]);
 
   useEffect(() => {
     if (authLoading || !session) return;
@@ -55,6 +86,7 @@ export function SmsInboxPanel() {
       setDetail(null);
       return;
     }
+    setError(null);
     void loadDetail(selectedId).catch((err) =>
       setError(err instanceof Error ? err.message : "Failed to load conversation"),
     );
@@ -66,24 +98,10 @@ export function SmsInboxPanel() {
     try {
       const result = await simulateInboundSms({ from_number: simFrom, body: simBody });
       await refreshList();
-      setSelectedId(result.conversation.id);
+      selectConversation(result.conversation.id);
       setDetail(result);
-      setReply(result.reply_preview ?? "");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Simulate failed");
-    }
-  }
-
-  async function onSendReply(e: FormEvent) {
-    e.preventDefault();
-    if (!selectedId || !reply.trim()) return;
-    setError(null);
-    try {
-      await sendSmsReply(selectedId, reply.trim());
-      await loadDetail(selectedId);
-      await refreshList();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Reply failed");
     }
   }
 
@@ -99,17 +117,34 @@ export function SmsInboxPanel() {
     }
   }
 
-  if (loading) {
-    return <p className="text-sm text-[var(--muted)]">Loading SMS inbox…</p>;
+  async function onDeleteConversation() {
+    if (!selectedId) return;
+    if (!window.confirm("Delete this conversation? Messages cannot be recovered.")) return;
+    setError(null);
+    setDeleting(true);
+    try {
+      await deleteSmsConversation(selectedId);
+      selectConversation(null);
+      setDetail(null);
+      await refreshList();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete failed");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  if (!session && !authLoading) {
+    return <p className="text-sm text-[var(--muted)]">Sign in to view SMS inbox.</p>;
   }
 
   return (
-    <div className="space-y-4">
-      {error && <p className="text-sm text-red-700">{error}</p>}
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+      {error && <p className="shrink-0 text-sm text-red-700">{error}</p>}
 
       <form
         onSubmit={onSimulate}
-        className="grid gap-2 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 lg:grid-cols-[180px_minmax(0,1fr)_auto]"
+        className="grid shrink-0 gap-2 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 lg:grid-cols-[180px_minmax(0,1fr)_auto]"
       >
         <input
           type="tel"
@@ -134,17 +169,20 @@ export function SmsInboxPanel() {
         </button>
       </form>
 
-      <div className="grid gap-4 lg:min-h-[520px] lg:grid-cols-[280px_1fr]">
+      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[280px_1fr]">
         <section
-          className={`overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] ${
-            selectedId ? "hidden lg:block" : "block"
+          className={`flex min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] ${
+            selectedId ? "hidden lg:flex" : "flex"
           }`}
         >
-          <header className="border-b border-[var(--line)] px-4 py-3 text-sm font-medium">
+          <header className="shrink-0 border-b border-[var(--line)] px-4 py-3 text-sm font-medium">
             Threads
           </header>
-          <ul className="max-h-[min(70vh,480px)] overflow-y-auto lg:max-h-[480px]">
-            {conversations.length === 0 && (
+          <ul className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+            {loading && (
+              <li className="px-4 py-8 text-sm text-[var(--muted)]">Loading threads…</li>
+            )}
+            {!loading && conversations.length === 0 && (
               <li className="px-4 py-8 text-sm text-[var(--muted)]">No SMS threads yet.</li>
             )}
             {conversations.map((c) => {
@@ -153,7 +191,7 @@ export function SmsInboxPanel() {
                 <li key={c.id}>
                   <button
                     type="button"
-                    onClick={() => setSelectedId(c.id)}
+                    onClick={() => selectConversation(c.id)}
                     className={`w-full border-b border-[var(--line)] px-4 py-3 text-left ${
                       active ? "bg-[var(--accent-soft)]" : "hover:bg-[var(--background)]"
                     }`}
@@ -177,16 +215,16 @@ export function SmsInboxPanel() {
         </section>
 
         <section
-          className={`min-h-[420px] flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] ${
+          className={`min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] ${
             selectedId ? "flex" : "hidden lg:flex"
           }`}
         >
-          <header className="flex items-center justify-between gap-2 border-b border-[var(--line)] px-4 py-3">
+          <header className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--line)] px-4 py-3">
             <div className="min-w-0">
               {selectedId && (
                 <button
                   type="button"
-                  onClick={() => setSelectedId(null)}
+                  onClick={() => selectConversation(null)}
                   className="mb-1 text-xs text-[var(--accent)] lg:hidden"
                 >
                   ← Threads
@@ -203,17 +241,27 @@ export function SmsInboxPanel() {
               )}
             </div>
             {detail && (
-              <button
-                type="button"
-                onClick={() => void onToggleTakeover()}
-                className="shrink-0 rounded-md border border-[var(--line)] px-3 py-1.5 text-xs"
-              >
-                {detail.conversation.human_takeover ? "Resume AI" : "Human takeover"}
-              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void onToggleTakeover()}
+                  className="rounded-md border border-[var(--line)] px-3 py-1.5 text-xs"
+                >
+                  {detail.conversation.human_takeover ? "Resume AI" : "Human takeover"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void onDeleteConversation()}
+                  disabled={deleting}
+                  className="rounded-md border border-red-200 px-3 py-1.5 text-xs text-red-600 disabled:opacity-50"
+                >
+                  {deleting ? "Deleting…" : "Delete"}
+                </button>
+              </div>
             )}
           </header>
 
-          <div className="flex-1 space-y-3 overflow-y-auto p-4">
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-4">
             {!detail && (
               <p className="text-sm text-[var(--muted)]">
                 Pick a thread or simulate an inbound SMS to start.
@@ -236,29 +284,6 @@ export function SmsInboxPanel() {
               </div>
             ))}
           </div>
-
-          {detail && (
-            <form onSubmit={onSendReply} className="border-t border-[var(--line)] p-4">
-              <label className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
-                Reply preview
-              </label>
-              <textarea
-                className="mt-1 w-full rounded-md border border-[var(--line)] px-3 py-2 text-sm"
-                rows={3}
-                value={reply}
-                onChange={(e) => setReply(e.target.value)}
-                placeholder="AI draft or your reply…"
-              />
-              <div className="mt-2 flex justify-end">
-                <button
-                  type="submit"
-                  className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white"
-                >
-                  Send SMS
-                </button>
-              </div>
-            </form>
-          )}
         </section>
       </div>
     </div>

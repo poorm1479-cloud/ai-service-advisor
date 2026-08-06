@@ -88,6 +88,48 @@ async def test_customer_crud_search_and_update(client: AsyncClient):
     assert update.json()["name"] == "Jane Driver"
 
 
+async def test_create_customer_rejects_duplicate_phone_or_email(client: AsyncClient):
+    suffix = uuid.uuid4().hex[:8]
+    auth = await _register(client, suffix)
+    headers = {"Authorization": f"Bearer {auth['access_token']}"}
+
+    first = await client.post(
+        "/v1/customers",
+        headers=headers,
+        json={
+            "name": "Jane Driver",
+            "phone": "555-010-0123",
+            "email": "jane@example.com",
+        },
+    )
+    assert first.status_code == 201, first.text
+    assert first.json()["phone"] == "+15550100123"
+
+    # UI formats as "+1 NXX NXX XXXX" — must still collide with 10-digit storage
+    dup_phone = await client.post(
+        "/v1/customers",
+        headers=headers,
+        json={"name": "Other Person", "phone": "+1 555 010 0123"},
+    )
+    assert dup_phone.status_code == 409
+    assert "phone" in dup_phone.json()["detail"].lower()
+
+    dup_email = await client.post(
+        "/v1/customers",
+        headers=headers,
+        json={"name": "Other Person", "email": "Jane@example.com"},
+    )
+    assert dup_email.status_code == 409
+    assert "email" in dup_email.json()["detail"].lower()
+
+    other = await client.post(
+        "/v1/customers",
+        headers=headers,
+        json={"name": "Bob Owner", "phone": "555-020-0456"},
+    )
+    assert other.status_code == 201, other.text
+
+
 async def test_vehicle_history_and_communication_timeline(client: AsyncClient):
     suffix = uuid.uuid4().hex[:8]
     auth = await _register(client, suffix)
@@ -151,6 +193,21 @@ async def test_vehicle_history_and_communication_timeline(client: AsyncClient):
     assert detail.json()["vehicle"]["id"] == vehicle_id
     assert len(detail.json()["repair_history"]) == 1
 
+    updated = await client.patch(
+        f"/v1/vehicles/{vehicle_id}",
+        headers=headers,
+        json={
+            "license_plate": "XYZ9876",
+            "mileage": 84500,
+            "make": "Honda",
+            "model": "Accord Sport",
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["license_plate"] == "XYZ9876"
+    assert updated.json()["mileage"] == 84500
+    assert updated.json()["model"] == "Accord Sport"
+
     comm = await client.post(
         f"/v1/customers/{customer_id}/communications",
         headers=headers,
@@ -173,6 +230,51 @@ async def test_vehicle_history_and_communication_timeline(client: AsyncClient):
     assert customer_detail.status_code == 200
     assert len(customer_detail.json()["vehicles"]) == 1
     assert len(customer_detail.json()["communications"]) == 1
+    assert len(customer_detail.json()["repair_history"]) == 1
+    assert customer_detail.json()["repair_history"][0]["service_type"] == "Oil Change"
+
+    repair_id = repair.json()["id"]
+    deleted_repair = await client.delete(
+        f"/v1/vehicles/{vehicle_id}/history/{repair_id}", headers=headers
+    )
+    assert deleted_repair.status_code == 204, deleted_repair.text
+
+    history_after = await client.get(f"/v1/vehicles/{vehicle_id}/history", headers=headers)
+    assert history_after.status_code == 200
+    assert history_after.json() == []
+
+    customer_after_repair_delete = await client.get(
+        f"/v1/customers/{customer_id}", headers=headers
+    )
+    assert customer_after_repair_delete.status_code == 200
+    assert customer_after_repair_delete.json()["repair_history"] == []
+
+    gone_repair = await client.delete(
+        f"/v1/vehicles/{vehicle_id}/history/{repair_id}", headers=headers
+    )
+    assert gone_repair.status_code == 404
+
+    # Re-add so vehicle delete still exercises cascade of remaining history cleanup
+    repair_again = await client.post(
+        f"/v1/vehicles/{vehicle_id}/history",
+        headers=headers,
+        json={
+            "service_type": "Brake Inspection",
+            "description": "Pads within spec",
+            "cost": "0",
+        },
+    )
+    assert repair_again.status_code == 201, repair_again.text
+
+    deleted = await client.delete(f"/v1/vehicles/{vehicle_id}", headers=headers)
+    assert deleted.status_code == 204, deleted.text
+
+    gone = await client.get(f"/v1/vehicles/{vehicle_id}", headers=headers)
+    assert gone.status_code == 404
+
+    after_delete = await client.get(f"/v1/customers/{customer_id}", headers=headers)
+    assert after_delete.status_code == 200
+    assert after_delete.json()["vehicles"] == []
 
 
 async def test_crm_shop_isolation(client: AsyncClient):
@@ -213,3 +315,116 @@ async def test_crm_shop_isolation(client: AsyncClient):
 
     get_vehicle_b = await client.get(f"/v1/vehicles/{vehicle_id}", headers=headers_b)
     assert get_vehicle_b.status_code == 404
+
+    delete_vehicle_b = await client.delete(f"/v1/vehicles/{vehicle_id}", headers=headers_b)
+    assert delete_vehicle_b.status_code == 404
+
+    still_there = await client.get(f"/v1/vehicles/{vehicle_id}", headers=headers_a)
+    assert still_there.status_code == 200
+
+
+async def test_customer_directory_batches_vehicles_and_last_service(client: AsyncClient):
+    suffix = uuid.uuid4().hex[:8]
+    auth = await _register(client, suffix)
+    headers = {"Authorization": f"Bearer {auth['access_token']}"}
+
+    customer = await client.post(
+        "/v1/customers",
+        headers=headers,
+        json={"name": "Dir Customer", "phone": "555-0300"},
+    )
+    assert customer.status_code == 201
+    customer_id = customer.json()["id"]
+
+    vehicle = await client.post(
+        f"/v1/customers/{customer_id}/vehicles",
+        headers=headers,
+        json={
+            "vin": VALID_VIN,
+            "year": 2019,
+            "make": "Ford",
+            "model": "F-150",
+            "mileage": 40000,
+        },
+    )
+    assert vehicle.status_code == 201
+    vehicle_id = vehicle.json()["id"]
+
+    repair = await client.post(
+        f"/v1/vehicles/{vehicle_id}/history",
+        headers=headers,
+        json={
+            "service_type": "Brake Pads",
+            "description": "Front pads replaced",
+            "cost": "220.00",
+        },
+    )
+    assert repair.status_code == 201
+
+    directory = await client.get("/v1/customers/directory", headers=headers)
+    assert directory.status_code == 200, directory.text
+    rows = directory.json()
+    assert len(rows) >= 1
+    row = next(r for r in rows if r["customer"]["id"] == customer_id)
+    assert len(row["vehicles"]) == 1
+    assert row["vehicles"][0]["vin"] == VALID_VIN
+    assert row["last_service"] is not None
+    assert row["last_service"]["service_type"] == "Brake Pads"
+
+    by_vin = await client.get(
+        "/v1/customers/directory", headers=headers, params={"q": VALID_VIN[-6:]}
+    )
+    assert by_vin.status_code == 200
+    assert any(r["customer"]["id"] == customer_id for r in by_vin.json())
+
+
+async def test_delete_customer(client: AsyncClient):
+    suffix = uuid.uuid4().hex[:8]
+    shop = await _register(client, suffix)
+    headers = {"Authorization": f"Bearer {shop['access_token']}"}
+
+    created = await client.post(
+        "/v1/customers",
+        headers=headers,
+        json={"name": "Delete Me", "phone": "555-0100", "email": f"del-{suffix}@example.com"},
+    )
+    assert created.status_code == 201, created.text
+    customer_id = created.json()["id"]
+
+    vehicle = await client.post(
+        f"/v1/customers/{customer_id}/vehicles",
+        headers=headers,
+        json={
+            "vin": VALID_VIN,
+            "year": 2019,
+            "make": "Ford",
+            "model": "Focus",
+            "mileage": 50000,
+        },
+    )
+    assert vehicle.status_code == 201, vehicle.text
+    vehicle_id = vehicle.json()["id"]
+
+    comm = await client.post(
+        f"/v1/customers/{customer_id}/communications",
+        headers=headers,
+        json={
+            "channel": "sms",
+            "direction": "outgoing",
+            "message": "See you soon",
+        },
+    )
+    assert comm.status_code == 201, comm.text
+
+    deleted = await client.delete(f"/v1/customers/{customer_id}", headers=headers)
+    assert deleted.status_code == 204, deleted.text
+
+    gone = await client.get(f"/v1/customers/{customer_id}", headers=headers)
+    assert gone.status_code == 404
+
+    # Vehicles and related CRM data are hard-deleted with the customer
+    vehicle_detail = await client.get(f"/v1/vehicles/{vehicle_id}", headers=headers)
+    assert vehicle_detail.status_code == 404
+
+    missing = await client.delete(f"/v1/customers/{customer_id}", headers=headers)
+    assert missing.status_code == 404

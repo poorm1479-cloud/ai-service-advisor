@@ -31,6 +31,8 @@ class VoiceStorePort(Protocol):
 
     async def list_turns(self, shop_id: UUID, call_id: UUID) -> list[VoiceTurn]: ...
 
+    async def delete_call(self, shop_id: UUID, call_id: UUID) -> bool: ...
+
     async def find_shop_id_by_voice_number(self, phone_e164: str) -> UUID | None: ...
 
 
@@ -106,3 +108,13 @@ class InMemoryVoiceStore:
             if call is None or call.shop_id != shop_id:
                 return []
         return list(self.turns.get(call_id, []))
+
+    async def delete_call(self, shop_id: UUID, call_id: UUID) -> bool:
+        call = await self.get_call(shop_id, call_id)
+        if call is None:
+            return False
+        if call.twilio_call_sid and self.by_sid.get(call.twilio_call_sid) == call_id:
+            del self.by_sid[call.twilio_call_sid]
+        self.calls.pop(call_id, None)
+        self.turns.pop(call_id, None)
+        return True

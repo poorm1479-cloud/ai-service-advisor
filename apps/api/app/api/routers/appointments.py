@@ -57,6 +57,10 @@ class RescheduleRequest(BaseModel):
     preferred_start: datetime | None = None
 
 
+class ChangeServiceRequest(BaseModel):
+    service_id: UUID
+
+
 class CancelRequest(BaseModel):
     reason: str | None = None
 
@@ -482,6 +486,47 @@ async def reschedule_appointment(
     )
     if result.success:
         runtime.monitor.record_reschedule()
+    if not result.success and result.message == "Appointment not found":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=result.message)
+    return {
+        "success": result.success,
+        "message": result.message,
+        "appointment": _appt_out(result.appointment).model_dump(mode="json") if result.appointment else None,
+        "ai_decisions": result.ai_decisions,
+    }
+
+
+@router.post("/{appointment_id}/change-service")
+async def change_appointment_service(
+    appointment_id: UUID,
+    body: ChangeServiceRequest,
+    user: CurrentUser = Depends(get_current_user),
+    runtime: SchedulingRuntime = Depends(_runtime),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Change the Service Catalog item on an existing appointment."""
+    await _bind_shop(session, user.shop_id)
+    try:
+        service = await require_service_for_booking(
+            session,
+            shop_id=user.shop_id,
+            service_id=body.service_id,
+            store=runtime.store,
+        )
+    except ValidationError as exc:
+        raise _http_validation(exc) from exc
+
+    booking = build_booking_request(shop_id=user.shop_id, service=service)
+    result = await runtime.service.change_service(
+        shop_id=user.shop_id,
+        appointment_id=appointment_id,
+        service_id=service.id,
+        service_name=service.name,
+        repair_type=booking.repair_type,
+        required_bay=booking.required_bay,
+        estimated_duration_min=booking.estimated_duration_min or service.duration_minutes,
+        estimated_revenue=booking.estimated_revenue or Decimal(str(service.price)),
+    )
     if not result.success and result.message == "Appointment not found":
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=result.message)
     return {

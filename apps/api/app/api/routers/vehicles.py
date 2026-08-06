@@ -9,6 +9,7 @@ from app.api.schemas import (
     VehicleDetailOut,
     VehicleMatchAssistOut,
     VehicleOut,
+    VehicleUpdate,
     VinAssistOut,
     VinDecodedOut,
 )
@@ -144,6 +145,44 @@ async def get_vehicle_detail(
     )
 
 
+@router.patch("/{vehicle_id}", response_model=VehicleOut)
+async def update_vehicle(
+    vehicle_id: UUID,
+    body: VehicleUpdate,
+    current: CurrentUser = Depends(get_current_user),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> VehicleOut:
+    service = CrmService(uow)
+    try:
+        vehicle = await service.update_vehicle(
+            shop_id=current.shop_id,
+            vehicle_id=vehicle_id,
+            vin=body.vin,
+            license_plate=body.license_plate,
+            year=body.year,
+            make=body.make,
+            model=body.model,
+            mileage=body.mileage,
+            fields_set=set(body.model_fields_set),
+        )
+    except (ValidationError, ConflictError, NotFoundError) as exc:
+        raise _http_error(exc) from exc
+    return VehicleOut.model_validate(vehicle)
+
+
+@router.delete("/{vehicle_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_vehicle(
+    vehicle_id: UUID,
+    current: CurrentUser = Depends(get_current_user),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> None:
+    service = CrmService(uow)
+    try:
+        await service.delete_vehicle(shop_id=current.shop_id, vehicle_id=vehicle_id)
+    except (ConflictError, NotFoundError) as exc:
+        raise _http_error(exc) from exc
+
+
 @router.get("/{vehicle_id}/history", response_model=list[RepairHistoryOut])
 async def vehicle_history(
     vehicle_id: UUID,
@@ -182,3 +221,21 @@ async def add_repair_history(
     except (ValidationError, NotFoundError) as exc:
         raise _http_error(exc) from exc
     return RepairHistoryOut.model_validate(entry)
+
+
+@router.delete("/{vehicle_id}/history/{repair_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_repair_history(
+    vehicle_id: UUID,
+    repair_id: UUID,
+    current: CurrentUser = Depends(get_current_user),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> None:
+    service = CrmService(uow)
+    try:
+        await service.delete_repair_history(
+            shop_id=current.shop_id,
+            vehicle_id=vehicle_id,
+            repair_id=repair_id,
+        )
+    except NotFoundError as exc:
+        raise _http_error(exc) from exc

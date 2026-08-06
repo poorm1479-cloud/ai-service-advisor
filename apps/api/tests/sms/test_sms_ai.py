@@ -428,6 +428,45 @@ async def test_human_takeover_skips_ai_reply(runtime, shop_id):
 
 
 @pytest.mark.asyncio
+async def test_delete_conversation_removes_thread_and_messages(runtime, shop_id):
+    result = await runtime.service.process_inbound(
+        shop_id=shop_id,
+        inbound=InboundSms(
+            from_number="+15556667777",
+            to_number="+15550001111",
+            body="Oil change please",
+        ),
+    )
+    conv_id = result.conversation.id
+    assert await runtime.store.get_conversation(shop_id, conv_id) is not None
+    assert len(await runtime.store.list_messages(shop_id, conv_id)) >= 1
+
+    await runtime.service.delete_conversation(shop_id=shop_id, conversation_id=conv_id)
+
+    assert await runtime.store.get_conversation(shop_id, conv_id) is None
+    assert await runtime.store.list_messages(shop_id, conv_id) == []
+    remaining = await runtime.store.list_conversations(shop_id)
+    assert all(c.id != conv_id for c in remaining)
+
+    # Same phone can start a fresh thread after delete
+    again = await runtime.service.process_inbound(
+        shop_id=shop_id,
+        inbound=InboundSms(
+            from_number="+15556667777",
+            to_number="+15550001111",
+            body="Hello again",
+        ),
+    )
+    assert again.conversation.id != conv_id
+
+
+@pytest.mark.asyncio
+async def test_delete_conversation_not_found(runtime, shop_id):
+    with pytest.raises(ValueError, match="Conversation not found"):
+        await runtime.service.delete_conversation(shop_id=shop_id, conversation_id=uuid4())
+
+
+@pytest.mark.asyncio
 async def test_enqueue_and_process_job(runtime, shop_id):
     job = await runtime.service.enqueue_inbound(
         InboundSms(
@@ -640,10 +679,240 @@ async def test_reply_generator_book_with_day_still_asks_service_first():
 
 
 @pytest.mark.asyncio
-async def test_reply_generator_reschedule_affirms_change():
+async def test_reply_generator_reschedule_after_purpose_does_not_ask_service():
+    """Answering 'what can I help with?' with a time-change must not ask for service."""
     gen = ContextualReplyGenerator()
     shop = uuid4()
     intent = IntentResult(intent=CustomerIntent.RESCHEDULE, confidence=0.9)
+    ctx = AgentContext(
+        shop_id=shop,
+        metadata={
+            "upcoming_appointments": [
+                {
+                    "id": str(uuid4()),
+                    "start": "2026-08-10T15:00:00+00:00",
+                    "status": "booked",
+                    "service_name": "Oil Change",
+                }
+            ],
+        },
+    )
+    pipeline = PipelineResult(
+        correlation_id="c",
+        success=True,
+        escalate=False,
+        context=ctx,
+        stages={"intent": AgentResult.ok(intent)},
+    )
+    from app.sms.memory import ConversationMemorySnapshot
+    from app.sms.models import ConversationTurn
+
+    memory = ConversationMemorySnapshot(
+        shop_id=shop,
+        customer_phone="+1",
+        conversation_id=None,
+        turns=[
+            ConversationTurn(
+                role="customer", content="Can I change my appointment time?"
+            ),
+        ],
+        pending_question="what can I help you with?",
+    )
+    draft = gen.generate(pipeline=pipeline, memory=memory, customer_name="Alex")
+    body = draft.body.lower()
+    assert "what service" not in body
+    assert "change" in body or "move" in body or "day" in body or "time" in body
+    # Must not invent a random confirmation time the customer never chose.
+    assert "want me to do that" not in body
+    assert "should i book" not in body
+
+
+@pytest.mark.asyncio
+async def test_reply_generator_appointment_time_change_does_not_ask_service():
+    """Noun-style 'appointment time change' must ask for new time, not service."""
+    gen = ContextualReplyGenerator()
+    shop = uuid4()
+    intent = IntentResult(intent=CustomerIntent.RESCHEDULE, confidence=0.9)
+    ctx = AgentContext(
+        shop_id=shop,
+        metadata={
+            "upcoming_appointments": [
+                {
+                    "id": str(uuid4()),
+                    "start": "2026-08-10T15:00:00+00:00",
+                    "status": "booked",
+                    "service_name": "Oil Change",
+                }
+            ],
+        },
+    )
+    pipeline = PipelineResult(
+        correlation_id="c",
+        success=True,
+        escalate=False,
+        context=ctx,
+        stages={"intent": AgentResult.ok(intent)},
+    )
+    from app.sms.memory import ConversationMemorySnapshot
+    from app.sms.models import ConversationTurn
+
+    memory = ConversationMemorySnapshot(
+        shop_id=shop,
+        customer_phone="+1",
+        conversation_id=None,
+        turns=[
+            ConversationTurn(
+                role="customer", content="I need an appointment time change"
+            ),
+        ],
+    )
+    draft = gen.generate(
+        pipeline=pipeline, memory=memory, customer_name="Alex", shop_name="Shop"
+    )
+    body = draft.body.lower()
+    assert "what service" not in body
+    assert "day" in body or "time" in body or "change" in body
+
+
+@pytest.mark.asyncio
+async def test_reply_generator_book_misclass_time_change_asks_time_not_service():
+    """Even if intent is BOOK, time-change phrasing must not ask which service."""
+    gen = ContextualReplyGenerator()
+    shop = uuid4()
+    intent = IntentResult(intent=CustomerIntent.BOOK_APPOINTMENT, confidence=0.86)
+    ctx = AgentContext(
+        shop_id=shop,
+        metadata={
+            "upcoming_appointments": [
+                {
+                    "id": str(uuid4()),
+                    "start": "2026-08-10T15:00:00+00:00",
+                    "status": "booked",
+                    "service_name": "Brake Inspection",
+                }
+            ],
+        },
+    )
+    pipeline = PipelineResult(
+        correlation_id="c",
+        success=True,
+        escalate=False,
+        context=ctx,
+        stages={"intent": AgentResult.ok(intent)},
+    )
+    from app.sms.memory import ConversationMemorySnapshot
+    from app.sms.models import ConversationTurn
+
+    memory = ConversationMemorySnapshot(
+        shop_id=shop,
+        customer_phone="+1",
+        conversation_id=None,
+        turns=[
+            ConversationTurn(
+                role="customer", content="reservation time change please"
+            ),
+        ],
+    )
+    draft = gen.generate(
+        pipeline=pipeline, memory=memory, customer_name="Alex", shop_name="Shop"
+    )
+    body = draft.body.lower()
+    assert "what service" not in body
+    assert "day" in body or "time" in body or "change" in body
+
+
+@pytest.mark.asyncio
+async def test_reply_generator_reschedule_does_not_invent_slot_confirm():
+    """Pending slot without a customer-chosen clock time must not be confirmed."""
+    gen = ContextualReplyGenerator()
+    shop = uuid4()
+    intent = IntentResult(intent=CustomerIntent.RESCHEDULE, confidence=0.9)
+
+    class Sched:
+        success = False
+        action = "list_slots"
+        appointment = None
+        available_slots = []
+        message = "awaiting_reschedule_confirmation"
+        metadata = {
+            "awaiting_confirmation": True,
+            "action": "reschedule",
+            "pending_slot_start": "2026-08-12T14:00:00+00:00",
+        }
+        decision = type(
+            "D",
+            (),
+            {
+                "recommended_slot_start": __import__("datetime").datetime(
+                    2026,
+                    8,
+                    12,
+                    14,
+                    0,
+                    tzinfo=__import__("datetime").timezone.utc,
+                ),
+                "service_name": "Oil Change",
+            },
+        )()
+
+    ctx = AgentContext(
+        shop_id=shop,
+        metadata={
+            "upcoming_appointments": [
+                {
+                    "id": str(uuid4()),
+                    "start": "2026-08-10T15:00:00+00:00",
+                    "status": "booked",
+                    "service_name": "Oil Change",
+                }
+            ],
+        },
+    )
+    pipeline = PipelineResult(
+        correlation_id="c",
+        success=True,
+        escalate=False,
+        context=ctx,
+        stages={
+            "intent": AgentResult.ok(intent),
+            "scheduling": AgentResult.ok(Sched()),
+        },
+    )
+    from app.sms.memory import ConversationMemorySnapshot
+    from app.sms.models import ConversationTurn
+
+    draft = gen.generate(
+        pipeline=pipeline,
+        memory=ConversationMemorySnapshot(
+            shop_id=shop,
+            customer_phone="+1",
+            conversation_id=None,
+            turns=[
+                ConversationTurn(
+                    role="customer", content="Can I change my appointment time?"
+                )
+            ],
+        ),
+        customer_name="Alex",
+    )
+    body = draft.body.lower()
+    assert "want me to do that" not in body
+    assert "wednesday" not in body
+    assert "new" in body or "day" in body or "time" in body
+
+
+@pytest.mark.asyncio
+async def test_reply_generator_reschedule_affirms_change():
+    gen = ContextualReplyGenerator()
+    shop = uuid4()
+    intent = IntentResult(
+        intent=CustomerIntent.RESCHEDULE,
+        confidence=0.9,
+        entities={
+            "preferred_start": "2026-08-12T14:00:00+00:00",
+            "time_precision": "day",
+        },
+    )
 
     class Slot:
         start = __import__("datetime").datetime(
@@ -735,7 +1004,7 @@ async def test_reply_generator_references_customer_and_schedule():
     assert "Jordan" in draft.body
     assert "Oil Change" in draft.body
     assert "Aug 10" in draft.body
-    assert "you've got" in draft.body.lower()
+    assert "your oil change is on" in draft.body.lower() or "you've got" in draft.body.lower()
     assert draft.body.startswith("Hello Jordan, this is Main Street Auto")
 
     follow_up = gen.generate(

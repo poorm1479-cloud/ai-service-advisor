@@ -544,3 +544,156 @@ async def test_overlap_blocked_for_same_mechanic_bay(runtime, shop_id):
         )
     else:
         assert second.conflicts is not None and second.conflicts.has_conflict
+
+
+@pytest.mark.asyncio
+async def test_change_service_updates_duration_and_metadata(runtime, shop_id):
+    from decimal import Decimal
+
+    hours = await runtime.service._store.list_business_hours(shop_id)
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    preferred = None
+    for offset in range(1, 8):
+        day = (now + timedelta(days=offset)).date()
+        window = runtime.service._availability.day_window(hours, day)
+        if window is None:
+            continue
+        preferred = window[0].replace(hour=10, minute=0)
+        if preferred >= window[0] and preferred + timedelta(minutes=90) <= window[1]:
+            break
+    assert preferred is not None
+
+    booked = await runtime.service.book(
+        BookingRequest(
+            shop_id=shop_id,
+            service_id=uuid4(),
+            service_name="Oil Change",
+            repair_type="oil_change",
+            preferred_start=preferred,
+            estimated_duration_min=30,
+            estimated_revenue=Decimal("49.00"),
+        )
+    )
+    assert booked.success and booked.appointment
+    appt_id = booked.appointment.id
+    new_service_id = uuid4()
+
+    changed = await runtime.service.change_service(
+        shop_id=shop_id,
+        appointment_id=appt_id,
+        service_id=new_service_id,
+        service_name="Brake Job",
+        repair_type="brakes",
+        required_bay="general",
+        estimated_duration_min=60,
+        estimated_revenue=Decimal("199.00"),
+    )
+    assert changed.success
+    assert changed.appointment is not None
+    assert changed.appointment.service_id == new_service_id
+    assert changed.appointment.repair_type == "brakes"
+    assert changed.appointment.estimated_duration_min == 60
+    assert changed.appointment.end == preferred + timedelta(minutes=60)
+    assert changed.appointment.metadata.get("service_name") == "Brake Job"
+    assert changed.appointment.estimated_revenue == Decimal("199.00")
+
+
+@pytest.mark.asyncio
+async def test_change_service_rejects_cancelled(runtime, shop_id):
+    from decimal import Decimal
+
+    booked = await runtime.service.book(
+        BookingRequest(
+            shop_id=shop_id,
+            service_id=uuid4(),
+            service_name="Oil Change",
+            repair_type="oil_change",
+            estimated_duration_min=30,
+        )
+    )
+    assert booked.success and booked.appointment
+    await runtime.service.cancel(
+        shop_id=shop_id, appointment_id=booked.appointment.id, reason="test"
+    )
+
+    changed = await runtime.service.change_service(
+        shop_id=shop_id,
+        appointment_id=booked.appointment.id,
+        service_id=uuid4(),
+        service_name="Brakes",
+        repair_type="brakes",
+        required_bay=None,
+        estimated_duration_min=60,
+        estimated_revenue=Decimal("100.00"),
+    )
+    assert not changed.success
+    assert "cancelled" in (changed.message or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_walk_in_start_books_in_progress_during_hours(runtime, shop_id):
+    """Start Service Visit lands on the schedule at the counter moment (open hours)."""
+    hours = await runtime.service._store.list_business_hours(shop_id)
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    preferred = None
+    for offset in range(0, 8):
+        day = (now + timedelta(days=offset)).date()
+        window = runtime.service._availability.day_window(hours, day)
+        if window is None:
+            continue
+        # Mid-window so duration fits inside business hours.
+        mid = window[0] + (window[1] - window[0]) / 2
+        preferred = mid.replace(second=0, microsecond=0)
+        if preferred + timedelta(minutes=45) <= window[1]:
+            break
+    assert preferred is not None
+
+    walk_in_id = uuid4()
+    result = await runtime.service.book(
+        BookingRequest(
+            shop_id=shop_id,
+            repair_type="brakes",
+            vehicle_type="sedan",
+            source="walk_in",
+            walk_in_id=walk_in_id,
+            notes="Walk-in brakes",
+            preferred_start=preferred,
+            estimated_duration_min=45,
+        )
+    )
+    assert result.success
+    assert result.appointment is not None
+    assert result.appointment.status == "in_progress"
+    assert result.appointment.source == "walk_in"
+    assert result.appointment.walk_in_id == walk_in_id
+    assert result.appointment.start == preferred
+    assert result.appointment.end == preferred + timedelta(minutes=45)
+
+
+@pytest.mark.asyncio
+async def test_walk_in_start_rejects_outside_business_hours(runtime, shop_id):
+    hours = await runtime.service._store.list_business_hours(shop_id)
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    closed_start = None
+    for offset in range(1, 8):
+        day = (now + timedelta(days=offset)).date()
+        window = runtime.service._availability.day_window(hours, day)
+        if window is None:
+            continue
+        # After close — outside business hours (future so it is not clamped to now).
+        closed_start = window[1] + timedelta(minutes=30)
+        break
+    assert closed_start is not None
+
+    result = await runtime.service.book(
+        BookingRequest(
+            shop_id=shop_id,
+            repair_type="brakes",
+            source="walk_in",
+            walk_in_id=uuid4(),
+            preferred_start=closed_start,
+            estimated_duration_min=45,
+        )
+    )
+    assert not result.success
+    assert "business hours" in (result.message or "").lower()

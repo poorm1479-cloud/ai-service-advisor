@@ -197,15 +197,24 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
             action = self._action_from_intent(request.intent)
             inferred_from_intent = True
 
-        # Conversation already created a booking (SMS/voice memory appointment_id).
-        # A later "book" for that same id is a time change — reschedule so the
-        # previous slot is marked rescheduled instead of leaving a duplicate.
-        mem_appt = (context.metadata or {}).get("appointment_id")
+        # Mid reschedule-ask, or same-conversation time change after a book:
+        # convert BOOK → RESCHEDULE so the previous slot is marked rescheduled.
+        # Do NOT use active_appointment_id / upcoming alone — that poisons a
+        # fresh book into reschedule whenever the customer already has a visit.
+        meta = context.metadata or {}
+        mem_appt = meta.get("appointment_id")
+        pending_action = str(meta.get("pending_action") or "")
         if (
             action == SchedulingAction.BOOK
             and request.appointment_id is not None
-            and mem_appt
-            and str(request.appointment_id) == str(mem_appt)
+            and (
+                pending_action == "reschedule"
+                or (
+                    mem_appt
+                    and str(request.appointment_id) == str(mem_appt)
+                    and pending_action != "book"
+                )
+            )
         ):
             action = SchedulingAction.RESCHEDULE
 
@@ -243,11 +252,13 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                 and not request.prefer_earliest
                 and not request.prefer_latest
             ):
+                pending_action = self._pending_action_label(request)
                 decision = AppointmentDecision(
                     action="list_slots",
                     days_ahead=request.days_ahead,
                     customer_id=request.customer_id or context.customer_id,
                     vehicle_id=request.vehicle_id or context.vehicle_id,
+                    appointment_id=request.appointment_id,
                     preferred_start=request.preferred_start,
                     preferred_end=request.preferred_end,
                     requested_service=request.requested_service,
@@ -260,6 +271,7 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                     + (f" for {match.name}" if match else ""),
                     confidence=match.confidence if match else 1.0,
                     offer_policy="ask_time",
+                    hold_action=pending_action,  # type: ignore[arg-type]
                 )
                 return AgentResult.ok(
                     SchedulingResult(
@@ -267,7 +279,10 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                         success=True,
                         available_slots=[],
                         message="ask_preferred_time",
-                        metadata={"ask_preferred_time": True, "action": "book"},
+                        metadata={
+                            "ask_preferred_time": True,
+                            "action": pending_action,
+                        },
                         decision=decision,
                     )
                 )
@@ -396,6 +411,7 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                     else ("; awaiting booking confirmation" if pending_start else "")
                 ),
                 confidence=match.confidence if match else 1.0,
+                hold_action="book",
             )
             return AgentResult.ok(
                 SchedulingResult(
@@ -446,18 +462,23 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                 and not request.prefer_earliest
                 and not request.prefer_latest
             ):
+                pending_action = self._pending_action_label(request)
                 return AgentResult.ok(
                     SchedulingResult(
                         action=SchedulingAction.LIST_SLOTS.value,
                         success=True,
                         available_slots=[],
                         message="ask_preferred_time",
-                        metadata={"ask_preferred_time": True, "action": "book"},
+                        metadata={
+                            "ask_preferred_time": True,
+                            "action": pending_action,
+                        },
                         decision=AppointmentDecision(
                             action="list_slots",
                             days_ahead=request.days_ahead,
                             customer_id=request.customer_id or context.customer_id,
                             vehicle_id=request.vehicle_id or context.vehicle_id,
+                            appointment_id=request.appointment_id,
                             preferred_start=request.preferred_start,
                             preferred_end=request.preferred_end,
                             requested_service=request.requested_service,
@@ -469,24 +490,30 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                             rationale="No preferred time — ask instead of volunteering openings",
                             confidence=match.confidence if match else 1.0,
                             offer_policy="ask_time",
+                            hold_action=pending_action,  # type: ignore[arg-type]
                         ),
                     )
                 )
             if request.time_precision in {"day", "part_of_day"} and not (
                 request.prefer_earliest or request.prefer_latest
             ):
+                pending_action = self._pending_action_label(request)
                 return AgentResult.ok(
                     SchedulingResult(
                         action=SchedulingAction.LIST_SLOTS.value,
                         success=True,
                         available_slots=[],
                         message="ask_preferred_time",
-                        metadata={"ask_preferred_time": True, "action": "book"},
+                        metadata={
+                            "ask_preferred_time": True,
+                            "action": pending_action,
+                        },
                         decision=AppointmentDecision(
                             action="list_slots",
                             days_ahead=request.days_ahead,
                             customer_id=request.customer_id or context.customer_id,
                             vehicle_id=request.vehicle_id or context.vehicle_id,
+                            appointment_id=request.appointment_id,
                             preferred_start=request.preferred_start,
                             preferred_end=request.preferred_end,
                             requested_service=request.requested_service,
@@ -498,6 +525,7 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                             rationale="Soft time preference — ask for a clock time",
                             confidence=match.confidence if match else 0.7,
                             offer_policy="ask_time",
+                            hold_action=pending_action,  # type: ignore[arg-type]
                         ),
                     )
                 )
@@ -582,6 +610,7 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                             recommended_slot_end=end,
                             rationale="Need customer name before booking",
                             confidence=match.confidence if match else 0.7,
+                            hold_action="book",
                         ),
                     )
                 )
@@ -667,7 +696,40 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                             ),
                         )
                     )
-                slot = self._select_slot(slots, request.preferred_start)
+                # Clock preference must match an opening exactly — never snap to
+                # the next available (that is not the time the customer said).
+                if (
+                    request.preferred_start is not None
+                    and request.time_precision == "clock"
+                ):
+                    slot = self._find_exact_slot(slots, request.preferred_start)
+                    if slot is None:
+                        return AgentResult.ok(
+                            SchedulingResult(
+                                action=SchedulingAction.LIST_SLOTS.value,
+                                success=False,
+                                available_slots=[],
+                                message="preferred_time_unavailable",
+                                metadata={
+                                    "preferred_time_unavailable": True,
+                                    "action": "reschedule",
+                                    "preferred_start": request.preferred_start.isoformat(),
+                                },
+                                decision=AppointmentDecision(
+                                    action="list_slots",
+                                    appointment_id=request.appointment_id,
+                                    preferred_start=request.preferred_start,
+                                    service_id=match.service_id if match else None,
+                                    service_name=match.name if match else None,
+                                    duration_minutes=duration,
+                                    rationale="Preferred clock time unavailable to reschedule",
+                                    confidence=match.confidence if match else 0.7,
+                                    offer_policy="unavailable",
+                                ),
+                            )
+                        )
+                else:
+                    slot = self._select_slot(slots, request.preferred_start)
                 end = slot.end
                 if duration:
                     end = slot.start + timedelta(minutes=duration)
@@ -693,10 +755,21 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                             duration_minutes=duration,
                             rationale="Awaiting confirmation before reschedule",
                             confidence=match.confidence if match else 0.7,
+                            hold_action="reschedule",
                         ),
                     )
                 )
-            slot = self._select_slot(slots, request.preferred_start)
+            if (
+                request.preferred_start is not None
+                and request.time_precision == "clock"
+            ):
+                slot = self._find_exact_slot(slots, request.preferred_start)
+                if slot is None:
+                    return AgentResult.fail(
+                        "No available slots matching preferred start"
+                    )
+            else:
+                slot = self._select_slot(slots, request.preferred_start)
             end = slot.end
             if duration:
                 end = slot.start + timedelta(minutes=duration)
@@ -914,3 +987,15 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
             CustomerIntent.CANCEL_APPOINTMENT.value: SchedulingAction.CANCEL,
         }
         return mapping.get(intent, SchedulingAction.NOOP)
+
+    @staticmethod
+    def _pending_action_label(request: SchedulingRequest) -> str:
+        """Memory/SMS pending_action for ask-time holds (book vs reschedule).
+
+        Only explicit reschedule intent marks the hold as reschedule. Having an
+        appointment_id (e.g. leftover memory / upcoming enrich) must not turn a
+        new book into a reschedule hold.
+        """
+        if request.intent == CustomerIntent.RESCHEDULE.value:
+            return "reschedule"
+        return "book"

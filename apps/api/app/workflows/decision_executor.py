@@ -191,32 +191,17 @@ class DecisionExecutor:
         ports: DecisionPorts,
         context: AgentContext,
     ) -> dict[str, Any]:
+        """Record advisor recommendation on the CRM timeline only.
+
+        Do not write RepairHistory here — that table is completed service work.
+        Booking / recommending a job must not appear as past repair history.
+        """
         from app.plugins.framework.capability import Capability
 
         customer_id = decision.customer_id or context.customer_id
-        if customer_id and decision.vehicle_id:
-            try:
-                from app.agents.vehicle.models import RepairRecord
-
-                repair = RepairRecord(
-                    id=uuid4(),
-                    vehicle_id=decision.vehicle_id,
-                    service_type=decision.service_type,
-                    description=decision.description or decision.title,
-                    cost=float(decision.estimated_cost),
-                    recommendation=decision.plain_language or decision.advisor_notes,
-                )
-                await self._invoke_cap(
-                    Capability.ADD_REPAIR.value,
-                    shop_id=shop_id,
-                    ports=ports,
-                    context=context,
-                    repair=repair,
-                )
-            except Exception:  # noqa: BLE001
-                logger.debug("advisor.repair_add_skipped", exc_info=True)
         if customer_id:
             try:
+                summary = decision.plain_language or decision.title or decision.service_type
                 await self._invoke_cap(
                     Capability.ADD_TIMELINE.value,
                     shop_id=shop_id,
@@ -224,7 +209,7 @@ class DecisionExecutor:
                     context=context,
                     customer_id=customer_id,
                     kind="repair_recommendation",
-                    summary=decision.plain_language or decision.title,
+                    summary=summary,
                 )
             except Exception:  # noqa: BLE001
                 logger.debug("advisor.repair_timeline_skipped", exc_info=True)
@@ -1428,12 +1413,18 @@ class DecisionExecutor:
 
         if decision.action == "list_slots":
             if decision.offer_policy == "ask_time":
+                pending_action = decision.hold_action or "book"
+                if pending_action not in {"book", "reschedule"}:
+                    pending_action = "book"
                 return SchedulingResult(
                     action="list_slots",
                     success=True,
                     available_slots=[],
                     message="ask_preferred_time",
-                    metadata={"ask_preferred_time": True, "action": "book"},
+                    metadata={
+                        "ask_preferred_time": True,
+                        "action": pending_action,
+                    },
                     decision=decision,
                 )
             if decision.offer_policy == "unavailable":
@@ -1480,7 +1471,9 @@ class DecisionExecutor:
             if decision.recommended_slot_start is not None:
                 start = decision.recommended_slot_start
                 end = decision.recommended_slot_end or start
-                pending_action = "reschedule" if decision.appointment_id else "book"
+                pending_action = decision.hold_action or "book"
+                if pending_action not in {"book", "reschedule"}:
+                    pending_action = "book"
                 meta = {
                     "awaiting_confirmation": True,
                     "action": pending_action,

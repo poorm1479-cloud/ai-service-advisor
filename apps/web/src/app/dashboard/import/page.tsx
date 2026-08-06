@@ -1,6 +1,7 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import {
   createImportJob,
@@ -16,7 +17,19 @@ import {
   setManualSections,
   uploadImportFile,
 } from "@/lib/imports";
+import { getCustomerDetail } from "@/lib/crm";
 import { formatPhoneInput, PHONE_PLACEHOLDER } from "@/lib/phone";
+import { vinAssist } from "@/lib/walkin";
+
+const VinInput = dynamic(
+  () => import("@/components/VinInput").then((m) => ({ default: m.VinInput })),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="h-10 animate-pulse rounded-md border border-[var(--line)] bg-[var(--background)]/60" />
+    ),
+  },
+);
 
 type WizardStep = "source" | "configure" | "progress" | "duplicates" | "report";
 type DisplayStep = "Upload" | "Review" | "Import" | "Complete";
@@ -26,10 +39,53 @@ const DISPLAY_STEPS: DisplayStep[] = ["Upload", "Review", "Import", "Complete"];
 const FILE_SOURCES = new Set(["csv", "excel"]);
 
 const MERGE_ACTIONS = [
-  { value: "merge", label: "Merge" },
-  { value: "keep_existing", label: "Keep existing" },
-  { value: "keep_incoming", label: "Keep incoming" },
-  { value: "skip", label: "Skip" },
+  { value: "merge", label: "Merge both" },
+  { value: "keep_existing", label: "Keep existing only" },
+  { value: "keep_incoming", label: "Use imported record" },
+  { value: "skip", label: "Skip this import" },
+];
+
+const ENTITY_LABELS: Record<string, string> = {
+  customer: "Customer",
+  vehicle: "Vehicle",
+  repair_history: "Repair history",
+  invoice: "Invoice",
+  estimate: "Estimate",
+  appointment: "Appointment",
+};
+
+const MATCH_LABELS: Record<string, string> = {
+  phone: "same phone number",
+  email: "same email",
+  name: "similar name",
+  vin: "same VIN",
+  license_plate: "same license plate",
+  composite: "matching details",
+};
+
+const FIELD_LABELS: Record<string, string> = {
+  name: "Name",
+  phone: "Phone",
+  email: "Email",
+  address: "Address",
+  external_id: "External ID",
+  vin: "VIN",
+  year: "Year",
+  make: "Make",
+  model: "Model",
+  mileage: "Mileage",
+  license_plate: "License plate",
+};
+
+const CUSTOMER_FIELD_ORDER = ["name", "phone", "email", "address", "external_id"];
+const VEHICLE_FIELD_ORDER = [
+  "year",
+  "make",
+  "model",
+  "vin",
+  "license_plate",
+  "mileage",
+  "external_id",
 ];
 
 function displayStepFor(step: WizardStep): DisplayStep {
@@ -37,6 +93,33 @@ function displayStepFor(step: WizardStep): DisplayStep {
   if (step === "configure") return "Review";
   if (step === "progress" || step === "duplicates") return "Import";
   return "Complete";
+}
+
+/** Map job API status → wizard step (terminal success/failure → Complete/report). */
+function wizardStepForJob(job: ImportJob): WizardStep {
+  const status = (job.status || "").toLowerCase();
+  if (status === "awaiting_resolution") return "duplicates";
+  // Successful or finished imports (incl. manual Save) open the Complete report view.
+  if (
+    status === "completed" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    job.report != null ||
+    job.completed_at != null
+  ) {
+    return "report";
+  }
+  return "progress";
+}
+
+function jobStatusLabel(status: string): string {
+  const s = (status || "").toLowerCase();
+  if (s === "completed") return "Complete";
+  if (s === "awaiting_resolution") return "Needs resolution";
+  if (s === "failed") return "Failed";
+  if (s === "cancelled") return "Cancelled";
+  if (!s) return "—";
+  return s.replace(/_/g, " ");
 }
 
 function entityImported(job: ImportJob, kind: string): number {
@@ -169,6 +252,9 @@ export default function ImportPage() {
   const [success, setSuccess] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [primaryGroup, setPrimaryGroup] = useState<"file" | null>(null);
+  const [vinStatus, setVinStatus] = useState<string | null>(null);
+  const [vinLooking, setVinLooking] = useState(false);
+  const vinAssistSeq = useRef(0);
 
   const selectedSource = useMemo(
     () => sources.find((s) => s.source === source) ?? null,
@@ -186,9 +272,83 @@ export default function ImportPage() {
 
   const activeDisplayStep = displayStepFor(step);
 
+  function clearManualForms() {
+    vinAssistSeq.current += 1;
+    setManualCustomer(EMPTY_CUSTOMER);
+    setManualVehicle(EMPTY_VEHICLE);
+    setVinStatus(null);
+    setVinLooking(false);
+  }
+
   const refreshJobs = useCallback(async () => {
     setJobs(await listImportJobs());
   }, []);
+
+  /** VIN scan/type → auto-fill year/make/model (and CRM customer when known). */
+  useEffect(() => {
+    if (source !== "manual" || step !== "configure") return;
+
+    const cleaned = manualVehicle.vin.replace(/[\s-]/g, "").toUpperCase();
+    if (cleaned.length !== 17) {
+      setVinStatus(null);
+      setVinLooking(false);
+      return;
+    }
+
+    const seq = ++vinAssistSeq.current;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        setVinLooking(true);
+        try {
+          const assist = await vinAssist(cleaned);
+          if (seq !== vinAssistSeq.current) return;
+
+          if (assist.existing) {
+            const v = assist.existing;
+            setManualVehicle((prev) => ({
+              ...prev,
+              vin: v.vin,
+              year: String(v.year),
+              make: v.make,
+              model: v.model,
+              mileage: prev.mileage.trim() ? prev.mileage : String(v.mileage),
+            }));
+            if (v.customer_id) {
+              try {
+                const detail = await getCustomerDetail(v.customer_id);
+                if (seq !== vinAssistSeq.current) return;
+                const c = detail.customer;
+                setManualCustomer((prev) => ({
+                  name: prev.name.trim() ? prev.name : c.name,
+                  phone: prev.phone.trim() ? prev.phone : formatPhoneInput(c.phone ?? ""),
+                  email: prev.email.trim() ? prev.email : (c.email ?? ""),
+                }));
+              } catch {
+                // Customer hydrate is best-effort
+              }
+            }
+          } else if (assist.decoded) {
+            const d = assist.decoded;
+            setManualVehicle((prev) => ({
+              ...prev,
+              vin: d.vin,
+              year: String(d.year),
+              make: d.make,
+              model: d.model,
+            }));
+          }
+          setVinStatus(assist.message);
+        } catch (err) {
+          if (seq !== vinAssistSeq.current) return;
+          setVinStatus(err instanceof Error ? err.message : "VIN lookup failed");
+        } finally {
+          if (seq === vinAssistSeq.current) setVinLooking(false);
+        }
+      })();
+    }, 350);
+
+    return () => window.clearTimeout(timer);
+  }, [manualVehicle.vin, source, step]);
 
   useEffect(() => {
     if (authLoading || !session || session.role !== "owner") return;
@@ -273,8 +433,7 @@ export default function ImportPage() {
             ran.duplicates.filter((d) => !d.resolved).map((d) => [d.id, d.suggested_action]),
           ),
         );
-        setManualCustomer(EMPTY_CUSTOMER);
-        setManualVehicle(EMPTY_VEHICLE);
+        clearManualForms();
         setStep("duplicates");
         return;
       }
@@ -285,8 +444,7 @@ export default function ImportPage() {
       }
 
       setSuccess(formatManualSaveResult(ran));
-      setManualCustomer(EMPTY_CUSTOMER);
-      setManualVehicle(EMPTY_VEHICLE);
+      clearManualForms();
       setStep("configure");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
@@ -386,8 +544,7 @@ export default function ImportPage() {
       // Manual Entry: return to empty form after resolving so more records can be added.
       if (next.source === "manual") {
         setSuccess(formatManualSaveResult(next));
-        setManualCustomer(EMPTY_CUSTOMER);
-        setManualVehicle(EMPTY_VEHICLE);
+        clearManualForms();
         setStep("configure");
         setSource("manual");
       } else {
@@ -407,14 +564,39 @@ export default function ImportPage() {
     setJob(null);
     setError(null);
     setSuccess(null);
-    setManualCustomer(EMPTY_CUSTOMER);
-    setManualVehicle(EMPTY_VEHICLE);
+    clearManualForms();
     setPrimaryGroup(null);
+  }
+
+  /** Open a past job from Recent jobs (manual success → Complete report). */
+  async function openRecentJob(j: ImportJob) {
+    setError(null);
+    setSuccess(null);
+    setPrimaryGroup(null);
+    setSource(j.source);
+    try {
+      const full = await getImportJob(j.id);
+      setJob(full);
+      const next = wizardStepForJob(full);
+      if (next === "duplicates") {
+        setResolutions(
+          Object.fromEntries(
+            full.duplicates
+              .filter((d) => !d.resolved)
+              .map((d) => [d.id, d.suggested_action]),
+          ),
+        );
+      }
+      setStep(next);
+    } catch {
+      setJob(j);
+      setStep(wizardStepForJob(j));
+    }
   }
 
   if (!authLoading && session && session.role !== "owner") {
     return (
-      <div className="space-y-6">
+      <div className="flex h-full min-h-0 flex-1 flex-col gap-4 overflow-hidden">
         <h1 className="page-title">Import</h1>
         <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
           Only shop owners can import data.
@@ -424,8 +606,8 @@ export default function ImportPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+    <div className="flex h-full min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+      <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="page-title">Import</h1>
           <p className="mt-1 text-sm text-[var(--muted)]">
@@ -443,7 +625,7 @@ export default function ImportPage() {
         )}
       </div>
 
-      <ol className="flex flex-wrap gap-2 text-xs uppercase tracking-[0.12em] text-[var(--muted)]">
+      <ol className="flex shrink-0 flex-wrap gap-2 text-xs uppercase tracking-[0.12em] text-[var(--muted)]">
         {DISPLAY_STEPS.map((label) => (
           <li
             key={label}
@@ -457,17 +639,18 @@ export default function ImportPage() {
       </ol>
 
       {error && (
-        <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <p className="shrink-0 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
           {error}
         </p>
       )}
 
       {success && (
-        <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+        <p className="shrink-0 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
           {success}
         </p>
       )}
 
+      <div className="asa-scroll min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
       {step === "source" && (
         <section className="space-y-4">
           <aside className="max-w-2xl rounded-md border border-[var(--line)] bg-[var(--panel)] px-4 py-3">
@@ -520,204 +703,255 @@ export default function ImportPage() {
           </div>
 
           {primaryGroup === "file" && (
-            <div className="max-w-xl space-y-3 rounded-md border border-[var(--line)] bg-[var(--panel)] p-4">
-              <p className="text-sm font-medium">Select file type</p>
-              <div className="flex flex-wrap gap-2">
-                {fileSources.map((s) => (
-                  <button
-                    key={s.source}
-                    type="button"
-                    onClick={() => setSource(s.source)}
-                    className={`rounded-md border px-3 py-2 text-sm ${
-                      source === s.source
-                        ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
-                        : "border-[var(--line)]"
-                    }`}
-                  >
-                    {s.label}
-                  </button>
-                ))}
-              </div>
-              <button
-                type="button"
-                disabled={!source || !FILE_SOURCES.has(source)}
-                onClick={() => setStep("configure")}
-                className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="file-import-dialog-title"
+              onClick={() => {
+                setPrimaryGroup(null);
+                setSource("");
+              }}
+            >
+              <div
+                className="w-full max-w-md space-y-4 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-5 shadow-lg"
+                onClick={(e) => e.stopPropagation()}
               >
-                Continue
-              </button>
+                <div>
+                  <p id="file-import-dialog-title" className="text-sm font-medium">
+                    Select file type
+                  </p>
+                  <p className="mt-1 text-xs text-[var(--muted)]">
+                    Choose CSV or Excel, then continue to upload
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {fileSources.map((s) => (
+                    <button
+                      key={s.source}
+                      type="button"
+                      onClick={() => setSource(s.source)}
+                      className={`rounded-md border px-3 py-2 text-sm ${
+                        source === s.source
+                          ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
+                          : "border-[var(--line)]"
+                      }`}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPrimaryGroup(null);
+                      setSource("");
+                    }}
+                    className="rounded-md border border-[var(--line)] px-4 py-2 text-sm"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!source || !FILE_SOURCES.has(source)}
+                    onClick={() => setStep("configure")}
+                    className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+                  >
+                    Continue
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </section>
       )}
 
       {step === "configure" && selectedSource && (
-        <form onSubmit={startImport} className="max-w-2xl space-y-4 rounded-md border border-[var(--line)] bg-[var(--panel)] p-5">
-          <h2 className="text-sm font-medium">
-            {source === "manual" ? "Manual Entry" : `Review · ${selectedSource.label}`}
-          </h2>
-          <p className="text-sm text-[var(--muted)]">
-            {source === "manual"
-              ? "Enter a customer and/or vehicle, then save. The form stays open for the next entry."
-              : "Confirm source settings, then start import. Validation and duplicate detection run next."}
-          </p>
-
-          {selectedSource.requires_upload && (
-            <div className="space-y-3">
-              <input
-                type="file"
-                accept={
-                  FILE_SOURCES.has(source)
-                    ? ".csv,.tsv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    : source === "pdf"
-                      ? ".pdf,application/pdf"
-                      : "*/*"
-                }
-                onChange={(e) => {
-                  const next = e.target.files?.[0] ?? null;
-                  setFile(next);
-                  if (next && FILE_SOURCES.has(source)) {
-                    const inferred = inferFileImportSource(next.name);
-                    if (inferred) setSource(inferred);
-                  }
-                }}
-                className="block w-full text-sm"
-              />
-              {FILE_SOURCES.has(source) && (
-                <p className="text-xs text-[var(--muted)]">
-                  Accepts CSV or Excel (.xlsx). Connector is chosen from the file type
-                  {file ? ` · using ${source.toUpperCase()}` : ""}.
-                </p>
-              )}
-              {(source === "ocr" || source === "pdf") && (
-                <textarea
-                  className="min-h-28 w-full rounded-md border border-[var(--line)] bg-transparent px-3 py-2 text-sm"
-                  placeholder="OCR / document text (optional for PDF; required for OCR without file)"
-                  value={ocrText}
-                  onChange={(e) => setOcrText(e.target.value)}
-                />
-              )}
-            </div>
-          )}
-
-          {source === "manual" && (
-            <div className="space-y-5">
-              <div className="space-y-3">
-                <h3 className="text-sm font-medium">Customer</h3>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <ManualField
-                    label="Name"
-                    value={manualCustomer.name}
-                    onChange={(name) => setManualCustomer((c) => ({ ...c, name }))}
-                    autoComplete="name"
-                    placeholder="Sam Chen"
-                  />
-                  <ManualField
-                    label="Phone"
-                    value={manualCustomer.phone}
-                    onChange={(phone) =>
-                      setManualCustomer((c) => ({ ...c, phone: formatPhoneInput(phone) }))
-                    }
-                    type="tel"
-                    autoComplete="tel"
-                    placeholder={PHONE_PLACEHOLDER}
-                  />
-                  <div className="sm:col-span-2">
-                    <ManualField
-                      label="Email (optional)"
-                      value={manualCustomer.email}
-                      onChange={(email) => setManualCustomer((c) => ({ ...c, email }))}
-                      type="email"
-                      autoComplete="email"
-                      placeholder="sam@example.com"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                <h3 className="text-sm font-medium">Vehicle</h3>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <ManualField
-                    label="Year"
-                    value={manualVehicle.year}
-                    onChange={(year) => setManualVehicle((v) => ({ ...v, year }))}
-                    type="number"
-                    placeholder="2018"
-                  />
-                  <ManualField
-                    label="Make"
-                    value={manualVehicle.make}
-                    onChange={(make) => setManualVehicle((v) => ({ ...v, make }))}
-                    placeholder="Honda"
-                  />
-                  <ManualField
-                    label="Model"
-                    value={manualVehicle.model}
-                    onChange={(model) => setManualVehicle((v) => ({ ...v, model }))}
-                    placeholder="Accord"
-                  />
-                  <ManualField
-                    label="Mileage"
-                    value={manualVehicle.mileage}
-                    onChange={(mileage) => setManualVehicle((v) => ({ ...v, mileage }))}
-                    type="number"
-                    placeholder="54000"
-                  />
-                  <div className="sm:col-span-2">
-                    <ManualField
-                      label="VIN (optional)"
-                      value={manualVehicle.vin}
-                      onChange={(vin) => setManualVehicle((v) => ({ ...v, vin }))}
-                      placeholder="17-character VIN"
-                      autoComplete="off"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setStep("source");
-                setPrimaryGroup(null);
-              }}
-              className="rounded-md border border-[var(--line)] px-4 py-2 text-sm"
-            >
-              Back
-            </button>
-            <button
-              type="submit"
-              disabled={
-                busy ||
-                (selectedSource.requires_upload &&
-                  !file &&
-                  !(source === "ocr" && ocrText.trim())) ||
-                (source === "manual" &&
-                  !manualCustomer.name.trim() &&
-                  !manualCustomer.phone.trim() &&
-                  !manualCustomer.email.trim() &&
-                  !manualVehicle.year.trim() &&
-                  !manualVehicle.make.trim() &&
-                  !manualVehicle.model.trim() &&
-                  !manualVehicle.mileage.trim() &&
-                  !manualVehicle.vin.trim())
-              }
-              className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
-            >
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="import-review-dialog-title"
+          onClick={() => {
+            setStep("source");
+            setPrimaryGroup(null);
+          }}
+        >
+          <form
+            onSubmit={startImport}
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[min(90vh,44rem)] w-full max-w-2xl space-y-4 overflow-y-auto rounded-lg border border-[var(--line)] bg-[var(--panel)] p-5 shadow-lg"
+          >
+            <h2 id="import-review-dialog-title" className="text-sm font-medium">
+              {source === "manual" ? "Manual Entry" : `Review · ${selectedSource.label}`}
+            </h2>
+            <p className="text-sm text-[var(--muted)]">
               {source === "manual"
-                ? busy
-                  ? "Saving…"
-                  : "Save"
-                : busy
-                  ? "Starting…"
-                  : "Start import"}
-            </button>
-          </div>
-        </form>
+                ? "Enter a customer and/or vehicle, then save. The form stays open for the next entry."
+                : "Confirm source settings, then start import. Validation and duplicate detection run next."}
+            </p>
+
+            {selectedSource.requires_upload && (
+              <div className="space-y-3">
+                <input
+                  type="file"
+                  accept={
+                    FILE_SOURCES.has(source)
+                      ? ".csv,.tsv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                      : source === "pdf"
+                        ? ".pdf,application/pdf"
+                        : "*/*"
+                  }
+                  onChange={(e) => {
+                    const next = e.target.files?.[0] ?? null;
+                    setFile(next);
+                    if (next && FILE_SOURCES.has(source)) {
+                      const inferred = inferFileImportSource(next.name);
+                      if (inferred) setSource(inferred);
+                    }
+                  }}
+                  className="block w-full text-sm"
+                />
+                {FILE_SOURCES.has(source) && (
+                  <p className="text-xs text-[var(--muted)]">
+                    Accepts CSV or Excel (.xlsx). Connector is chosen from the file type
+                    {file ? ` · using ${source.toUpperCase()}` : ""}.
+                  </p>
+                )}
+                {(source === "ocr" || source === "pdf") && (
+                  <textarea
+                    className="min-h-28 w-full rounded-md border border-[var(--line)] bg-transparent px-3 py-2 text-sm"
+                    placeholder="OCR / document text (optional for PDF; required for OCR without file)"
+                    value={ocrText}
+                    onChange={(e) => setOcrText(e.target.value)}
+                  />
+                )}
+              </div>
+            )}
+
+            {source === "manual" && (
+              <div className="space-y-5">
+                <div className="space-y-3">
+                  <h3 className="text-sm font-medium">Customer</h3>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <ManualField
+                      label="Name"
+                      value={manualCustomer.name}
+                      onChange={(name) => setManualCustomer((c) => ({ ...c, name }))}
+                      autoComplete="name"
+                      placeholder="Sam Chen"
+                    />
+                    <ManualField
+                      label="Phone"
+                      value={manualCustomer.phone}
+                      onChange={(phone) =>
+                        setManualCustomer((c) => ({ ...c, phone: formatPhoneInput(phone) }))
+                      }
+                      type="tel"
+                      autoComplete="tel"
+                      placeholder={PHONE_PLACEHOLDER}
+                    />
+                    <div className="sm:col-span-2">
+                      <ManualField
+                        label="Email (optional)"
+                        value={manualCustomer.email}
+                        onChange={(email) => setManualCustomer((c) => ({ ...c, email }))}
+                        type="email"
+                        autoComplete="email"
+                        placeholder="sam@example.com"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <h3 className="text-sm font-medium">Vehicle</h3>
+                  <p className="text-xs text-[var(--muted)]">
+                    Scan or type a 17-character VIN to auto-fill year, make, and model.
+                  </p>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="sm:col-span-2">
+                      <VinInput
+                        value={manualVehicle.vin}
+                        onChange={(vin) => setManualVehicle((v) => ({ ...v, vin }))}
+                        status={vinStatus}
+                        looking={vinLooking}
+                        required={false}
+                      />
+                    </div>
+                    <ManualField
+                      label="Year"
+                      value={manualVehicle.year}
+                      onChange={(year) => setManualVehicle((v) => ({ ...v, year }))}
+                      type="number"
+                      placeholder="2018"
+                    />
+                    <ManualField
+                      label="Make"
+                      value={manualVehicle.make}
+                      onChange={(make) => setManualVehicle((v) => ({ ...v, make }))}
+                      placeholder="Honda"
+                    />
+                    <ManualField
+                      label="Model"
+                      value={manualVehicle.model}
+                      onChange={(model) => setManualVehicle((v) => ({ ...v, model }))}
+                      placeholder="Accord"
+                    />
+                    <ManualField
+                      label="Mileage"
+                      value={manualVehicle.mileage}
+                      onChange={(mileage) => setManualVehicle((v) => ({ ...v, mileage }))}
+                      type="number"
+                      placeholder="54000"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setStep("source");
+                  setPrimaryGroup(null);
+                }}
+                className="rounded-md border border-[var(--line)] px-4 py-2 text-sm"
+              >
+                {source === "manual" ? "Cancel" : "Back"}
+              </button>
+              <button
+                type="submit"
+                disabled={
+                  busy ||
+                  (selectedSource.requires_upload &&
+                    !file &&
+                    !(source === "ocr" && ocrText.trim())) ||
+                  (source === "manual" &&
+                    !manualCustomer.name.trim() &&
+                    !manualCustomer.phone.trim() &&
+                    !manualCustomer.email.trim() &&
+                    !manualVehicle.year.trim() &&
+                    !manualVehicle.make.trim() &&
+                    !manualVehicle.model.trim() &&
+                    !manualVehicle.mileage.trim() &&
+                    !manualVehicle.vin.trim())
+                }
+                className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+              >
+                {source === "manual"
+                  ? busy
+                    ? "Saving…"
+                    : "Save"
+                  : busy
+                    ? "Starting…"
+                    : "Start import"}
+              </button>
+            </div>
+          </form>
+        </div>
       )}
 
       {step === "progress" && (
@@ -742,7 +976,8 @@ export default function ImportPage() {
         <section className="space-y-4">
           <h2 className="text-sm font-medium">Import · Resolve duplicates</h2>
           <p className="text-sm text-[var(--muted)]">
-            AI detected potential duplicates. Choose merge actions before applying.
+            These records look similar to ones you already have. Compare the two sides, then choose
+            how to handle each before applying.
           </p>
           <div className="space-y-3">
             {job.duplicates
@@ -762,7 +997,7 @@ export default function ImportPage() {
             onClick={() => void submitResolutions()}
             className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
           >
-            {busy ? "Applying…" : "Apply resolutions"}
+            {busy ? "Applying…" : "Apply"}
           </button>
         </section>
       )}
@@ -772,17 +1007,21 @@ export default function ImportPage() {
           <h2 className="text-sm font-medium">Complete</h2>
           <div className="rounded-md border border-[var(--line)] bg-[var(--panel)] p-5 text-sm">
             <p>
-              Status: <span className="font-medium">{job.status}</span>
+              Status:{" "}
+              <span className="font-medium">{jobStatusLabel(job.status)}</span>
+              {job.source ? (
+                <span className="text-[var(--muted)]"> · {job.source}</span>
+              ) : null}
             </p>
             {job.error && <p className="mt-2 text-red-600">{job.error}</p>}
+            <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <StatCard label="Customers imported" value={entityImported(job, "customer")} />
+              <StatCard label="Vehicles imported" value={entityImported(job, "vehicle")} />
+              <StatCard label="Repair records" value={entityImported(job, "repair_history")} />
+              <StatCard label="Duplicates resolved" value={duplicatesResolved(job)} />
+            </div>
             {job.report && (
               <>
-                <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                  <StatCard label="Customers imported" value={entityImported(job, "customer")} />
-                  <StatCard label="Vehicles imported" value={entityImported(job, "vehicle")} />
-                  <StatCard label="Repair records" value={entityImported(job, "repair_history")} />
-                  <StatCard label="Duplicates resolved" value={job.report.duplicates_resolved} />
-                </div>
                 <p className="mt-3 text-[var(--muted)]">
                   Duration {job.report.duration_ms}ms · Pending duplicates{" "}
                   {job.report.duplicates_pending}
@@ -805,17 +1044,17 @@ export default function ImportPage() {
                     ))}
                   </ul>
                 )}
-                {job.validation_issues.length > 0 && (
-                  <div className="mt-4 space-y-2">
-                    <p className="font-medium">Validation issues</p>
-                    {job.validation_issues.map((issue) => (
-                      <p key={issue.id} className="text-xs text-[var(--muted)]">
-                        [{issue.severity}] {issue.code}: {issue.message}
-                      </p>
-                    ))}
-                  </div>
-                )}
               </>
+            )}
+            {job.validation_issues.length > 0 && (
+              <div className="mt-4 space-y-2">
+                <p className="font-medium">Validation issues</p>
+                {job.validation_issues.map((issue) => (
+                  <p key={issue.id} className="text-xs text-[var(--muted)]">
+                    [{issue.severity}] {issue.code}: {issue.message}
+                  </p>
+                ))}
+              </div>
             )}
           </div>
         </section>
@@ -840,20 +1079,13 @@ export default function ImportPage() {
               {jobs.map((j) => (
                 <tr
                   key={j.id}
-                  className="cursor-pointer border-t border-[var(--line)] hover:bg-[var(--accent-soft)]"
-                  onClick={() => {
-                    setJob(j);
-                    setStep(
-                      j.status === "awaiting_resolution"
-                        ? "duplicates"
-                        : j.status === "completed" || j.status === "failed"
-                          ? "report"
-                          : "progress",
-                    );
-                  }}
+                  className={`cursor-pointer border-t border-[var(--line)] hover:bg-[var(--accent-soft)] ${
+                    job?.id === j.id ? "bg-[var(--accent-soft)]" : ""
+                  }`}
+                  onClick={() => void openRecentJob(j)}
                 >
                   <td className="px-3 py-2">{j.source}</td>
-                  <td className="px-3 py-2">{j.status}</td>
+                  <td className="px-3 py-2">{jobStatusLabel(j.status)}</td>
                   <td className="px-3 py-2">{entityImported(j, "customer")}</td>
                   <td className="px-3 py-2">{entityImported(j, "vehicle")}</td>
                   <td className="px-3 py-2">{entityImported(j, "repair_history")}</td>
@@ -874,6 +1106,7 @@ export default function ImportPage() {
           </table>
         </div>
       </section>
+      </div>
     </div>
   );
 }
@@ -887,6 +1120,74 @@ function StatCard({ label, value }: { label: string; value: number }) {
   );
 }
 
+function humanizeKey(key: string): string {
+  return FIELD_LABELS[key] ?? key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatSnapshotValue(value: unknown): string {
+  if (value == null || value === "") return "—";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "—";
+  if (typeof value === "string") {
+    const t = value.trim();
+    return t || "—";
+  }
+  return String(value);
+}
+
+function snapshotFieldOrder(entityKind: string, snap: Record<string, unknown>): string[] {
+  const preferred =
+    entityKind === "vehicle"
+      ? VEHICLE_FIELD_ORDER
+      : entityKind === "customer"
+        ? CUSTOMER_FIELD_ORDER
+        : Object.keys(FIELD_LABELS);
+  const keys = new Set([...preferred, ...Object.keys(snap)]);
+  return [...keys].filter((k) => {
+    const v = snap[k];
+    return v != null && v !== "";
+  });
+}
+
+function SnapshotPanel({
+  title,
+  subtitle,
+  entityKind,
+  snap,
+  highlightKey,
+}: {
+  title: string;
+  subtitle?: string;
+  entityKind: string;
+  snap: Record<string, unknown>;
+  highlightKey?: string;
+}) {
+  const fields = snapshotFieldOrder(entityKind, snap);
+  return (
+    <div className="rounded-md border border-[var(--line)] p-3">
+      <p className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">{title}</p>
+      {subtitle ? <p className="mt-0.5 text-xs text-[var(--muted)]">{subtitle}</p> : null}
+      {fields.length === 0 ? (
+        <p className="mt-2 text-sm text-[var(--muted)]">No details available</p>
+      ) : (
+        <dl className="mt-2 space-y-1.5">
+          {fields.map((key) => {
+            const highlighted = highlightKey === key;
+            return (
+              <div key={key} className="grid grid-cols-[7rem_1fr] gap-2 text-sm">
+                <dt className="text-[var(--muted)]">{humanizeKey(key)}</dt>
+                <dd className={highlighted ? "font-medium text-[var(--accent)]" : ""}>
+                  {formatSnapshotValue(snap[key])}
+                </dd>
+              </div>
+            );
+          })}
+        </dl>
+      )}
+    </div>
+  );
+}
+
 function DuplicateCard({
   dup,
   action,
@@ -896,16 +1197,36 @@ function DuplicateCard({
   action: string;
   onChange: (action: string) => void;
 }) {
+  const entityLabel = ENTITY_LABELS[dup.entity_kind] ?? humanizeKey(dup.entity_kind);
+  const matchLabel = MATCH_LABELS[dup.match_type] ?? humanizeKey(dup.match_type);
+  const confidence = Math.round(dup.confidence * 100);
+  const headline =
+    dup.entity_kind === "customer"
+      ? formatSnapshotValue(dup.incoming_snapshot.name)
+      : dup.entity_kind === "vehicle"
+        ? [dup.incoming_snapshot.year, dup.incoming_snapshot.make, dup.incoming_snapshot.model]
+            .map(formatSnapshotValue)
+            .filter((v) => v !== "—")
+            .join(" ") || formatSnapshotValue(dup.incoming_snapshot.vin)
+        : entityLabel;
+
   return (
     <div className="rounded-md border border-[var(--line)] bg-[var(--panel)] p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-medium">
-          {dup.entity_kind} · {dup.match_type} · {(dup.confidence * 100).toFixed(0)}%
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="text-sm font-medium">
+            Possible duplicate {entityLabel.toLowerCase()}
+            {headline !== "—" ? `: ${headline}` : ""}
+          </p>
+          <p className="mt-0.5 text-xs text-[var(--muted)]">
+            Matched by {matchLabel} · {confidence}% confidence
+          </p>
+        </div>
         <select
           className="rounded-md border border-[var(--line)] bg-transparent px-2 py-1 text-sm"
           value={action}
           onChange={(e) => onChange(e.target.value)}
+          aria-label={`How to resolve duplicate for ${headline}`}
         >
           {MERGE_ACTIONS.map((a) => (
             <option key={a.value} value={a.value}>
@@ -914,13 +1235,21 @@ function DuplicateCard({
           ))}
         </select>
       </div>
-      <div className="mt-3 grid gap-3 sm:grid-cols-2 text-xs">
-        <pre className="overflow-auto rounded-md border border-[var(--line)] p-2">
-          {JSON.stringify(dup.incoming_snapshot, null, 2)}
-        </pre>
-        <pre className="overflow-auto rounded-md border border-[var(--line)] p-2">
-          {JSON.stringify(dup.existing_snapshot, null, 2)}
-        </pre>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <SnapshotPanel
+          title="Importing"
+          subtitle="From this import"
+          entityKind={dup.entity_kind}
+          snap={dup.incoming_snapshot}
+          highlightKey={dup.match_type}
+        />
+        <SnapshotPanel
+          title="Already saved"
+          subtitle={dup.existing_ref ? "In your shop records" : "Also in this import"}
+          entityKind={dup.entity_kind}
+          snap={dup.existing_snapshot}
+          highlightKey={dup.match_type}
+        />
       </div>
     </div>
   );

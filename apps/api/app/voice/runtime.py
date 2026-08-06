@@ -14,6 +14,11 @@ def get_voice_runtime() -> VoiceRuntime:
     return _runtime
 
 
+def peek_voice_runtime() -> VoiceRuntime | None:
+    """Return the singleton if already built — never cold-starts the AI stack."""
+    return _runtime
+
+
 def reset_voice_runtime() -> None:
     global _runtime
     _runtime = None

@@ -180,6 +180,25 @@ async def test_admin_organization_detail_actions(admin_email: str) -> None:
         assert reset.status_code == 200, reset.text
         assert reset.json()["ok"] is True
 
+        init = await client.post(
+            f"/v1/admin/organizations/{shop_id}/members/{user_id}/password-initialize",
+            headers=headers,
+            json={},
+        )
+        assert init.status_code == 200, init.text
+        init_body = init.json()
+        assert init_body["ok"] is True
+        assert isinstance(init_body.get("temporary_password"), str)
+        assert len(init_body["temporary_password"]) >= 8
+
+        custom = await client.post(
+            f"/v1/admin/organizations/{shop_id}/members/{user_id}/password-initialize",
+            headers=headers,
+            json={"new_password": "TempPass99!"},
+        )
+        assert custom.status_code == 200, custom.text
+        assert custom.json()["temporary_password"] == "TempPass99!"
+
         suspend = await client.post(
             f"/v1/admin/organizations/{shop_id}/members/{user_id}/suspend",
             headers=headers,

@@ -109,6 +109,9 @@ class AppointmentDecision:
     # list_slots policy for counselor: offer openings, ask for a time, or
     # report that the requested clock time is taken.
     offer_policy: Literal["offer", "ask_time", "unavailable"] = "offer"
+    # SMS/voice pending_action for confirmation / ask-time holds.
+    # Explicit so Workflow does not infer reschedule from a leftover appointment_id.
+    hold_action: Literal["book", "reschedule"] | None = None
 
 
 @dataclass(slots=True)
@@ -239,7 +242,7 @@ class MemoryDecision:
 
 @dataclass(slots=True)
 class RepairRecommendationDecision:
-    """Recommend repair/service — Workflow may add repair history / timeline."""
+    """Recommend repair/service — Workflow records timeline only (not completed history)."""
 
     kind: DecisionKind = field(default=DecisionKind.REPAIR_RECOMMENDATION, init=False)
     customer_id: UUID | None = None

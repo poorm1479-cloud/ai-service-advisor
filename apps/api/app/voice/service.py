@@ -109,9 +109,9 @@ class VoiceAiService:
     async def answer_call(
         self, *, shop_id: UUID, event: InboundCallEvent
     ) -> VoiceTurnResult:
-        from app.saas.usage_tracking import usage_shop_scope
+        from app.saas.quota_context import shop_ai_scope
 
-        with usage_shop_scope(shop_id):
+        with shop_ai_scope(shop_id):
             return await self._answer_call_inner(shop_id=shop_id, event=event)
 
     async def _answer_call_inner(
@@ -181,9 +181,9 @@ class VoiceAiService:
     async def handle_speech(
         self, *, shop_id: UUID, speech: SpeechInput
     ) -> VoiceTurnResult:
-        from app.saas.usage_tracking import usage_shop_scope
+        from app.saas.quota_context import shop_ai_scope
 
-        with usage_shop_scope(shop_id):
+        with shop_ai_scope(shop_id):
             return await self._handle_speech_inner(shop_id=shop_id, speech=speech)
 
     async def _handle_speech_inner(
@@ -412,6 +412,7 @@ class VoiceAiService:
                     "ask_preferred_time",
                     "preferred_time_unavailable",
                     "awaiting_booking_confirmation",
+                    "awaiting_reschedule_confirmation",
                     "awaiting_customer_name",
                 }
                 or (getattr(sched.data, "metadata", None) or {}).get("ask_preferred_time")
@@ -439,12 +440,17 @@ class VoiceAiService:
                 if duration is None:
                     duration = memory.pending_duration_minutes
                 decision = getattr(sched.data, "decision", None)
+                hold_appointment_id: str | None = None
                 if decision is not None:
                     service_name = getattr(decision, "service_name", None) or service_name
                     if getattr(decision, "service_id", None):
                         service_id = str(decision.service_id)
                     if getattr(decision, "duration_minutes", None):
                         duration = decision.duration_minutes
+                    if getattr(decision, "appointment_id", None):
+                        hold_appointment_id = str(decision.appointment_id)
+                if not hold_appointment_id:
+                    hold_appointment_id = memory.appointment_id
                 sched_meta = getattr(sched.data, "metadata", None) or {}
                 pending_start = sched_meta.get("pending_slot_start")
                 pending_end = sched_meta.get("pending_slot_end")
@@ -458,15 +464,20 @@ class VoiceAiService:
                 else:
                     offered = []
                 pending_action = str(sched_meta.get("action") or "")
-                if pending_action not in {"book", "reschedule"}:
-                    pending_action = (
-                        "reschedule"
-                        if intent_val == "reschedule"
-                        else "book"
-                    )
+                # Live reschedule intent must not inherit a stale "book" hold.
+                if intent_val == "reschedule":
+                    pending_action = "reschedule"
+                elif pending_action not in {"book", "reschedule"}:
+                    pending_action = "book"
+                # Only bind appointment_id on reschedule holds — persisting a
+                # prior booking id into a new book hold poisons BOOK→RESCHEDULE.
+                memory_appointment_id = (
+                    hold_appointment_id if pending_action == "reschedule" else None
+                )
                 await self._memory.update_state(
                     shop_id=shop_id,
                     call_id=call.id,
+                    appointment_id=memory_appointment_id,
                     slots_offered=offered,
                     pending_service=service_name or "",
                     pending_service_id=str(service_id) if service_id else "",
@@ -533,13 +544,13 @@ class VoiceAiService:
         recording_url: str | None = None,
         recording_duration_sec: int | None = None,
     ) -> VoiceCall:
+        from app.saas.quota_context import shop_ai_scope
         from app.saas.usage_tracking import (
             record_voice_usage,
-            usage_shop_scope,
             voice_duration_seconds,
         )
 
-        with usage_shop_scope(shop_id):
+        with shop_ai_scope(shop_id):
             call = await self._store.get_call(shop_id, call_id)
             if call is None:
                 raise ValueError("Call not found")
@@ -613,6 +624,16 @@ class VoiceAiService:
             await self._notify_owner(call, None)
         await self._store.update_call(call)
         return call
+
+    async def delete_call(self, *, shop_id: UUID, call_id: UUID) -> None:
+        call = await self._store.get_call(shop_id, call_id)
+        if call is None:
+            raise ValueError("Call not found")
+        deleted = await self._store.delete_call(shop_id, call_id)
+        if not deleted:
+            raise ValueError("Call not found")
+        live = await self._store.list_live_calls(shop_id)
+        self._monitor.set_live_calls(len(live))
 
     async def store_recording_metadata(
         self,

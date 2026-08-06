@@ -3,34 +3,58 @@
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
-import { getSetupStatus } from "@/lib/shopSetup";
+import { getSetupStatus, peekSetupStatusCache } from "@/lib/shopSetup";
 
 const SETUP_PATH = "/dashboard/setup";
+
+function canPassGate(
+  status: { setup_completed: boolean } | null,
+  role: string | undefined,
+): boolean {
+  // Staff never need the setup wizard — don't block on status fetch.
+  if (role && role !== "owner") return true;
+  if (!status) return false;
+  return status.setup_completed;
+}
 
 /** Redirect owners with incomplete shop setup to the wizard. */
 export function SetupGate({ children }: { children: React.ReactNode }) {
   const { session, loading: authLoading } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
-  const [ready, setReady] = useState(false);
+  const shopId = session?.shopId ?? null;
+  const role = session?.role;
+  const onSetupPage = pathname === SETUP_PATH || pathname.startsWith(`${SETUP_PATH}/`);
+  const [ready, setReady] = useState(() => {
+    if (onSetupPage) return true;
+    return canPassGate(peekSetupStatusCache(shopId), role);
+  });
 
   useEffect(() => {
-    if (authLoading || !session) {
+    if (authLoading) return;
+    if (!shopId) {
       setReady(false);
       return;
     }
 
-    // Allow setup page itself; staff without completion just continue.
-    if (pathname === SETUP_PATH || pathname.startsWith(`${SETUP_PATH}/`)) {
+    if (onSetupPage) {
       setReady(true);
       return;
     }
 
+    const cached = peekSetupStatusCache(shopId);
+    if (canPassGate(cached, role)) {
+      setReady(true);
+      // Still refresh in background when TTL allows a network miss — getSetupStatus
+      // returns cache synchronously when warm, so this is cheap.
+    }
+
     let cancelled = false;
-    getSetupStatus()
+    getSetupStatus({ shopId })
       .then((status) => {
         if (cancelled) return;
-        if (!status.setup_completed && session.role === "owner") {
+        if (!status.setup_completed && role === "owner") {
+          setReady(false);
           router.replace(SETUP_PATH);
           return;
         }
@@ -44,7 +68,8 @@ export function SetupGate({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [authLoading, session, pathname, router]);
+    // Intentionally omit full `session` — token refresh must not re-block the gate.
+  }, [authLoading, shopId, role, onSetupPage, router]);
 
   if (authLoading || !session || !ready) {
     return (

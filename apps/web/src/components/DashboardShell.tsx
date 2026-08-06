@@ -1,11 +1,23 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import { SetupGate } from "@/components/SetupGate";
 import { Sidebar } from "@/components/Sidebar";
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
+  const lockPageScroll =
+    pathname.startsWith("/dashboard/conversations") ||
+    pathname.startsWith("/dashboard/customers") ||
+    pathname === "/dashboard/services" ||
+    pathname === "/dashboard/appointments" ||
+    pathname.startsWith("/dashboard/walk-ins") ||
+    pathname === "/dashboard/team" ||
+    pathname === "/dashboard/marketing" ||
+    pathname === "/dashboard/import" ||
+    pathname === "/dashboard/settings";
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -13,12 +25,23 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       if (e.key === "Escape") setMenuOpen(false);
     };
     document.addEventListener("keydown", onKey);
-    document.body.style.overflow = "hidden";
     return () => {
       document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = "";
     };
   }, [menuOpen]);
+
+  // Prevent document/body scroll on locked dashboard pages (inner panes scroll only).
+  useEffect(() => {
+    if (!lockPageScroll && !menuOpen) return;
+    const prevHtml = document.documentElement.style.overflow;
+    const prevBody = document.body.style.overflow;
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.documentElement.style.overflow = prevHtml;
+      document.body.style.overflow = prevBody;
+    };
+  }, [lockPageScroll, menuOpen]);
 
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 768px)");
@@ -30,7 +53,13 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <div className="min-h-dvh md:flex md:h-dvh md:overflow-hidden">
+    <div
+      className={
+        lockPageScroll
+          ? "flex h-dvh overflow-hidden"
+          : "min-h-dvh md:flex md:h-dvh md:overflow-hidden"
+      }
+    >
       {menuOpen && (
         <button
           type="button"
@@ -42,7 +71,11 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
 
       <Sidebar mobileOpen={menuOpen} onNavigate={() => setMenuOpen(false)} />
 
-      <div className="flex min-w-0 flex-1 flex-col md:h-full md:min-h-0 md:overflow-hidden">
+      <div
+        className={`flex min-w-0 flex-1 flex-col ${
+          lockPageScroll ? "h-full min-h-0 overflow-hidden" : "md:h-full md:min-h-0 md:overflow-hidden"
+        }`}
+      >
         <header className="sticky top-0 z-30 flex shrink-0 items-center gap-3 border-b border-[var(--line)] bg-[rgba(251,252,253,0.78)] px-4 py-3 backdrop-blur-xl sm:px-5 md:static md:bg-[rgba(251,252,253,0.55)] md:px-6 md:py-4">
           <button
             type="button"
@@ -84,7 +117,13 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             <span className="text-xs font-medium text-[var(--muted)]">Live workspace</span>
           </div>
         </header>
-        <main className="asa-scroll flex-1 px-4 py-4 sm:px-5 sm:py-5 md:overflow-y-auto md:overscroll-contain md:px-7 md:py-7 [scrollbar-gutter:stable]">
+        <main
+          className={`asa-scroll flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-5 sm:py-5 md:px-7 md:py-7 [scrollbar-gutter:stable] ${
+            lockPageScroll
+              ? "overflow-hidden overscroll-none"
+              : "md:overflow-y-auto md:overscroll-contain"
+          }`}
+        >
           <SetupGate>{children}</SetupGate>
         </main>
       </div>

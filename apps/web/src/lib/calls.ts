@@ -118,6 +118,11 @@ export async function completeVoiceCall(id: string): Promise<CallDetail> {
   return res.json();
 }
 
+export async function deleteVoiceCall(id: string): Promise<void> {
+  const res = await authFetch(`/v1/voice/calls/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await parseError(res));
+}
+
 export async function getVoiceMetrics(): Promise<VoiceMetrics> {
   const res = await authFetch("/v1/voice/metrics");
   if (!res.ok) throw new Error(await parseError(res));

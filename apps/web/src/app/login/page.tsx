@@ -34,7 +34,7 @@ function LoginPageInner() {
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [shopSlug, setShopSlug] = useState("");
+  const [shopName, setShopName] = useState("");
   const [rememberInfo, setRememberInfo] = useState(false);
   const [rememberPassword, setRememberPassword] = useState(false);
   const [mfaToken, setMfaToken] = useState<string | null>(null);
@@ -44,13 +44,13 @@ function LoginPageInner() {
   const [hydrated, setHydrated] = useState(false);
   const [fieldEpoch, setFieldEpoch] = useState(0);
   const expectedRef = useRef<{
-    shopSlug: string;
+    shopName: string;
     phone: string;
     email: string;
     password: string;
     method: AuthMethod;
   } | null>(null);
-  const userEditedSlug = useRef(false);
+  const userEditedShopName = useRef(false);
   const userEditedContact = useRef(false);
   const userEditedPassword = useRef(false);
 
@@ -61,7 +61,6 @@ function LoginPageInner() {
       applyRemembered(remembered, savedPassword);
       setRememberInfo(true);
     } else if (savedPassword) {
-      // Orphan password without matching login info — drop it.
       clearRememberedLoginPassword();
     }
     if (savedPassword && remembered) {
@@ -76,14 +75,13 @@ function LoginPageInner() {
     }
   }, [loading, session, router, nextPath]);
 
-  // Browser password managers may overwrite remembered signup/login values after mount.
   useEffect(() => {
     if (!hydrated || !expectedRef.current) return;
     const expected = expectedRef.current;
 
     const scrub = () => {
-      if (!userEditedSlug.current) {
-        setShopSlug((current) => (current === expected.shopSlug ? current : expected.shopSlug));
+      if (!userEditedShopName.current) {
+        setShopName((current) => (current === expected.shopName ? current : expected.shopName));
       }
       if (!userEditedContact.current) {
         if (expected.method === "phone") {
@@ -107,21 +105,22 @@ function LoginPageInner() {
   }, [hydrated, fieldEpoch, mode]);
 
   function applyRemembered(remembered: RememberedLogin, savedPassword: string | null) {
-    userEditedSlug.current = false;
+    userEditedShopName.current = false;
     userEditedContact.current = false;
     userEditedPassword.current = false;
     const nextPhone =
       remembered.method === "phone" ? formatPhoneInput(remembered.phone ?? "") : "";
     const nextEmail = remembered.method === "email" ? remembered.email ?? "" : "";
     const nextPassword = savedPassword ?? "";
+    const nextShopName = remembered.shopName || remembered.shopSlug || "";
     expectedRef.current = {
-      shopSlug: remembered.shopSlug,
+      shopName: nextShopName,
       phone: nextPhone,
       email: nextEmail,
       password: nextPassword,
       method: remembered.method,
     };
-    setShopSlug(remembered.shopSlug);
+    setShopName(nextShopName);
     setMode(remembered.method);
     setPhone(nextPhone);
     setEmail(nextEmail);
@@ -129,10 +128,10 @@ function LoginPageInner() {
     setFieldEpoch((n) => n + 1);
   }
 
-  function persistRemember(slug: string) {
+  function persistRemember(name: string) {
     if (rememberInfo) {
       saveRememberedLogin({
-        shopSlug: slug,
+        shopName: name,
         method: mode,
         phone: mode === "phone" ? phone.trim() : undefined,
         email: mode === "email" ? email.trim() : undefined,
@@ -152,20 +151,24 @@ function LoginPageInner() {
     setError(null);
     setSubmitting(true);
     try {
-      const slug = shopSlug.trim().toLowerCase();
+      const name = shopName.trim();
       if (mfaToken) {
         await completeMfa({ mfaToken, code: mfaCode.trim() });
-        persistRemember(slug);
+        persistRemember(name);
         router.replace(nextPath);
+        return;
+      }
+      if (name.length < 2) {
+        setError("Enter your shop name.");
         return;
       }
       await login({
         password,
-        shopSlug: slug,
+        shopName: name,
         phone: mode === "phone" ? phone.trim() : undefined,
         email: mode === "email" ? email.trim() : undefined,
       });
-      persistRemember(slug);
+      persistRemember(name);
       router.replace(nextPath);
     } catch (err) {
       if (err instanceof MfaRequiredError) {
@@ -238,16 +241,16 @@ function LoginPageInner() {
           {!mfaToken ? (
             <>
               <Field
-                key={`slug-${fieldEpoch}`}
-                label="Shop slug"
-                name={`asa-login-shop-slug-${fieldEpoch}`}
+                key={`shop-name-${fieldEpoch}`}
+                label="Shop name"
+                name={`asa-login-shop-name-${fieldEpoch}`}
                 autoComplete="off"
-                value={shopSlug}
+                value={shopName}
                 onChange={(v) => {
-                  userEditedSlug.current = true;
-                  setShopSlug(v);
+                  userEditedShopName.current = true;
+                  setShopName(v);
                 }}
-                placeholder="acme-auto"
+                placeholder="Your shop name"
                 required
                 guardAutofill
               />

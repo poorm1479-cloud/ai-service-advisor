@@ -263,6 +263,61 @@ def test_repair_status_walk_in_follows_linked_appointment(runtime, shop_id):
     assert "scheduled" in (items[scheduled_id].subtitle or "")
 
 
+def test_repair_status_leaves_active_after_appointment_end(runtime, shop_id):
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    from app.executive.models import ShopLiveState
+
+    # Appointment slot 08:00–09:00; now is past end.
+    now = datetime(2026, 8, 2, 9, 5, tzinfo=timezone.utc)
+    visit_id = str(uuid4())
+    appt_id = uuid4()
+    vehicle_id = str(uuid4())
+
+    live = ShopLiveState(shop_id=shop_id)
+    widgets = runtime.aggregator._build_widgets(
+        live,
+        {
+            "crm": {
+                "open_walk_ins": [
+                    {
+                        "id": visit_id,
+                        "complaint": "Oil change",
+                        "status": "converted",
+                        "arrived_at": (now - timedelta(hours=1)).isoformat(),
+                        "vehicle_id": vehicle_id,
+                        "vehicle_label": "2019 Honda Civic",
+                        "license_plate": "END1",
+                    }
+                ]
+            },
+            "scheduling": {
+                "appointments": [
+                    SimpleNamespace(
+                        id=appt_id,
+                        walk_in_id=None,
+                        vehicle_id=vehicle_id,
+                        status="in_progress",
+                        start=now - timedelta(hours=1, minutes=5),
+                        end=now - timedelta(minutes=5),
+                        repair_type="oil_change",
+                        priority="normal",
+                    ),
+                ]
+            },
+            "revenue": {},
+            "advisor": {},
+        },
+        now=now,
+    )
+    by_id = {w.id: w for w in widgets}
+    items = {i.id: i for i in by_id["repair_status"].items}
+
+    assert items[visit_id].status == "waiting"
+    assert "waiting" in (items[visit_id].subtitle or "")
+
+
 @pytest.mark.asyncio
 async def test_main_imports_executive_routes():
     from app.main import app

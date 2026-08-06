@@ -14,7 +14,7 @@ import {
 } from "@/lib/executive";
 import { listOpportunities, Opportunity, updateOpportunityStatus } from "@/lib/revenue";
 
-const POLL_MS = 4000;
+const POLL_MS = 15000;
 
 const OVERVIEW_CARD_IDS = [
   "todays_revenue",
@@ -61,7 +61,8 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!session) return;
-    void load(true);
+    // Prefer cached executive snapshot on first paint; manual Refresh still forces.
+    void load(false);
   }, [session, load]);
 
   useEffect(() => {
@@ -72,8 +73,21 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!session || !live) return;
-    const id = setInterval(() => void load(false), POLL_MS);
-    return () => clearInterval(id);
+    const tick = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
+      void load(false);
+    };
+    const id = setInterval(tick, POLL_MS);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [session, live, load]);
 
   async function onRefresh() {

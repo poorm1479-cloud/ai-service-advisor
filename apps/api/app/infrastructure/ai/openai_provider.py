@@ -26,6 +26,19 @@ REPAIR_EXTRACTION_SYSTEM = (
 )
 
 
+def _coerce_json_object(raw: str) -> str:
+    """Accept plain JSON or markdown-fenced JSON from local models."""
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return text
+
+
 def _is_speech_quota_error(status_code: int, body: str) -> bool:
     if status_code == 429:
         return True
@@ -174,9 +187,9 @@ class OpenAIRepairExtraction(RepairExtractionPort):
             ],
             temperature=0,
             response_format={"type": "json_object"},
-            timeout=60.0,
+            timeout=90.0,
         )
-        data = json.loads(result.content)
+        data = json.loads(_coerce_json_object(result.content))
 
         from app.saas.usage_tracking import record_ai_usage_if_scoped
 

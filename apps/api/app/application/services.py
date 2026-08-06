@@ -12,6 +12,7 @@ from app.domain.entities import RefreshToken, Shop, ShopMembership, User
 from app.domain.enums import AccountType, UserRole, normalize_user_role
 from app.domain.exceptions import AuthenticationError, ConflictError, NotFoundError, ValidationError
 from app.domain.repositories import UnitOfWork
+from app.domain.slug import next_slug_candidate, slugify_shop_name
 from app.infrastructure.config import settings
 from app.infrastructure.security import (
     create_access_token,
@@ -73,11 +74,79 @@ class AuthService:
     def __init__(self, uow: UnitOfWork) -> None:
         self._uow = uow
 
+    async def allocate_shop_slug(
+        self,
+        shop_name: str,
+        *,
+        preferred_slug: str | None = None,
+        exclude_shop_id: UUID | None = None,
+        allow_suffix: bool = True,
+    ) -> str:
+        """Pick a unique internal slug: preferred (if free) else from name.
+
+        Name-derived slugs always get a free numeric suffix (``base``, ``base-2``,
+        …) when the base is taken. An explicit preferred slug that is already
+        taken raises ConflictError (except on rename when ``exclude_shop_id``
+        is set and fall-through is allowed).
+        """
+        preferred = (preferred_slug or "").strip().lower() or None
+        if preferred:
+            existing = await self._uow.shops.get_by_slug(preferred)
+            if existing is None or (exclude_shop_id and existing.id == exclude_shop_id):
+                return preferred
+            # Explicit preferred slug is reserved: only rename may fall through.
+            if exclude_shop_id is None:
+                raise ConflictError("Shop slug already taken")
+            # Rename path: preferred taken by another shop — fall through to auto.
+
+        base = slugify_shop_name(shop_name)
+        max_attempts = 50 if allow_suffix else 1
+        for attempt in range(1, max_attempts + 1):
+            candidate = next_slug_candidate(base, attempt)
+            existing = await self._uow.shops.get_by_slug(candidate)
+            if existing is None or (exclude_shop_id and existing.id == exclude_shop_id):
+                return candidate
+            if not allow_suffix:
+                raise ConflictError("Shop slug already taken")
+        digest = uuid4().hex[:8]
+        return f"shop-{digest}"
+
+    async def resolve_shop(
+        self,
+        *,
+        shop_name: str | None = None,
+        shop_slug: str | None = None,
+    ) -> Shop:
+        """Resolve shop by display name (preferred) or legacy slug."""
+        slug = (shop_slug or "").strip().lower() or None
+        if slug:
+            shop = await self._uow.shops.get_by_slug(slug)
+            if shop is not None:
+                return shop
+
+        name = (shop_name or "").strip()
+        if name:
+            shop = await self._uow.shops.get_by_name(name)
+            if shop is not None:
+                return shop
+            derived = slugify_shop_name(name)
+            shop = await self._uow.shops.get_by_slug(derived)
+            if shop is not None:
+                return shop
+            # Case-insensitive name may still differ only by spacing/punctuation
+            # while the stored slug matches a lightly cleaned form.
+            if slug is None:
+                shop = await self._uow.shops.get_by_slug(name.lower().replace(" ", "-"))
+                if shop is not None:
+                    return shop
+
+        raise NotFoundError("Shop not found")
+
     async def register_shop(
         self,
         *,
         shop_name: str,
-        shop_slug: str,
+        shop_slug: str | None = None,
         owner_full_name: str,
         password: str,
         auth_method: str = "phone",
@@ -88,6 +157,10 @@ class AuthService:
         method = (auth_method or "phone").lower().strip()
         if method not in {"phone", "email"}:
             raise ValidationError("auth_method must be phone or email")
+
+        name = (shop_name or "").strip()
+        if len(name) < 2:
+            raise ValidationError("Shop name too short")
 
         phone: str | None = None
         email: str | None = None
@@ -107,14 +180,21 @@ class AuthService:
                 phone = normalize_phone(owner_phone)
                 phone_verified = True
 
-        if await self._uow.shops.get_by_slug(shop_slug):
-            raise ConflictError("Shop slug already taken")
         if phone and await self._uow.users.get_by_phone(phone):
             raise ConflictError("Phone already registered")
         if email and await self._uow.users.get_by_email(email):
             raise ConflictError("Email already registered")
 
-        shop = Shop(id=uuid4(), name=shop_name, slug=shop_slug, timezone=timezone)
+        # Display name is the public login key — reject duplicates (case-insensitive).
+        if await self._uow.shops.get_by_name(name):
+            raise ConflictError("Shop name already taken")
+
+        # Auto slug from name (base-2, base-3… on collision). Optional preferred
+        # slug for tests / legacy clients must still be free or register 409s.
+        resolved_slug = await self.allocate_shop_slug(
+            name, preferred_slug=shop_slug, allow_suffix=True
+        )
+        shop = Shop(id=uuid4(), name=name, slug=resolved_slug, timezone=timezone)
         user = User(
             id=uuid4(),
             phone=phone,
@@ -218,7 +298,8 @@ class AuthService:
         self,
         *,
         password: str,
-        shop_slug: str,
+        shop_name: str | None = None,
+        shop_slug: str | None = None,
         phone: str | None = None,
         email: str | None = None,
     ) -> AuthTokens:
@@ -244,9 +325,7 @@ class AuthService:
             await self._uow.users.set_email_verified(user.id, True)
             user.email_verified = True
 
-        shop = await self._uow.shops.get_by_slug(shop_slug)
-        if shop is None:
-            raise NotFoundError("Shop not found")
+        shop = await self.resolve_shop(shop_name=shop_name, shop_slug=shop_slug)
 
         membership = await self._uow.memberships.get(shop.id, user.id)
         if membership is None:

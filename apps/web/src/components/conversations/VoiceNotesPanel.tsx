@@ -133,7 +133,7 @@ export function VoiceNotesPanel() {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="min-h-0 flex-1 space-y-8 overflow-y-auto overscroll-contain">
       <p className="text-sm text-[var(--muted)]">
         Speak naturally. The system transcribes, extracts service details, and writes Repair History.
       </p>

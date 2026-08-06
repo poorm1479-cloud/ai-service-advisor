@@ -1,7 +1,6 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import Link from "next/link";
 import { useAuth } from "@/lib/auth";
 import {
   ServiceInput,
@@ -33,9 +32,13 @@ export default function ServiceCatalogPage() {
   const [skills, setSkills] = useState<string[]>(["general"]);
   const [bayTypes, setBayTypes] = useState<string[]>(["general"]);
   const [form, setForm] = useState<ServiceInput>(DEFAULT_FORM);
+  const [initialForm, setInitialForm] = useState<ServiceInput | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [formOpen, setFormOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<ShopService | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -63,9 +66,17 @@ export default function ServiceCatalogPage() {
     };
   }, [authLoading, session]);
 
+  function openAddForm() {
+    setEditingId(null);
+    setForm(DEFAULT_FORM);
+    setInitialForm(null);
+    setFormOpen(true);
+    setSuccess(null);
+    setError(null);
+  }
+
   function startEdit(svc: ShopService) {
-    setEditingId(svc.id);
-    setForm({
+    const next: ServiceInput = {
       name: svc.name,
       category: svc.category,
       duration_minutes: svc.duration_minutes,
@@ -73,7 +84,11 @@ export default function ServiceCatalogPage() {
       skill: svc.skill,
       bay: svc.bay,
       active: svc.active,
-    });
+    };
+    setEditingId(svc.id);
+    setForm(next);
+    setInitialForm(next);
+    setFormOpen(true);
     setSuccess(null);
     setError(null);
   }
@@ -81,17 +96,49 @@ export default function ServiceCatalogPage() {
   function resetForm() {
     setEditingId(null);
     setForm(DEFAULT_FORM);
+    setInitialForm(null);
+    setFormOpen(false);
+    setError(null);
   }
+
+  function isFormDirty(): boolean {
+    if (!editingId || !initialForm) return true;
+    return (
+      form.name.trim() !== initialForm.name.trim() ||
+      form.category !== initialForm.category ||
+      Number(form.duration_minutes) !== Number(initialForm.duration_minutes) ||
+      Number(form.price) !== Number(initialForm.price) ||
+      form.skill !== initialForm.skill ||
+      form.bay !== initialForm.bay ||
+      form.active !== initialForm.active
+    );
+  }
+
+  function isDuplicateName(name: string, excludeId?: string | null): boolean {
+    const normalized = name.trim().toLowerCase();
+    if (!normalized) return false;
+    return services.some(
+      (s) => s.name.trim().toLowerCase() === normalized && s.id !== excludeId,
+    );
+  }
+
+  const canSave =
+    !!form.name.trim() && !saving && (!editingId || isFormDirty());
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     if (!isOwner) return;
-    setSaving(true);
+    const name = form.name.trim();
     setError(null);
     setSuccess(null);
+    if (isDuplicateName(name, editingId)) {
+      setError("A service with this name already exists.");
+      return;
+    }
+    setSaving(true);
     const payload: ServiceInput = {
       ...form,
-      name: form.name.trim(),
+      name,
       duration_minutes: Number(form.duration_minutes),
       price: Number(form.price),
     };
@@ -112,18 +159,33 @@ export default function ServiceCatalogPage() {
     }
   }
 
-  async function onDelete(id: string) {
+  function openDeleteConfirm(svc: ShopService) {
     if (!isOwner) return;
-    if (!window.confirm("Delete this service?")) return;
+    setDeleteTarget(svc);
+    setError(null);
+    setSuccess(null);
+  }
+
+  function closeDeleteConfirm() {
+    if (deleting) return;
+    setDeleteTarget(null);
+  }
+
+  async function onConfirmDelete() {
+    if (!isOwner || !deleteTarget) return;
+    setDeleting(true);
     setError(null);
     setSuccess(null);
     try {
-      await deleteShopService(id);
-      if (editingId === id) resetForm();
+      await deleteShopService(deleteTarget.id);
+      if (editingId === deleteTarget.id) resetForm();
+      setDeleteTarget(null);
       setSuccess("Service deleted.");
       await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete service");
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -139,148 +201,32 @@ export default function ServiceCatalogPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="page-title">Service catalog</h1>
-        <p className="mt-1 text-sm text-[var(--muted)]">
-          Services used for AI phone scheduling — name, category, duration, price, skill, bay, and
-          active status.{" "}
-          <Link href="/dashboard/settings" className="text-[var(--accent)] underline-offset-2 hover:underline">
-            Shop settings
-          </Link>
-        </p>
-      </div>
-
-      {error && (
-        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:h-full">
+      {error && !formOpen && !deleteTarget && (
+        <p className="shrink-0 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
           {error}
         </p>
       )}
       {success && (
-        <p className="text-sm text-emerald-700" role="status">
+        <p className="shrink-0 text-sm text-emerald-700" role="status">
           {success}
         </p>
       )}
 
-      {isOwner && (
-        <section className="rounded-xl border border-[var(--line)] bg-[var(--panel)]">
-          <div className="border-b border-[var(--line)] px-5 py-4">
-            <h2 className="text-sm font-semibold text-[var(--ink)]">
-              {editingId ? "Edit service" : "Add service"}
-            </h2>
-          </div>
-          <form onSubmit={onSubmit} className="grid gap-4 px-5 py-5 sm:grid-cols-2 lg:grid-cols-3">
-            <label className="block space-y-1.5">
-              <span className="text-xs font-medium text-[var(--muted)]">Name</span>
-              <input
-                required
-                value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                className="w-full rounded-xl border border-[var(--line)] bg-white/90 px-3 py-2.5 text-sm"
-              />
-            </label>
-            <label className="block space-y-1.5">
-              <span className="text-xs font-medium text-[var(--muted)]">Category</span>
-              <select
-                value={form.category}
-                onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
-                className="w-full rounded-xl border border-[var(--line)] bg-white/90 px-3 py-2.5 text-sm"
-              >
-                {categories.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block space-y-1.5">
-              <span className="text-xs font-medium text-[var(--muted)]">Duration (min)</span>
-              <input
-                type="number"
-                min={5}
-                required
-                value={form.duration_minutes}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, duration_minutes: Number(e.target.value) }))
-                }
-                className="w-full rounded-xl border border-[var(--line)] bg-white/90 px-3 py-2.5 text-sm"
-              />
-            </label>
-            <label className="block space-y-1.5">
-              <span className="text-xs font-medium text-[var(--muted)]">Price</span>
-              <input
-                type="number"
-                min={0}
-                step="0.01"
-                required
-                value={form.price}
-                onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))}
-                className="w-full rounded-xl border border-[var(--line)] bg-white/90 px-3 py-2.5 text-sm"
-              />
-            </label>
-            <label className="block space-y-1.5">
-              <span className="text-xs font-medium text-[var(--muted)]">Skill</span>
-              <select
-                value={form.skill}
-                onChange={(e) => setForm((f) => ({ ...f, skill: e.target.value }))}
-                className="w-full rounded-xl border border-[var(--line)] bg-white/90 px-3 py-2.5 text-sm"
-              >
-                {skills.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block space-y-1.5">
-              <span className="text-xs font-medium text-[var(--muted)]">Bay</span>
-              <select
-                value={form.bay}
-                onChange={(e) => setForm((f) => ({ ...f, bay: e.target.value }))}
-                className="w-full rounded-xl border border-[var(--line)] bg-white/90 px-3 py-2.5 text-sm"
-              >
-                {bayTypes.map((b) => (
-                  <option key={b} value={b}>
-                    {b}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-2 text-sm text-[var(--muted)] sm:col-span-2 lg:col-span-3">
-              <input
-                type="checkbox"
-                checked={form.active}
-                onChange={(e) => setForm((f) => ({ ...f, active: e.target.checked }))}
-              />
-              Active
-            </label>
-            <div className="flex flex-wrap gap-2 sm:col-span-2 lg:col-span-3">
-              <button
-                type="submit"
-                disabled={saving || !form.name.trim()}
-                className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-              >
-                {saving ? "Saving…" : editingId ? "Save changes" : "Add service"}
-              </button>
-              {editingId && (
-                <button
-                  type="button"
-                  onClick={resetForm}
-                  className="rounded-md border border-[var(--line)] px-4 py-2 text-sm"
-                >
-                  Cancel
-                </button>
-              )}
-            </div>
-          </form>
-        </section>
-      )}
-
-      <section className="rounded-xl border border-[var(--line)] bg-[var(--panel)]">
-        <div className="border-b border-[var(--line)] px-5 py-4">
-          <h2 className="text-sm font-semibold text-[var(--ink)]">Catalog</h2>
+      <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)]">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--line)] px-5 py-4">
+          <h1 className="text-sm font-semibold text-[var(--ink)]">Services</h1>
+          {isOwner && (
+            <button
+              type="button"
+              onClick={openAddForm}
+              className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white"
+            >
+              Add
+            </button>
+          )}
         </div>
-        <div className="overflow-x-auto px-5 py-4">
+        <div className="table-scroll asa-scroll min-h-0 flex-1 overflow-auto overscroll-contain px-5 py-4">
           {loading ? (
             <p className="text-sm text-[var(--muted)]">Loading…</p>
           ) : services.length === 0 ? (
@@ -335,7 +281,7 @@ export default function ServiceCatalogPage() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => onDelete(svc.id)}
+                            onClick={() => openDeleteConfirm(svc)}
                             className="text-red-600"
                           >
                             Delete
@@ -350,6 +296,181 @@ export default function ServiceCatalogPage() {
           )}
         </div>
       </section>
+
+      {isOwner && deleteTarget && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-service-title"
+          onClick={closeDeleteConfirm}
+        >
+          <div
+            className="w-full max-w-md space-y-4 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div>
+              <h2 id="delete-service-title" className="text-sm font-semibold text-red-700">
+                Delete {deleteTarget.name}?
+              </h2>
+              <p className="mt-2 text-sm text-[var(--muted)]">
+                This service will be removed from the catalog. This cannot be undone.
+              </p>
+            </div>
+            {error && (
+              <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+                {error}
+              </p>
+            )}
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeDeleteConfirm}
+                disabled={deleting}
+                className="rounded-md border border-[var(--line)] px-4 py-2 text-sm disabled:opacity-60"
+              >
+                No
+              </button>
+              <button
+                type="button"
+                onClick={() => void onConfirmDelete()}
+                disabled={deleting}
+                className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-60"
+              >
+                {deleting ? "Deleting…" : "Yes"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isOwner && formOpen && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="service-form-title"
+          onClick={resetForm}
+        >
+          <div
+            className="w-full max-w-2xl rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="border-b border-[var(--line)] px-5 py-4">
+              <h2 id="service-form-title" className="text-sm font-semibold text-[var(--ink)]">
+                {editingId ? "Edit service" : "Add service"}
+              </h2>
+            </div>
+            {error && (
+              <p className="mx-5 mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+                {error}
+              </p>
+            )}
+            <form onSubmit={onSubmit} className="grid gap-4 px-5 py-5 sm:grid-cols-2">
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-[var(--muted)]">Name</span>
+                <input
+                  required
+                  value={form.name}
+                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                  className="w-full rounded-xl border border-[var(--line)] bg-white/90 px-3 py-2.5 text-sm"
+                />
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-[var(--muted)]">Category</span>
+                <select
+                  value={form.category}
+                  onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
+                  className="w-full rounded-xl border border-[var(--line)] bg-white/90 px-3 py-2.5 text-sm"
+                >
+                  {categories.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-[var(--muted)]">Duration (min)</span>
+                <input
+                  type="number"
+                  min={5}
+                  required
+                  value={form.duration_minutes}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, duration_minutes: Number(e.target.value) }))
+                  }
+                  className="w-full rounded-xl border border-[var(--line)] bg-white/90 px-3 py-2.5 text-sm"
+                />
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-[var(--muted)]">Price</span>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  required
+                  value={form.price}
+                  onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))}
+                  className="w-full rounded-xl border border-[var(--line)] bg-white/90 px-3 py-2.5 text-sm"
+                />
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-[var(--muted)]">Skill</span>
+                <select
+                  value={form.skill}
+                  onChange={(e) => setForm((f) => ({ ...f, skill: e.target.value }))}
+                  className="w-full rounded-xl border border-[var(--line)] bg-white/90 px-3 py-2.5 text-sm"
+                >
+                  {skills.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-[var(--muted)]">Bay</span>
+                <select
+                  value={form.bay}
+                  onChange={(e) => setForm((f) => ({ ...f, bay: e.target.value }))}
+                  className="w-full rounded-xl border border-[var(--line)] bg-white/90 px-3 py-2.5 text-sm"
+                >
+                  {bayTypes.map((b) => (
+                    <option key={b} value={b}>
+                      {b}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-center gap-2 text-sm text-[var(--muted)] sm:col-span-2">
+                <input
+                  type="checkbox"
+                  checked={form.active}
+                  onChange={(e) => setForm((f) => ({ ...f, active: e.target.checked }))}
+                />
+                Active
+              </label>
+              <div className="flex flex-wrap gap-2 sm:col-span-2">
+                <button
+                  type="submit"
+                  disabled={!canSave}
+                  className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+                >
+                  {saving ? "Saving…" : "Save"}
+                </button>
+                <button
+                  type="button"
+                  onClick={resetForm}
+                  className="rounded-md border border-[var(--line)] px-4 py-2 text-sm"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

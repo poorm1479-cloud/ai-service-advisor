@@ -202,7 +202,7 @@ def summarize_reschedule_confirm(
     who = f"{name}, " if name else ""
     if when_bit:
         return f"{who}move you{service_bit} to {when_bit} — want me to do that?"
-    return f"{who}ready to move that appointment{service_bit}. What day works?"
+    return f"{who}no problem — what new day and time work best{service_bit}?"
 
 
 def summarize_done(
@@ -325,8 +325,9 @@ def offer_slots_spoken(
         spoken = f"{options[0]}, or {options[1]}"
     else:
         spoken = ", ".join(options[:-1]) + f", or {options[-1]}"
+    got = f"I've got openings{service_bit}" if service_bit else "I've got openings"
     return (
-        f"{who}I've got{service_bit}: {spoken}. "
+        f"{who}{got}: {spoken}. "
         "Want the first one, or a different time?"
     )
 
@@ -361,6 +362,25 @@ _BOOKING_DESIRE_TEXT = re.compile(
     r"\breserv\w*\b",
     re.I,
 )
+# Time-change mentions "appointment" but must not look like a new booking.
+# Exclude "oil change …" so maintenance booking is not treated as a reschedule.
+_RESCHEDULE_DESIRE = re.compile(
+    r"\b("
+    r"reschedule|"
+    r"(?<!\boil )change (my |the )?(appointment|appt|booking|reservation)(\s+time)?|"
+    r"(?<!\boil )change (my |the )?(time|day)|"
+    r"move (my )?(appointment|appt|booking|reservation)|"
+    r"(appointment|appt|booking|reservation)(\s+time)?\s+change|"
+    r"(?<!\boil )time\s+change|"
+    r"different (day|time)|"
+    r"(switch|push back|push forward) (my )?(appointment|appt|booking|reservation)"
+    r")\b",
+    re.I,
+)
+_CANCEL_DESIRE = re.compile(
+    r"\b(cancel|cancellation|call off)\b",
+    re.I,
+)
 
 
 def is_purpose_question(text: str | None) -> bool:
@@ -370,7 +390,26 @@ def is_purpose_question(text: str | None) -> bool:
 
 def looks_like_booking_desire(text: str | None) -> bool:
     """True when customer text shows they want to book (service may still be unknown)."""
-    return bool(text and _BOOKING_DESIRE_TEXT.search(text))
+    if not text:
+        return False
+    if looks_like_reschedule_or_cancel_desire(text):
+        return False
+    return bool(_BOOKING_DESIRE_TEXT.search(text))
+
+
+def looks_like_reschedule_desire(text: str | None) -> bool:
+    """True when customer asks to move/change an existing appointment time."""
+    return bool(text and _RESCHEDULE_DESIRE.search(text))
+
+
+def looks_like_reschedule_or_cancel_desire(text: str | None) -> bool:
+    """True when customer asks to change or cancel an existing appointment."""
+    return bool(
+        text
+        and (
+            _RESCHEDULE_DESIRE.search(text) or _CANCEL_DESIRE.search(text)
+        )
+    )
 
 
 def greeting(*, shop_name: str | None = None, customer_name: str | None = None) -> str:

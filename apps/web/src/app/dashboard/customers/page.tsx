@@ -1,14 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   createCustomer,
   Customer,
-  getCustomerDetail,
-  getVehicleDetail,
+  listCustomerDirectory,
   RepairHistory,
-  searchCustomers,
   Vehicle,
 } from "@/lib/crm";
 import { listAppointments, Appointment } from "@/lib/appointments";
@@ -37,15 +36,6 @@ function formatDate(iso: string | null | undefined): string {
   return d.toLocaleDateString();
 }
 
-function pickLatestRepair(repairs: RepairHistory[]): RepairHistory | null {
-  if (repairs.length === 0) return null;
-  return [...repairs].sort((a, b) => {
-    const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
-    const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
-    return tb - ta;
-  })[0];
-}
-
 function deriveStatus(
   customer: Customer,
   nextAppt: Appointment | undefined,
@@ -61,25 +51,13 @@ function deriveStatus(
   return "Active";
 }
 
-async function enrichCustomer(
+function buildRow(
   customer: Customer,
+  vehicles: Vehicle[],
+  lastRepair: RepairHistory | null,
   appointments: Appointment[],
   opportunities: Opportunity[],
-): Promise<CustomerRow> {
-  const detail = await getCustomerDetail(customer.id);
-  const histories = await Promise.all(
-    detail.vehicles.map(async (v) => {
-      try {
-        const vd = await getVehicleDetail(v.id);
-        return vd.repair_history;
-      } catch {
-        return [] as RepairHistory[];
-      }
-    }),
-  );
-  const repairs = histories.flat();
-  const lastRepair = pickLatestRepair(repairs);
-
+): CustomerRow {
   const now = Date.now();
   const nextAppt = appointments
     .filter((a) => a.customer_id === customer.id && new Date(a.start).getTime() >= now)
@@ -108,7 +86,7 @@ async function enrichCustomer(
 
   return {
     customer,
-    vehicles: detail.vehicles,
+    vehicles,
     lastService: lastRepair
       ? {
           label: lastRepair.service_type || lastRepair.description,
@@ -142,6 +120,7 @@ const STATUS_CLASS: Record<CustomerRow["status"], string> = {
 };
 
 export default function CustomersPage() {
+  const router = useRouter();
   const { session, loading: authLoading } = useAuth();
   const [query, setQuery] = useState("");
   const [appliedQuery, setAppliedQuery] = useState("");
@@ -149,10 +128,26 @@ export default function CustomersPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [createMode, setCreateMode] = useState<CreateMode>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [saving, setSaving] = useState(false);
+  const canCreateCustomer =
+    Boolean(name.trim() || phone.trim() || email.trim()) && !saving;
+
+  function openCustomer(id: string) {
+    setSelectedId(id);
+    router.push(`/dashboard/customers/${id}`);
+  }
+
+  function closeCreateModal() {
+    if (saving) return;
+    setCreateMode(null);
+    // Create-form errors stay inside the modal — clear so they do not
+    // linger on the customers list after close.
+    setError(null);
+  }
 
   async function load() {
     setLoading(true);
@@ -163,18 +158,25 @@ export default function CustomersPage() {
       const rangeEnd = new Date();
       rangeEnd.setMonth(rangeEnd.getMonth() + 3);
 
-      const [customers, appointments, opportunities] = await Promise.all([
-        searchCustomers(),
+      const [directory, appointments, opportunities] = await Promise.all([
+        listCustomerDirectory(),
         listAppointments(rangeStart.toISOString(), rangeEnd.toISOString()).catch(
           () => [] as Appointment[],
         ),
         listOpportunities({ status: "open" }).catch(() => [] as Opportunity[]),
       ]);
 
-      const enriched = await Promise.all(
-        customers.map((c) => enrichCustomer(c, appointments, opportunities)),
+      setRows(
+        directory.map((item) =>
+          buildRow(
+            item.customer,
+            item.vehicles,
+            item.last_service,
+            appointments,
+            opportunities,
+          ),
+        ),
       );
-      setRows(enriched);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load customers");
     } finally {
@@ -222,24 +224,21 @@ export default function CustomersPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:h-full">
+      <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="page-title">Customers</h1>
-          <p className="mt-1 text-sm text-[var(--muted)]">
-            Vehicle-centered CRM — customers, vehicles, and service timing
-          </p>
         </div>
         <button
           type="button"
-          onClick={() => setCreateMode((m) => (m ? null : "known"))}
+          onClick={() => setCreateMode("known")}
           className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white"
         >
-          {createMode ? "Close" : "Add"}
+          Add
         </button>
       </div>
 
-      <form onSubmit={onSearch} className="flex flex-col gap-2 sm:flex-row">
+      <form onSubmit={onSearch} className="flex shrink-0 flex-col gap-2 sm:flex-row">
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -254,105 +253,57 @@ export default function CustomersPage() {
         </button>
       </form>
 
-      {createMode !== null && (
-        <section className="space-y-4 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4">
-          <div>
-            <h2 className="text-sm font-semibold">How are you adding this visit?</h2>
-            <p className="mt-1 text-xs text-[var(--muted)]">
-              Create a known customer, or start an unknown walk-in without a customer record.
-            </p>
-          </div>
-
-          <div className="grid gap-2 sm:grid-cols-2">
-            <ModeOption
-              active={createMode === "known"}
-              label="Known customer"
-              description="Create or look up by name / phone"
-              onClick={() => setCreateMode("known")}
-            />
-            <ModeOption
-              active={createMode === "unknown"}
-              label="Unknown walk-in"
-              description="No customer required — start from walk-ins"
-              onClick={() => setCreateMode("unknown")}
-            />
-          </div>
-
-          {createMode === "known" && (
-            <form onSubmit={onCreateKnown} className="grid gap-3 sm:grid-cols-2">
-              <Field label="Customer name" value={name} onChange={setName} required />
-              <Field
-                label="Phone"
-                type="tel"
-                value={phone}
-                onChange={(v) => setPhone(formatPhoneInput(v))}
-                placeholder={PHONE_PLACEHOLDER}
-              />
-              <Field label="Email (optional)" type="email" value={email} onChange={setEmail} />
-              <div className="flex items-end sm:col-span-2">
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
-                >
-                  {saving ? "Saving…" : "Create customer"}
-                </button>
-              </div>
-            </form>
-          )}
-
-          {createMode === "unknown" && (
-            <div className="rounded-lg border border-dashed border-[var(--line)] bg-[var(--background)]/60 p-3 text-sm">
-              <p className="text-[var(--muted)]">
-                Skip the customer record. Start a vehicle-first walk-in without a name or phone.
-              </p>
-              <Link
-                href="/dashboard/walk-ins"
-                className="mt-3 inline-block rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white"
-              >
-                Open walk-ins
-              </Link>
-            </div>
-          )}
-        </section>
-      )}
-
-      {error && (
-        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+      {error && createMode === null && (
+        <p className="shrink-0 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
           {error}
         </p>
       )}
 
-      <div className="table-scroll">
+      <div className="table-scroll asa-scroll min-h-0 flex-1 overflow-auto overscroll-contain">
         <table>
-          <thead className="border-b border-[var(--line)] text-xs uppercase tracking-[0.08em] text-[var(--muted)]">
+          <thead className="sticky top-0 z-10 border-b border-[var(--line)] bg-[var(--panel)] text-xs uppercase tracking-[0.08em] text-[var(--muted)]">
             <tr>
               <th className="px-4 py-3 font-medium">Customer</th>
               <th className="px-4 py-3 font-medium">Vehicles</th>
               <th className="px-4 py-3 font-medium">Last Service</th>
               <th className="px-4 py-3 font-medium">Next Service</th>
               <th className="px-4 py-3 font-medium">Status</th>
-              <th className="px-4 py-3 font-medium">Action</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-[var(--muted)]">
+                <td colSpan={5} className="px-4 py-8 text-[var(--muted)]">
                   Loading…
                 </td>
               </tr>
             ) : visible.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-[var(--muted)]">
+                <td colSpan={5} className="px-4 py-8 text-[var(--muted)]">
                   No customers found
                 </td>
               </tr>
             ) : (
-              visible.map((row) => (
+              visible.map((row) => {
+                const selected = selectedId === row.customer.id;
+                return (
                 <tr
                   key={row.customer.id}
-                  className="border-t border-[var(--line)] hover:bg-[var(--accent-soft)]/40"
+                  role="link"
+                  tabIndex={0}
+                  aria-current={selected ? "page" : undefined}
+                  onClick={() => openCustomer(row.customer.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      openCustomer(row.customer.id);
+                    }
+                  }}
+                  className={`cursor-pointer border-t border-[var(--line)] transition-colors hover:bg-[var(--accent-soft)]/40 ${
+                    selected
+                      ? "bg-[var(--accent-soft)] ring-1 ring-inset ring-[var(--accent)]/40"
+                      : ""
+                  }`}
                 >
                   <td className="px-4 py-3">
                     <div className="font-medium">{row.customer.name}</div>
@@ -412,20 +363,113 @@ export default function CustomersPage() {
                       {row.status}
                     </span>
                   </td>
-                  <td className="px-4 py-3">
-                    <Link
-                      href={`/dashboard/customers/${row.customer.id}`}
-                      className="text-sm font-medium text-[var(--accent)]"
-                    >
-                      Open
-                    </Link>
-                  </td>
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>
       </div>
+
+      {createMode !== null && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="add-customer-title"
+          onClick={closeCreateModal}
+        >
+          <div
+            className="w-full max-w-lg space-y-4 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div>
+              <h2 id="add-customer-title" className="text-sm font-semibold">
+                How are you adding this visit?
+              </h2>
+              <p className="mt-1 text-xs text-[var(--muted)]">
+                Create a known customer, or start an unknown walk-in without a customer record.
+              </p>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-2">
+              <ModeOption
+                active={createMode === "known"}
+                label="Known customer"
+                description="Create or look up by name / phone"
+                onClick={() => setCreateMode("known")}
+              />
+              <ModeOption
+                active={createMode === "unknown"}
+                label="Unknown walk-in"
+                description="No customer required — start from walk-ins"
+                onClick={() => setCreateMode("unknown")}
+              />
+            </div>
+
+            {createMode === "known" && (
+              <form onSubmit={onCreateKnown} className="grid gap-3 sm:grid-cols-2">
+                <Field label="Customer name" value={name} onChange={setName} required />
+                <Field
+                  label="Phone"
+                  type="tel"
+                  value={phone}
+                  onChange={(v) => setPhone(formatPhoneInput(v))}
+                  placeholder={PHONE_PLACEHOLDER}
+                />
+                <Field label="Email (optional)" type="email" value={email} onChange={setEmail} />
+                {error && (
+                  <p
+                    className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 sm:col-span-2"
+                    role="alert"
+                  >
+                    {error}
+                  </p>
+                )}
+                <div className="flex items-center justify-end gap-2 sm:col-span-2">
+                  <button
+                    type="button"
+                    onClick={closeCreateModal}
+                    className="rounded-md border border-[var(--line)] px-4 py-2 text-sm font-medium text-[var(--foreground)] hover:bg-[var(--background)]"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={!canCreateCustomer}
+                    className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {saving ? "Saving…" : "Save"}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {createMode === "unknown" && (
+              <div className="rounded-lg border border-dashed border-[var(--line)] bg-[var(--background)]/60 p-3 text-sm">
+                <p className="text-[var(--muted)]">
+                  Skip the customer record. Start a vehicle-first walk-in without a name or phone.
+                </p>
+                <div className="mt-3 flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={closeCreateModal}
+                    className="rounded-md border border-[var(--line)] px-4 py-2 text-sm font-medium text-[var(--foreground)] hover:bg-[var(--background)]"
+                  >
+                    Cancel
+                  </button>
+                  <Link
+                    href="/dashboard/walk-ins"
+                    className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white"
+                  >
+                    Open walk-ins
+                  </Link>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

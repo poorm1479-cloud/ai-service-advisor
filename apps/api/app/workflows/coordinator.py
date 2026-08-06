@@ -184,27 +184,38 @@ class WorkflowCoordinator:
             sources["advisor"] = {"error": str(exc)}
 
         try:
-            from app.marketing.factory import get_marketing_runtime
+            from app.marketing.factory import peek_marketing_runtime
 
-            mkt = get_marketing_runtime()
-            summary = await mkt.service.analytics_summary(shop_id)
-            sources["marketing"] = {"summary": summary, "monitor": mkt.monitor.snapshot()}
+            mkt = peek_marketing_runtime()
+            if mkt is None:
+                sources["marketing"] = {"summary": {}, "monitor": {}, "cold": True}
+            else:
+                summary = await mkt.service.analytics_summary(shop_id)
+                sources["marketing"] = {"summary": summary, "monitor": mkt.monitor.snapshot()}
         except Exception as exc:  # noqa: BLE001
             sources["marketing"] = {"error": str(exc)}
 
         try:
-            from app.sms.runtime import get_sms_runtime
+            from app.sms.runtime import peek_sms_runtime
 
-            sms = get_sms_runtime()
-            sources["sms"] = {"monitor": sms.monitor.snapshot()}
+            sms = peek_sms_runtime()
+            sources["sms"] = (
+                {"monitor": {}, "cold": True}
+                if sms is None
+                else {"monitor": sms.monitor.snapshot()}
+            )
         except Exception as exc:  # noqa: BLE001
             sources["sms"] = {"error": str(exc)}
 
         try:
-            from app.voice.runtime import get_voice_runtime
+            from app.voice.runtime import peek_voice_runtime
 
-            voice = get_voice_runtime()
-            sources["voice"] = {"monitor": voice.monitor.snapshot()}
+            voice = peek_voice_runtime()
+            sources["voice"] = (
+                {"monitor": {}, "cold": True}
+                if voice is None
+                else {"monitor": voice.monitor.snapshot()}
+            )
         except Exception as exc:  # noqa: BLE001
             sources["voice"] = {"error": str(exc)}
 
@@ -352,10 +363,14 @@ class WorkflowCoordinator:
         self._monitor.record_orchestration("collect_monitor_snapshots")
         sources: dict[str, Any] = {}
         try:
-            from app.marketing.factory import get_marketing_runtime
+            from app.marketing.factory import peek_marketing_runtime
 
-            m = get_marketing_runtime()
-            sources["marketing"] = {"monitor": m.monitor.snapshot()}
+            m = peek_marketing_runtime()
+            sources["marketing"] = (
+                {"monitor": {}, "cold": True}
+                if m is None
+                else {"monitor": m.monitor.snapshot()}
+            )
         except Exception as exc:  # noqa: BLE001
             sources["marketing"] = {"error": str(exc)}
         try:
@@ -370,17 +385,21 @@ class WorkflowCoordinator:
         except Exception as exc:  # noqa: BLE001
             sources["scheduling"] = {"error": str(exc)}
         try:
-            from app.sms.runtime import get_sms_runtime
+            from app.sms.runtime import peek_sms_runtime
 
-            sms = get_sms_runtime()
-            sources["sms"] = sms.monitor.snapshot()
+            sms = peek_sms_runtime()
+            sources["sms"] = (
+                {"cold": True} if sms is None else sms.monitor.snapshot()
+            )
         except Exception as exc:  # noqa: BLE001
             sources["sms"] = {"error": str(exc)}
         try:
-            from app.voice.runtime import get_voice_runtime
+            from app.voice.runtime import peek_voice_runtime
 
-            voice = get_voice_runtime()
-            sources["voice"] = voice.monitor.snapshot()
+            voice = peek_voice_runtime()
+            sources["voice"] = (
+                {"cold": True} if voice is None else voice.monitor.snapshot()
+            )
         except Exception as exc:  # noqa: BLE001
             sources["voice"] = {"error": str(exc)}
         return sources

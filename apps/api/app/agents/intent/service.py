@@ -177,13 +177,16 @@ _PATTERNS: list[tuple[CustomerIntent, re.Pattern[str], float]] = [
     (
         CustomerIntent.RESCHEDULE,
         # Exclude "oil change …" so maintenance/booking phrases stay intact.
+        # Also catch noun-style "appointment/reservation time change".
         re.compile(
             r"\b("
             r"reschedule|"
             r"move (my )?(appointment|appt|booking|reservation)|"
             r"(?<!\boil )change (my |the )?(appointment|appt|booking|reservation)(\s+time)?|"
-            r"(?<!\boil )change (the )?(time|day)"
+            r"(?<!\boil )change (my |the )?(time|day)"
             r"(\s+of\s+(my\s+)?(appointment|appt|booking|reservation))?|"
+            r"(appointment|appt|booking|reservation)(\s+time)?\s+change|"
+            r"time\s+change|"
             r"different (day|time)|"
             r"(switch|push back|push forward) (my )?(appointment|appt|booking|reservation)"
             r")\b",
@@ -502,9 +505,20 @@ def _refine_with_time_preference(
         return primary, confidence, secondary
 
     meta = context.metadata or {}
+    pending_action = str(meta.get("pending_action") or "")
+    # After we asked for a new time on a reschedule hold, a day/clock answer
+    # continues the move — never start a fresh booking.
+    if pending_action == "reschedule":
+        if primary != CustomerIntent.RESCHEDULE and primary not in secondary:
+            secondary = [primary, *secondary][:3]
+        return CustomerIntent.RESCHEDULE, max(confidence, 0.9), secondary
+
     # Already booked in this conversation + new time → move that visit
     # (unless they clearly named a different service for a second booking).
-    if meta.get("appointment_id") and _is_same_visit_time_change(entities, meta):
+    has_appt = bool(
+        meta.get("appointment_id") or meta.get("active_appointment_id")
+    )
+    if has_appt and _is_same_visit_time_change(entities, meta):
         if primary != CustomerIntent.RESCHEDULE and primary not in secondary:
             secondary = [primary, *secondary][:3]
         return CustomerIntent.RESCHEDULE, max(confidence, 0.9), secondary

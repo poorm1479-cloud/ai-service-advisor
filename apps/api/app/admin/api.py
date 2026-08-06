@@ -6,7 +6,7 @@ import asyncio
 import json
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -44,6 +44,12 @@ class UpdateAdminProfileRequest(BaseModel):
 class ChangeAdminPasswordRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=128)
     new_password: str = Field(min_length=8, max_length=128)
+
+
+class InitializeMemberPasswordRequest(BaseModel):
+    """Optional custom password; omit to auto-generate a temporary password."""
+
+    new_password: str | None = Field(default=None, min_length=8, max_length=128)
 
 
 class DeleteAdminNotificationsRequest(BaseModel):
@@ -225,6 +231,26 @@ async def admin_organization_member_password_reset(
 ) -> dict:
     try:
         return await _svc().request_member_password_reset(shop_id, user_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post("/organizations/{shop_id}/members/{user_id}/password-initialize")
+async def admin_organization_member_password_initialize(
+    shop_id: str,
+    user_id: str,
+    body: InitializeMemberPasswordRequest = Body(default_factory=InitializeMemberPasswordRequest),
+    _: str = Depends(require_platform_admin),
+) -> dict:
+    """Set a temporary password for a member. Returns plaintext once for admin to share."""
+    try:
+        return await _svc().initialize_member_password(
+            shop_id,
+            user_id,
+            new_password=body.new_password,
+        )
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValidationError as exc:

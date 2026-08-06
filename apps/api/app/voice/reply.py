@@ -143,15 +143,41 @@ class VoiceReplyGenerator:
         )
 
         # Booking without a service → ask which service first (before day/time).
-        if intent == CustomerIntent.BOOK_APPOINTMENT and not service_name:
+        # Time-change phrasing must not fall into this (keep existing service).
+        if (
+            intent == CustomerIntent.BOOK_APPOINTMENT
+            and not service_name
+            and not counselor.looks_like_reschedule_desire(last_customer)
+        ):
             return VoiceReplyDraft(
                 text=counselor.ask_service(customer_name=address_name),
                 follow_up_question="What service do you need?",
             )
 
+        # Misclassified BOOK that is actually a time change → ask for new time.
+        if (
+            intent == CustomerIntent.BOOK_APPOINTMENT
+            and not service_name
+            and counselor.looks_like_reschedule_desire(last_customer)
+        ):
+            return VoiceReplyDraft(
+                text=counselor.summarize_reschedule_confirm(
+                    customer_name=address_name,
+                    service_name=service_name,
+                    when=None,
+                ),
+                follow_up_question="New day and time?",
+            )
+
         # Customer answered the open purpose question with a booking desire.
+        # Skip for reschedule/cancel — those keep the existing service and ask for time.
         if (
             not service_name
+            and intent
+            not in {
+                CustomerIntent.RESCHEDULE,
+                CustomerIntent.CANCEL_APPOINTMENT,
+            }
             and counselor.looks_like_booking_desire(last_customer)
             and (
                 counselor.is_purpose_question(memory.pending_question)
@@ -170,7 +196,15 @@ class VoiceReplyGenerator:
 
         # Vague ("anytime"), day-only ("Friday"), or part-of-day ("morning") —
         # ask for a concrete clock time; only list openings on availability asks.
-        if entities.get("vague_time") or entities.get("needs_time"):
+        # Reschedule/cancel keep their own paths (acknowledge change, ask new time).
+        if (
+            intent
+            not in {
+                CustomerIntent.RESCHEDULE,
+                CustomerIntent.CANCEL_APPOINTMENT,
+            }
+            and (entities.get("vague_time") or entities.get("needs_time"))
+        ):
             if intent == CustomerIntent.CHECK_AVAILABILITY and sched and sched.available_slots:
                 ranges = [
                     (slot.start, getattr(slot, "end", None))
@@ -295,12 +329,33 @@ class VoiceReplyGenerator:
                     ),
                     end_call=True,
                 )
+            sched_meta = (getattr(sched, "metadata", None) or {}) if sched else {}
+            sched_message = getattr(sched, "message", None) if sched else None
+            if (
+                sched_message == "preferred_time_unavailable"
+                or sched_meta.get("preferred_time_unavailable")
+            ):
+                preferred = _parse_dt(entities.get("preferred_start")) or _parse_dt(
+                    sched_meta.get("preferred_start")
+                )
+                return VoiceReplyDraft(
+                    text=counselor.time_unavailable(
+                        preferred, customer_name=address_name
+                    ),
+                    follow_up_question="What other day or time works?",
+                )
             pending_when = _parse_dt(
-                (getattr(sched, "metadata", None) or {}).get("pending_slot_start")
-                if sched
-                else None
+                sched_meta.get("pending_slot_start")
             ) or _parse_dt(getattr(decision, "recommended_slot_start", None))
-            if pending_when and service_name:
+            has_preference = bool(
+                entities.get("preferred_start")
+                or entities.get("prefer_earliest")
+                or entities.get("prefer_latest")
+            )
+            customer_chose_clock = (
+                has_preference and entities.get("time_precision") == "clock"
+            )
+            if pending_when and customer_chose_clock and service_name:
                 return VoiceReplyDraft(
                     text=counselor.summarize_reschedule_confirm(
                         customer_name=address_name,
@@ -309,7 +364,7 @@ class VoiceReplyGenerator:
                     ),
                     follow_up_question="Should I move it?",
                 )
-            if sched and sched.available_slots:
+            if sched and sched.available_slots and has_preference:
                 ranges = [
                     (slot.start, getattr(slot, "end", None))
                     for slot in sched.available_slots[:3]
@@ -416,6 +471,15 @@ class VoiceReplyGenerator:
         if memory.pending_question and intent == CustomerIntent.OTHER:
             who = f"{address_name}, " if address_name else ""
             if counselor.is_purpose_question(memory.pending_question):
+                if counselor.looks_like_reschedule_desire(last_customer):
+                    return VoiceReplyDraft(
+                        text=counselor.summarize_reschedule_confirm(
+                            customer_name=address_name,
+                            service_name=service_name,
+                            when=None,
+                        ),
+                        follow_up_question="New day and time?",
+                    )
                 if counselor.looks_like_booking_desire(last_customer):
                     return VoiceReplyDraft(
                         text=counselor.ask_service(customer_name=address_name),
@@ -431,6 +495,16 @@ class VoiceReplyGenerator:
             return VoiceReplyDraft(
                 text=f"{who}got it. {memory.pending_question}",
                 follow_up_question=memory.pending_question,
+            )
+
+        if counselor.looks_like_reschedule_desire(last_customer):
+            return VoiceReplyDraft(
+                text=counselor.summarize_reschedule_confirm(
+                    customer_name=address_name,
+                    service_name=service_name,
+                    when=None,
+                ),
+                follow_up_question="New day and time?",
             )
 
         if counselor.looks_like_booking_desire(last_customer) and not service_name:

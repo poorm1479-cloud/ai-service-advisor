@@ -52,7 +52,10 @@ class VerifyOtpResponse(BaseModel):
 
 class RegisterShopRequest(BaseModel):
     shop_name: str = Field(min_length=2, max_length=255)
-    shop_slug: str = Field(min_length=2, max_length=100, pattern=r"^[a-z0-9-]+$")
+    # Optional legacy field — server auto-generates slug from shop_name when omitted.
+    shop_slug: str | None = Field(
+        default=None, min_length=2, max_length=100, pattern=r"^[a-z0-9-]+$"
+    )
     auth_method: str = Field(default="phone", pattern=r"^(phone|email)$")
     otp_code: str | None = Field(default=None, min_length=4, max_length=12)
     owner_full_name: str = Field(min_length=1, max_length=255)
@@ -72,7 +75,9 @@ class RegisterShopRequest(BaseModel):
 
 class LoginRequest(BaseModel):
     password: str
-    shop_slug: str = Field(min_length=2, max_length=100)
+    shop_name: str | None = Field(default=None, min_length=2, max_length=255)
+    # Optional legacy field — prefer shop_name for new clients.
+    shop_slug: str | None = Field(default=None, min_length=2, max_length=100)
     phone: str | None = Field(default=None, min_length=8, max_length=32)
     email: EmailStr | None = None
 
@@ -80,6 +85,10 @@ class LoginRequest(BaseModel):
     def require_phone_or_email(self) -> "LoginRequest":
         if not self.phone and not self.email:
             raise ValueError("phone or email is required")
+        if not (self.shop_name and self.shop_name.strip()) and not (
+            self.shop_slug and self.shop_slug.strip()
+        ):
+            raise ValueError("shop_name is required")
         return self
 
 
@@ -152,12 +161,26 @@ class CustomerCreate(BaseModel):
     email: EmailStr | None = None
     address: str | None = Field(default=None, max_length=500)
 
+    @field_validator("phone", "email", "address", mode="before")
+    @classmethod
+    def empty_str_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
 
 class CustomerUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     phone: str | None = Field(default=None, max_length=32)
     email: EmailStr | None = None
     address: str | None = Field(default=None, max_length=500)
+
+    @field_validator("phone", "email", "address", mode="before")
+    @classmethod
+    def empty_str_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 class CustomerOut(BaseModel):
@@ -184,6 +207,29 @@ class VehicleCreate(BaseModel):
     @classmethod
     def vin_upper(cls, value: str) -> str:
         return value.strip().upper()
+
+
+class VehicleUpdate(BaseModel):
+    vin: str | None = Field(default=None, min_length=17, max_length=17)
+    license_plate: str | None = Field(default=None, max_length=32)
+    year: int | None = Field(default=None, ge=1900, le=2100)
+    make: str | None = Field(default=None, min_length=1, max_length=100)
+    model: str | None = Field(default=None, min_length=1, max_length=100)
+    mileage: int | None = Field(default=None, ge=0, le=3_000_000)
+
+    @field_validator("vin")
+    @classmethod
+    def vin_upper(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip().upper()
+
+    @field_validator("license_plate", mode="before")
+    @classmethod
+    def empty_str_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 class VehicleOut(BaseModel):
@@ -271,6 +317,13 @@ class CustomerDetailOut(BaseModel):
     customer: CustomerOut
     vehicles: list[VehicleOut]
     communications: list[CommunicationOut]
+    repair_history: list[RepairHistoryOut] = []
+
+
+class CustomerDirectoryItemOut(BaseModel):
+    customer: CustomerOut
+    vehicles: list[VehicleOut]
+    last_service: RepairHistoryOut | None = None
 
 
 class WalkInCreate(BaseModel):

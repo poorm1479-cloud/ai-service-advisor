@@ -9,6 +9,7 @@ import {
   activateAdminShop,
   changeAdminOrganizationPlan,
   getAdminOrganizationDetail,
+  initializeAdminOrganizationMemberPassword,
   OrganizationDetail,
   resetAdminOrganizationMemberPassword,
   statusTone,
@@ -57,6 +58,7 @@ function DetailBody({ accessToken }: { accessToken: string }) {
   const [data, setData] = useState<OrganizationDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [tempPassword, setTempPassword] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [live, setLive] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
@@ -199,6 +201,7 @@ function DetailBody({ accessToken }: { accessToken: string }) {
     setMemberBusyId(userId);
     setError(null);
     setMessage(null);
+    setTempPassword(null);
     try {
       const res = await resetAdminOrganizationMemberPassword(accessToken, shopId, userId);
       const via = res.channel === "email" ? "email" : "phone";
@@ -209,6 +212,30 @@ function DetailBody({ accessToken }: { accessToken: string }) {
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Password reset failed");
+    } finally {
+      setMemberBusyId(null);
+    }
+  }
+
+  async function onPasswordInitialize(userId: string, label: string) {
+    if (!shopId) return;
+    if (
+      !window.confirm(
+        `Initialize a new temporary password for ${label}? Their current sessions will be signed out.`,
+      )
+    ) {
+      return;
+    }
+    setMemberBusyId(userId);
+    setError(null);
+    setMessage(null);
+    setTempPassword(null);
+    try {
+      const res = await initializeAdminOrganizationMemberPassword(accessToken, shopId, userId);
+      setTempPassword(res.temporary_password);
+      setMessage(`Temporary password set for ${label}. Copy it now — it will not be shown again.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Password initialize failed");
     } finally {
       setMemberBusyId(null);
     }
@@ -280,6 +307,21 @@ function DetailBody({ accessToken }: { accessToken: string }) {
 
       {error && <p className="text-sm text-red-700">{error}</p>}
       {message && <p className="text-sm text-emerald-700">{message}</p>}
+      {tempPassword ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm">
+          <span className="text-amber-900">Temporary password:</span>
+          <code className="rounded bg-white px-2 py-1 font-mono text-base text-amber-950">
+            {tempPassword}
+          </code>
+          <button
+            type="button"
+            className="rounded-md border border-amber-400 px-2 py-1 text-xs text-amber-900"
+            onClick={() => void navigator.clipboard.writeText(tempPassword)}
+          >
+            Copy
+          </button>
+        </div>
+      ) : null}
 
       <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Plan" value={shop.plan_name} />
@@ -456,12 +498,21 @@ function DetailBody({ accessToken }: { accessToken: string }) {
                         )}
                         <button
                           type="button"
+                          disabled={busyMember || !m.is_active}
+                          onClick={() => void onPasswordInitialize(m.user_id, label)}
+                          className="rounded-md border border-[var(--line)] px-2 py-1 text-xs disabled:opacity-50"
+                          title="Set a new temporary password"
+                        >
+                          Init password
+                        </button>
+                        <button
+                          type="button"
                           disabled={busyMember || !m.is_active || (!m.email && !m.phone)}
                           onClick={() => void onPasswordReset(m.user_id, label)}
                           className="rounded-md border border-[var(--line)] px-2 py-1 text-xs disabled:opacity-50"
-                          title={!m.email && !m.phone ? "No email or phone" : "Send password reset"}
+                          title={!m.email && !m.phone ? "No email or phone" : "Send password reset link"}
                         >
-                          Reset password
+                          Reset link
                         </button>
                       </div>
                     </td>

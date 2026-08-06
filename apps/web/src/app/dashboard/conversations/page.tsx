@@ -1,10 +1,34 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { SmsInboxPanel } from "@/components/conversations/SmsInboxPanel";
-import { VoiceCallsPanel } from "@/components/conversations/VoiceCallsPanel";
-import { VoiceNotesPanel } from "@/components/conversations/VoiceNotesPanel";
+
+const panelFallback = (
+  <p className="text-sm text-[var(--muted)]">Loading panel…</p>
+);
+
+const SmsInboxPanel = dynamic(
+  () =>
+    import("@/components/conversations/SmsInboxPanel").then((m) => ({
+      default: m.SmsInboxPanel,
+    })),
+  { loading: () => panelFallback, ssr: false },
+);
+const VoiceCallsPanel = dynamic(
+  () =>
+    import("@/components/conversations/VoiceCallsPanel").then((m) => ({
+      default: m.VoiceCallsPanel,
+    })),
+  { loading: () => panelFallback, ssr: false },
+);
+const VoiceNotesPanel = dynamic(
+  () =>
+    import("@/components/conversations/VoiceNotesPanel").then((m) => ({
+      default: m.VoiceNotesPanel,
+    })),
+  { loading: () => panelFallback, ssr: false },
+);
 
 const TABS = [
   { id: "sms", label: "SMS" },
@@ -34,14 +58,16 @@ function ConversationsContent() {
       setTab(next);
       const params = new URLSearchParams(searchParams.toString());
       params.set("tab", next);
+      // Selection is tab-specific (SMS conversation id vs voice call id).
+      params.delete("id");
       router.replace(`${pathname}?${params.toString()}`, { scroll: false });
     },
     [pathname, router, searchParams],
   );
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:h-full">
+      <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="page-title">Conversations</h1>
           <p className="text-sm text-[var(--muted)]">
@@ -66,9 +92,11 @@ function ConversationsContent() {
         </div>
       </div>
 
-      {tab === "sms" && <SmsInboxPanel />}
-      {tab === "calls" && <VoiceCallsPanel />}
-      {tab === "notes" && <VoiceNotesPanel />}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {tab === "sms" && <SmsInboxPanel />}
+        {tab === "calls" && <VoiceCallsPanel />}
+        {tab === "notes" && <VoiceNotesPanel />}
+      </div>
     </div>
   );
 }

@@ -43,6 +43,10 @@ def _msg(body: str) -> NormalizedMessage:
         ("Can I change my appointment time?", CustomerIntent.RESCHEDULE),
         ("I want to change my appointment", CustomerIntent.RESCHEDULE),
         ("Is it possible to change my reservation time?", CustomerIntent.RESCHEDULE),
+        ("I need an appointment time change", CustomerIntent.RESCHEDULE),
+        ("reservation time change", CustomerIntent.RESCHEDULE),
+        ("I want to change my time", CustomerIntent.RESCHEDULE),
+        ("I need to make a reservation time change", CustomerIntent.RESCHEDULE),
         ("Cancel my appointment please", CustomerIntent.CANCEL_APPOINTMENT),
         ("What's the status of my car repair?", CustomerIntent.ASK_REPAIR_STATUS),
         ("How much does a brake job cost?", CustomerIntent.PRICE_QUESTION),
@@ -221,6 +225,20 @@ async def test_new_time_after_conversation_booking_is_reschedule(context):
     assert result.data.intent == CustomerIntent.RESCHEDULE
     assert result.data.entities.get("preferred_start")
 
+
+@pytest.mark.asyncio
+async def test_time_answer_during_reschedule_hold_stays_reschedule(context):
+    """After ask-new-time, a clock answer must continue reschedule (not book)."""
+    context.metadata["pending_action"] = "reschedule"
+    context.metadata["pending_service"] = "Oil Change"
+    context.metadata["slots_offered"] = []
+    # No appointment_id yet — SMS may only have pending_action until enrich.
+    agent = IntentAgent()
+    result = await agent.detect(_msg("Friday at 3pm"), context)
+    assert result.data is not None
+    assert result.data.intent == CustomerIntent.RESCHEDULE
+    assert result.data.entities.get("preferred_start")
+    assert result.data.entities.get("time_precision") == "clock"
 
 @pytest.mark.asyncio
 async def test_reschedule_with_named_service_keeps_service(context):

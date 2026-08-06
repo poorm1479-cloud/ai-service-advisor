@@ -669,6 +669,27 @@ export async function resetAdminOrganizationMemberPassword(
   }>;
 }
 
+export async function initializeAdminOrganizationMemberPassword(
+  accessToken: string,
+  shopId: string,
+  userId: string,
+  newPassword?: string,
+) {
+  return adminFetch(
+    accessToken,
+    `/v1/admin/organizations/${shopId}/members/${userId}/password-initialize`,
+    {
+      method: "POST",
+      body: JSON.stringify(newPassword ? { new_password: newPassword } : {}),
+    },
+  ) as Promise<{
+    ok: boolean;
+    shop_id: string;
+    user_id: string;
+    temporary_password: string;
+  }>;
+}
+
 export async function getAdminBilling(accessToken: string): Promise<BillingMonitor> {
   return adminFetch(accessToken, "/v1/admin/billing");
 }

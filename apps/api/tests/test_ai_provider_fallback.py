@@ -119,6 +119,67 @@ def test_build_chat_provider_ollama_only() -> None:
     assert isinstance(chat, OllamaChatProvider)
 
 
+def test_ollama_native_base_strips_v1() -> None:
+    from app.infrastructure.ai.provider import _ollama_native_base
+
+    assert _ollama_native_base("http://localhost:11434") == "http://localhost:11434"
+    assert _ollama_native_base("http://localhost:11434/") == "http://localhost:11434"
+    assert _ollama_native_base("http://localhost:11434/v1") == "http://localhost:11434"
+    assert _ollama_native_base("") == "http://localhost:11434"
+
+
+@pytest.mark.asyncio
+async def test_ollama_uses_native_chat_with_think_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "message": {"role": "assistant", "content": '{"ok":true}'},
+                "prompt_eval_count": 3,
+                "eval_count": 2,
+            }
+
+    class _Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            captured["base_url"] = kwargs.get("base_url")
+            captured["timeout"] = kwargs.get("timeout")
+
+        async def __aenter__(self) -> "_Client":
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        async def post(self, path: str, **kwargs: Any) -> _Response:
+            captured["path"] = path
+            captured["json"] = kwargs.get("json")
+            return _Response()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    provider = OllamaChatProvider(
+        base_url="http://localhost:11434/v1",
+        model="qwen3:14b",
+    )
+    out = await provider.complete(
+        messages=[{"role": "user", "content": "hi"}],
+        response_format={"type": "json_object"},
+    )
+    assert out.content == '{"ok":true}'
+    assert out.provider == "ollama"
+    assert captured["base_url"] == "http://localhost:11434"
+    assert captured["path"] == "/api/chat"
+    assert captured["json"]["think"] is False
+    assert captured["json"]["stream"] is False
+    assert captured["json"]["format"] == "json"
+    assert captured["json"]["model"] == "qwen3:14b"
+
+
 def test_factory_openai_wires_fallback_extractor(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config.settings, "ai_provider", "openai")
     monkeypatch.setattr(config.settings, "openai_api_key", "sk-test")

@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.exceptions import NotFoundError, ValidationError
+from app.domain.exceptions import ConflictError, NotFoundError, ValidationError
 from app.infrastructure.models import ShopModel
 from app.shop_setup.defaults import (
     BAY_TYPES,
@@ -356,6 +356,21 @@ class ShopSetupService:
             if len(name) < 2:
                 raise ValidationError("Shop name too short")
             shop.name = name
+            # Keep internal slug aligned with display name so login-by-name works.
+            from app.domain.slug import next_slug_candidate, slugify_shop_name
+            from app.infrastructure.models import ShopModel as _Shop
+
+            base = slugify_shop_name(name)
+            for attempt in range(1, 50):
+                candidate = next_slug_candidate(base, attempt)
+                existing = await self._session.scalar(
+                    select(_Shop.id).where(_Shop.slug == candidate, _Shop.id != shop.id)
+                )
+                if existing is None:
+                    shop.slug = candidate
+                    break
+            else:
+                shop.slug = f"shop-{uuid4().hex[:8]}"
         if "timezone" in patch and patch["timezone"] is not None:
             tz = patch["timezone"].strip()
             if not tz:
@@ -472,15 +487,36 @@ class ShopSetupService:
             raise NotFoundError("Service not found")
         return _service_out(row)
 
+    async def _assert_unique_service_name(
+        self,
+        shop_id: UUID,
+        name: str,
+        *,
+        exclude_id: UUID | None = None,
+    ) -> None:
+        normalized = name.strip().lower()
+        if not normalized:
+            return
+        existing = await self._list_services(shop_id)
+        for row in existing:
+            if exclude_id is not None and row.id == exclude_id:
+                continue
+            if row.name.strip().lower() == normalized:
+                raise ConflictError("A service with this name already exists")
+
     async def create_service(self, shop_id: UUID, body: ServiceIn) -> ServiceOut:
         await self._get_shop(shop_id)
         now = datetime.now(timezone.utc)
         existing = await self._list_services(shop_id)
         sort_order = body.sort_order if body.sort_order is not None else len(existing)
+        name = body.name.strip()
+        if not name:
+            raise ValidationError("Service name is required")
+        await self._assert_unique_service_name(shop_id, name)
         row = ShopServiceModel(
             id=uuid4(),
             shop_id=shop_id,
-            name=body.name.strip(),
+            name=name,
             category=body.category.strip().lower(),
             duration_minutes=body.duration_minutes,
             price=body.price,
@@ -491,8 +527,6 @@ class ShopSetupService:
             created_at=now,
             updated_at=now,
         )
-        if not row.name:
-            raise ValidationError("Service name is required")
         self._session.add(row)
         await self._session.commit()
         await self._rebind_shop(shop_id)
@@ -513,6 +547,8 @@ class ShopSetupService:
                     value = value.lower()
                 if not value:
                     raise ValidationError(f"{key} is required")
+            if key == "name" and isinstance(value, str):
+                await self._assert_unique_service_name(shop_id, value, exclude_id=service_id)
             setattr(row, key, value)
         row.updated_at = datetime.now(timezone.utc)
         await self._session.commit()

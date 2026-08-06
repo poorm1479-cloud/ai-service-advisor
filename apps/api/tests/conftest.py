@@ -81,6 +81,15 @@ async def _purge_test_shops() -> None:
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _register_deferred_api_routes():
+    """httpx ASGITransport does not run lifespan — mount heavy routers for tests."""
+    from app.api.router import include_deferred_routers
+    from app.main import app
+
+    include_deferred_routers(app)
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _cleanup_test_shops_around_session():
     """Purge test tenants before/after the suite so admin dashboards stay accurate."""
     import asyncio

@@ -1,6 +1,7 @@
 """AI chat provider abstraction — OpenAI with Ollama local fallback.
 
 Transport-only layer. Prompts and JSON decision parsing stay in callers.
+Ollama uses the native /api/chat endpoint with think=false (Qwen3-safe).
 """
 
 from __future__ import annotations
@@ -149,16 +150,25 @@ class OpenAIChatProvider:
         )
 
 
-def _ollama_openai_base(url: str) -> str:
+def _ollama_native_base(url: str) -> str:
+    """Normalize OLLAMA_URL to the native root (no /v1 suffix)."""
     base = (url or "").strip().rstrip("/")
     if not base:
         base = "http://localhost:11434"
     if base.endswith("/v1"):
-        return base
-    return f"{base}/v1"
+        return base[: -len("/v1")] or "http://localhost:11434"
+    return base
 
 
 class OllamaChatProvider:
+    """Ollama via native /api/chat.
+
+    Uses the native endpoint (not OpenAI-compat /v1) so we can pass
+    ``think: false`` — required for Qwen3 and other thinking models, which
+    otherwise burn the whole timeout on hidden reasoning and return empty/late
+    content over /v1/chat/completions.
+    """
+
     name = "ollama"
 
     def __init__(
@@ -167,7 +177,7 @@ class OllamaChatProvider:
         base_url: str | None = None,
         model: str | None = None,
     ) -> None:
-        self._base_url = _ollama_openai_base(base_url or settings.ollama_url)
+        self._base_url = _ollama_native_base(base_url or settings.ollama_url)
         self._model = model or settings.ollama_model
 
     def available(self) -> bool:
@@ -179,23 +189,26 @@ class OllamaChatProvider:
         messages: list[dict[str, str]],
         temperature: float = 0,
         response_format: dict[str, str] | None = None,
-        timeout: float = 60.0,
+        timeout: float = 90.0,
     ) -> ChatCompletionResult:
         if not self.available():
             raise AIProviderUnavailable("OLLAMA_URL / OLLAMA_MODEL not configured")
 
         payload: dict[str, Any] = {
             "model": self._model,
-            "temperature": temperature,
             "messages": messages,
+            "stream": False,
+            # Disable thinking traces — critical for qwen3:* structured JSON.
+            "think": False,
+            "options": {"temperature": temperature},
         }
-        if response_format is not None:
-            payload["response_format"] = response_format
+        if response_format is not None and response_format.get("type") == "json_object":
+            payload["format"] = "json"
 
         headers = {"Content-Type": "application/json"}
         try:
             async with httpx.AsyncClient(base_url=self._base_url, timeout=timeout) as client:
-                response = await client.post("/chat/completions", headers=headers, json=payload)
+                response = await client.post("/api/chat", headers=headers, json=payload)
                 response.raise_for_status()
                 body = response.json()
         except httpx.TimeoutException as exc:
@@ -208,19 +221,18 @@ class OllamaChatProvider:
             raise AIProviderError(f"ollama invalid response: {exc}") from exc
 
         try:
-            content = body["choices"][0]["message"]["content"]
+            content = body["message"]["content"]
             if not isinstance(content, str) or not content.strip():
                 raise AIProviderError("ollama returned empty content")
-        except (KeyError, TypeError, IndexError, AIProviderError) as exc:
+        except (KeyError, TypeError, AIProviderError) as exc:
             if isinstance(exc, AIProviderError):
                 raise
             raise AIProviderError(f"ollama invalid response: {exc}") from exc
 
-        usage = body.get("usage") or {}
         return ChatCompletionResult(
             content=content,
-            input_tokens=int(usage.get("prompt_tokens") or 0),
-            output_tokens=int(usage.get("completion_tokens") or 0),
+            input_tokens=int(body.get("prompt_eval_count") or 0),
+            output_tokens=int(body.get("eval_count") or 0),
             provider=self.name,
         )
 

@@ -134,10 +134,68 @@ export async function getSetupState(): Promise<SetupState> {
   return (await res.json()) as SetupState;
 }
 
-export async function getSetupStatus(): Promise<SetupStatus> {
+const SETUP_STATUS_CACHE_KEY = "asa.setup.status.v1";
+const SETUP_STATUS_CACHE_TTL_MS = 10 * 60 * 1000;
+
+type SetupStatusCache = {
+  shopId: string;
+  status: SetupStatus;
+  at: number;
+};
+
+function readSetupStatusCache(shopId: string): SetupStatus | null {
+  if (typeof window === "undefined" || !shopId) return null;
+  try {
+    const raw = sessionStorage.getItem(SETUP_STATUS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as SetupStatusCache;
+    if (parsed.shopId !== shopId || !parsed.status) return null;
+    if (Date.now() - Number(parsed.at || 0) > SETUP_STATUS_CACHE_TTL_MS) return null;
+    return parsed.status;
+  } catch {
+    return null;
+  }
+}
+
+/** Sync peek for UI gates — avoids a Loading flash on soft navigations. */
+export function peekSetupStatusCache(shopId: string | null | undefined): SetupStatus | null {
+  if (!shopId) return null;
+  return readSetupStatusCache(shopId);
+}
+
+export function cacheSetupStatus(shopId: string, status: SetupStatus) {
+  if (typeof window === "undefined" || !shopId) return;
+  try {
+    const payload: SetupStatusCache = { shopId, status, at: Date.now() };
+    sessionStorage.setItem(SETUP_STATUS_CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
+export function clearSetupStatusCache() {
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.removeItem(SETUP_STATUS_CACHE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+export async function getSetupStatus(options?: {
+  shopId?: string | null;
+  bypassCache?: boolean;
+}): Promise<SetupStatus> {
+  const shopId = options?.shopId ?? loadSession()?.shopId ?? null;
+  if (!options?.bypassCache && shopId) {
+    const cached = readSetupStatusCache(shopId);
+    if (cached) return cached;
+  }
   const res = await authFetch("/v1/shop/setup/status");
   if (!res.ok) throw new Error(await parseError(res));
-  return (await res.json()) as SetupStatus;
+  const status = (await res.json()) as SetupStatus;
+  if (shopId) cacheSetupStatus(shopId, status);
+  return status;
 }
 
 export async function completeSetup(body: {
@@ -150,7 +208,14 @@ export async function completeSetup(body: {
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(await parseError(res));
-  return (await res.json()) as SetupState;
+  const state = (await res.json()) as SetupState;
+  const shopId = loadSession()?.shopId;
+  if (shopId) {
+    cacheSetupStatus(shopId, state.status);
+  } else {
+    clearSetupStatusCache();
+  }
+  return state;
 }
 
 export async function updateShopExtendedSettings(body: {

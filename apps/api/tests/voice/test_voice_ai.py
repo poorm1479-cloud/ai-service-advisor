@@ -22,6 +22,16 @@ def _reset():
     reset_voice_runtime()
 
 
+@pytest.fixture(autouse=True)
+def _stub_ai_quota(monkeypatch: pytest.MonkeyPatch):
+    """Unit tests use ephemeral shop UUIDs; skip DB-backed plan quota metering."""
+
+    async def _noop_consume(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr("app.saas.quotas.QuotaService.consume", _noop_consume)
+
+
 @pytest.fixture
 def shop_id():
     return uuid4()
@@ -87,6 +97,45 @@ async def test_answer_and_book_appointment(runtime, shop_id):
     assert completed.repair_notes is not None
     assert runtime.monitor.snapshot()["calls_started"] == 1
     assert runtime.monitor.snapshot()["calls_completed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_voice_scopes_billing_quota_during_ai(runtime, shop_id, monkeypatch):
+    """Plan-quota context (ai_calls / billing) must match the call's shop."""
+    from app.saas.quota_context import get_quota_shop_id
+    from app.saas.usage_tracking import get_usage_shop_id
+
+    seen: dict[str, object] = {}
+
+    original_speak = runtime.speech.speak
+
+    async def _speak_tracking(**kwargs):
+        seen["quota_shop"] = get_quota_shop_id()
+        seen["usage_shop"] = get_usage_shop_id()
+        return await original_speak(**kwargs)
+
+    monkeypatch.setattr(runtime.speech, "speak", _speak_tracking)
+
+    await runtime.service.answer_call(
+        shop_id=shop_id,
+        event=InboundCallEvent(
+            call_sid="CAbill1",
+            from_number="+15559870002",
+            to_number="+15550001111",
+        ),
+    )
+    assert seen.get("quota_shop") == shop_id
+    assert seen.get("usage_shop") == shop_id
+
+    await runtime.service.handle_speech(
+        shop_id=shop_id,
+        speech=SpeechInput(
+            call_sid="CAbill1",
+            speech_result="I need an oil change tomorrow morning",
+        ),
+    )
+    assert seen.get("quota_shop") == shop_id
+    assert seen.get("usage_shop") == shop_id
 
 
 @pytest.mark.asyncio
@@ -222,6 +271,39 @@ async def test_media_stream_events(runtime):
     stop = hub.handle_event({"event": "stop", "streamSid": "MZstream1"})
     assert stop is not None and stop.event_type == "stop"
     assert "MZstream1" not in hub.sessions
+
+
+@pytest.mark.asyncio
+async def test_delete_call_removes_history_and_turns(runtime, shop_id):
+    answered = await runtime.service.answer_call(
+        shop_id=shop_id,
+        event=InboundCallEvent(
+            call_sid="CAdelete001",
+            from_number="+15559871111",
+            to_number="+15550001111",
+        ),
+    )
+    call_id = answered.call.id
+    await runtime.service.handle_speech(
+        shop_id=shop_id,
+        speech=SpeechInput(
+            call_sid="CAdelete001",
+            speech_result="What are your hours?",
+        ),
+    )
+    assert len(await runtime.store.list_turns(shop_id, call_id)) >= 1
+
+    await runtime.service.delete_call(shop_id=shop_id, call_id=call_id)
+
+    assert await runtime.store.get_call(shop_id, call_id) is None
+    assert await runtime.store.list_turns(shop_id, call_id) == []
+    assert all(c.id != call_id for c in await runtime.store.list_calls(shop_id))
+
+
+@pytest.mark.asyncio
+async def test_delete_call_not_found(runtime, shop_id):
+    with pytest.raises(ValueError, match="Call not found"):
+        await runtime.service.delete_call(shop_id=shop_id, call_id=uuid4())
 
 
 @pytest.mark.asyncio

@@ -154,6 +154,151 @@ async def test_intent_maps_book_to_ask_preferred_time(context):
     assert result.data.available_slots == []
     assert result.data.decision is not None
     assert result.data.decision.action == "list_slots"
+    assert result.data.metadata.get("action") == "book"
+
+
+@pytest.mark.asyncio
+async def test_intent_maps_reschedule_to_ask_preferred_time(context):
+    """Bare time-change ask must not invent a slot — ask for the new time."""
+    from uuid import uuid4
+
+    agent = SchedulingAgent()
+    appt_id = uuid4()
+    result = await agent.process(
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="reschedule",
+            appointment_id=appt_id,
+            requested_service="Oil Change",
+        ),
+        context,
+    )
+    assert result.data is not None
+    assert result.data.message == "ask_preferred_time"
+    assert result.data.available_slots == []
+    assert result.data.metadata.get("action") == "reschedule"
+    assert (result.data.metadata or {}).get("pending_slot_start") is None
+    assert result.data.decision is not None
+    assert result.data.decision.appointment_id == appt_id
+    assert result.data.decision.offer_policy == "ask_time"
+
+
+@pytest.mark.asyncio
+async def test_reschedule_holds_exact_spoken_clock_time(context):
+    """Customer-spoken clock time must be the pending slot — not nearest opening."""
+    agent = SchedulingAgent()
+    openings = await agent.process(
+        SchedulingRequest(action=SchedulingAction.LIST_SLOTS, days_ahead=14),
+        context,
+    )
+    first = openings.data.available_slots[0].start
+    later = openings.data.available_slots[5].start
+    booked = await _decide_and_apply(
+        agent,
+        SchedulingRequest(
+            action=SchedulingAction.BOOK,
+            preferred_start=first,
+            time_precision="clock",
+        ),
+        context,
+    )
+    appt_id = booked.data.appointment.id
+
+    hold = await agent.process(
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="reschedule",
+            appointment_id=appt_id,
+            preferred_start=later,
+            time_precision="clock",
+        ),
+        context,
+    )
+    assert hold.data.message == "awaiting_reschedule_confirmation"
+    assert hold.data.metadata.get("pending_slot_start") == later.isoformat()
+    assert hold.data.decision is not None
+    assert hold.data.decision.recommended_slot_start == later
+
+
+@pytest.mark.asyncio
+async def test_reschedule_unavailable_clock_does_not_snap(context):
+    """Non-matching clock time must not silently move to the next opening."""
+    agent = SchedulingAgent()
+    openings = await agent.process(
+        SchedulingRequest(action=SchedulingAction.LIST_SLOTS, days_ahead=14),
+        context,
+    )
+    first = openings.data.available_slots[0].start
+    booked = await _decide_and_apply(
+        agent,
+        SchedulingRequest(
+            action=SchedulingAction.BOOK,
+            preferred_start=first,
+            time_precision="clock",
+        ),
+        context,
+    )
+    appt_id = booked.data.appointment.id
+    weird = first.replace(minute=17) + __import__("datetime").timedelta(days=1)
+
+    hold = await agent.process(
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="reschedule",
+            appointment_id=appt_id,
+            preferred_start=weird,
+            time_precision="clock",
+        ),
+        context,
+    )
+    assert hold.data.message == "preferred_time_unavailable"
+    assert hold.data.metadata.get("action") == "reschedule"
+    assert (hold.data.metadata or {}).get("pending_slot_start") is None
+
+
+@pytest.mark.asyncio
+async def test_book_with_pending_reschedule_moves_existing(context):
+    """pending_action=reschedule + appointment_id must reschedule, not duplicate."""
+    agent = SchedulingAgent()
+    openings = await agent.process(
+        SchedulingRequest(action=SchedulingAction.LIST_SLOTS, days_ahead=14),
+        context,
+    )
+    first = openings.data.available_slots[0].start
+    later = openings.data.available_slots[5].start
+    booked = await _decide_and_apply(
+        agent,
+        SchedulingRequest(
+            action=SchedulingAction.BOOK,
+            preferred_start=first,
+            time_precision="clock",
+        ),
+        context,
+    )
+    old_id = booked.data.appointment.id
+    context.metadata["pending_action"] = "reschedule"
+    # No memory appointment_id — only upcoming-resolved id on the request.
+
+    moved = await _decide_and_apply(
+        agent,
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="book_appointment",
+            appointment_id=old_id,
+            preferred_start=later,
+            time_precision="clock",
+            confirm_booking=True,
+        ),
+        context,
+    )
+    assert moved.success
+    assert moved.data.success
+    assert moved.data.action == "reschedule"
+    assert moved.data.appointment is not None
+    assert moved.data.appointment.start == later
+    old = await agent.store.get(context.shop_id, old_id)
+    assert old is not None
+    assert old.status == "rescheduled"
 
 
 @pytest.mark.asyncio

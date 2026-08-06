@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_current_user, require_owner
-from app.domain.exceptions import NotFoundError, ValidationError
+from app.domain.exceptions import ConflictError, NotFoundError, ValidationError
 from app.infrastructure.database import get_session
 from app.shop_setup.schemas import (
     CompleteSetupRequest,
@@ -37,6 +37,8 @@ async def _bind_shop(session: AsyncSession, shop_id: UUID) -> ShopSetupService:
 def _http(exc: Exception) -> HTTPException:
     if isinstance(exc, NotFoundError):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    if isinstance(exc, ConflictError):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(exc, ValidationError):
         return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     raise exc

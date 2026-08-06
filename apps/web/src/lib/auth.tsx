@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -24,13 +25,14 @@ import {
   verifyMfa as apiVerifyMfa,
 } from "@/lib/api";
 import { lockAdmin } from "@/lib/admin";
+import { clearSetupStatusCache } from "@/lib/shopSetup";
 
 type AuthContextValue = {
   session: AuthSession | null;
   loading: boolean;
   login: (input: {
     password: string;
-    shopSlug: string;
+    shopName: string;
     phone?: string;
     email?: string;
   }) => Promise<void>;
@@ -38,7 +40,6 @@ type AuthContextValue = {
   completeMfa: (input: { mfaToken: string; code: string }) => Promise<void>;
   register: (input: {
     shopName: string;
-    shopSlug: string;
     authMethod: AuthMethod;
     ownerFullName: string;
     password: string;
@@ -75,12 +76,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Bumped on logout so in-flight refresh cannot resurrect a session.
   const authEpochRef = useRef(0);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const existing = loadSession();
     if (!existing) {
       setLoading(false);
       return;
     }
+    // Hydrate immediately so dashboard UI is not blocked on /auth/refresh.
+    setSession(existing);
+    setLoading(false);
     const epoch = authEpochRef.current;
     apiRefresh(existing.refreshToken)
       .then(async (next) => {
@@ -97,10 +101,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       })
       .catch(() => {
         if (authEpochRef.current !== epoch) return;
+        clearSetupStatusCache();
         clearSession();
         setSession(null);
-      })
-      .finally(() => setLoading(false));
+      });
   }, []);
 
   // Keep the session alive while the tab is open so presence does not flip offline
@@ -182,7 +186,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = useCallback(
     async (input: {
       password: string;
-      shopSlug: string;
+      shopName: string;
       phone?: string;
       email?: string;
     }) => {
@@ -217,7 +221,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const register = useCallback(
     async (input: {
       shopName: string;
-      shopSlug: string;
       authMethod: AuthMethod;
       ownerFullName: string;
       password: string;
@@ -259,6 +262,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Invalidate in-flight refresh immediately, then clear local state before the API call.
     authEpochRef.current += 1;
     lockAdmin();
+    clearSetupStatusCache();
     clearSession();
     setSession(null);
     if (current?.refreshToken) {

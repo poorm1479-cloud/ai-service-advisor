@@ -321,20 +321,41 @@ class AgentOrchestrator:
 
     @staticmethod
     def _resolve_appointment_id(
-        context: AgentContext, entities: dict[str, Any]
+        context: AgentContext,
+        entities: dict[str, Any],
+        *,
+        intent: str | None = None,
     ) -> UUID | None:
-        """Prefer entity → conversation memory → next upcoming appointment."""
-        raw = (
-            entities.get("appointment_id")
-            or context.metadata.get("appointment_id")
-            or context.metadata.get("active_appointment_id")
+        """Resolve appointment id for reschedule/cancel (not fresh books).
+
+        Prefer entity → conversation memory → next upcoming appointment.
+        New book intents must not bind an existing upcoming visit — that used
+        to turn every follow-up booking into a reschedule.
+        """
+        meta = context.metadata or {}
+        pending = str(meta.get("pending_action") or "")
+        reschedule_like = (
+            intent in {"reschedule", "cancel_appointment"}
+            or pending in {"reschedule", "cancel"}
         )
+
+        raw = entities.get("appointment_id")
         if raw:
             try:
                 return UUID(str(raw))
             except (ValueError, TypeError):
                 pass
-        upcoming = context.metadata.get("upcoming_appointments") or []
+
+        if not reschedule_like:
+            return None
+
+        raw = meta.get("appointment_id") or meta.get("active_appointment_id")
+        if raw:
+            try:
+                return UUID(str(raw))
+            except (ValueError, TypeError):
+                pass
+        upcoming = meta.get("upcoming_appointments") or []
         if upcoming and upcoming[0].get("id"):
             try:
                 return UUID(str(upcoming[0]["id"]))
@@ -584,7 +605,9 @@ class AgentOrchestrator:
         intent_value = intent_data.intent.value if intent_data else None
         booking = self._merge_booking_context(entities, context, intent=intent_value)
         requested_service = booking.get("requested_service") or booking.get("service")
-        appointment_id = self._resolve_appointment_id(context, booking)
+        appointment_id = self._resolve_appointment_id(
+            context, booking, intent=intent_value
+        )
         service_id = None
         if booking.get("service_id"):
             try:

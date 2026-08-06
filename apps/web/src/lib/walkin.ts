@@ -62,9 +62,15 @@ async function authFetch(path: string, init: RequestInit = {}) {
   return res;
 }
 
-export async function listWalkIns(status?: WalkInStatus): Promise<WalkInVisit[]> {
-  const qs = status ? `?status=${status}` : "";
-  const res = await authFetch(`/v1/walk-ins${qs}`);
+export async function listWalkIns(
+  status?: WalkInStatus,
+  arrivedAfter?: string,
+): Promise<WalkInVisit[]> {
+  const params = new URLSearchParams();
+  if (status) params.set("status", status);
+  if (arrivedAfter) params.set("arrived_after", arrivedAfter);
+  const qs = params.toString();
+  const res = await authFetch(`/v1/walk-ins${qs ? `?${qs}` : ""}`);
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
 }

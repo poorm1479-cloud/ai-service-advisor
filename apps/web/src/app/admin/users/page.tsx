@@ -8,6 +8,7 @@ import {
   AdminUserRow,
   AdminUsersResponse,
   getAdminUsers,
+  initializeAdminOrganizationMemberPassword,
   resetAdminOrganizationMemberPassword,
   statusTone,
   suspendAdminOrganizationMember,
@@ -37,6 +38,7 @@ function UsersBody({ accessToken }: { accessToken: string }) {
   const [data, setData] = useState<AdminUsersResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [tempPassword, setTempPassword] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [actionKey, setActionKey] = useState<string | null>(null);
@@ -128,6 +130,7 @@ function UsersBody({ accessToken }: { accessToken: string }) {
     setActionKey(key);
     setError(null);
     setMessage(null);
+    setTempPassword(null);
     try {
       const result = await resetAdminOrganizationMemberPassword(
         accessToken,
@@ -138,6 +141,35 @@ function UsersBody({ accessToken }: { accessToken: string }) {
       setMessage(`Password reset sent for ${label} via ${result.channel}${hint}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Password reset failed");
+    } finally {
+      setActionKey(null);
+    }
+  }
+
+  async function onPasswordInitialize(row: AdminUserRow) {
+    const key = `${row.shop_id}:${row.user_id}`;
+    const label = row.full_name || row.email || row.phone || row.user_id;
+    if (
+      !window.confirm(
+        `Initialize a new temporary password for ${label}? Their current sessions will be signed out.`,
+      )
+    ) {
+      return;
+    }
+    setActionKey(key);
+    setError(null);
+    setMessage(null);
+    setTempPassword(null);
+    try {
+      const result = await initializeAdminOrganizationMemberPassword(
+        accessToken,
+        row.shop_id,
+        row.user_id,
+      );
+      setTempPassword(result.temporary_password);
+      setMessage(`Temporary password set for ${label}. Copy it now — it will not be shown again.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Password initialize failed");
     } finally {
       setActionKey(null);
     }
@@ -165,6 +197,21 @@ function UsersBody({ accessToken }: { accessToken: string }) {
 
       {error && <p className="text-sm text-red-700">{error}</p>}
       {message && <p className="text-sm text-emerald-700">{message}</p>}
+      {tempPassword ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm">
+          <span className="text-amber-900">Temporary password:</span>
+          <code className="rounded bg-white px-2 py-1 font-mono text-base text-amber-950">
+            {tempPassword}
+          </code>
+          <button
+            type="button"
+            className="rounded-md border border-amber-400 px-2 py-1 text-xs text-amber-900"
+            onClick={() => void navigator.clipboard.writeText(tempPassword)}
+          >
+            Copy
+          </button>
+        </div>
+      ) : null}
 
       <Panel
         title={`Members (${filtered.length})`}
@@ -251,12 +298,21 @@ function UsersBody({ accessToken }: { accessToken: string }) {
                         )}
                         <button
                           type="button"
+                          disabled={rowBusy || !u.is_active}
+                          onClick={() => void onPasswordInitialize(u)}
+                          className="rounded-md border border-[var(--line)] px-2 py-1 text-xs disabled:opacity-50"
+                          title="Set a new temporary password"
+                        >
+                          Init password
+                        </button>
+                        <button
+                          type="button"
                           disabled={rowBusy || !u.is_active || (!u.email && !u.phone)}
                           onClick={() => void onPasswordReset(u)}
                           className="rounded-md border border-[var(--line)] px-2 py-1 text-xs disabled:opacity-50"
-                          title={!u.email && !u.phone ? "No email or phone" : "Send password reset"}
+                          title={!u.email && !u.phone ? "No email or phone" : "Send password reset link"}
                         >
-                          Reset password
+                          Reset link
                         </button>
                       </div>
                     </td>

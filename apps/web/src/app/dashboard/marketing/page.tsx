@@ -246,8 +246,8 @@ export default function MarketingPage() {
   const activeAction = suggestedActions.find((a) => a.id === activeActionId) ?? null;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:h-full">
+      <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="page-title">AI Customer Follow-up</h1>
           <p className="mt-1 text-sm text-[var(--muted)]">
@@ -264,7 +264,7 @@ export default function MarketingPage() {
         </button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
         <button
           type="button"
           onClick={() => setTab("followup")}
@@ -326,11 +326,12 @@ export default function MarketingPage() {
       </div>
 
       {error && (
-        <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <p className="shrink-0 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
           {error}
         </p>
       )}
 
+      <div className="asa-scroll min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain">
       {tab === "followup" && (
         <div className="space-y-6">
           <ol className="flex flex-wrap gap-2 text-xs">
@@ -726,6 +727,7 @@ export default function MarketingPage() {
           </div>
         </section>
       )}
+      </div>
     </div>
   );
 }

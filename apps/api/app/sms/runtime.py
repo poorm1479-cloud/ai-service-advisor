@@ -14,6 +14,11 @@ def get_sms_runtime() -> SmsRuntime:
     return _runtime
 
 
+def peek_sms_runtime() -> SmsRuntime | None:
+    """Return the singleton if already built — never cold-starts the AI stack."""
+    return _runtime
+
+
 def reset_sms_runtime() -> None:
     global _runtime
     _runtime = None

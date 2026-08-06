@@ -54,7 +54,9 @@ export type MeResponse = {
 };
 
 export type RememberedLogin = {
-  shopSlug: string;
+  shopName: string;
+  /** @deprecated Preferred key is shopName; kept for older localStorage drafts. */
+  shopSlug?: string;
   method: AuthMethod;
   phone?: string;
   email?: string;
@@ -63,11 +65,12 @@ export type RememberedLogin = {
 export type RememberedRegister = {
   authMethod: AuthMethod;
   shopName: string;
-  shopSlug: string;
   ownerFullName: string;
   ownerPhone?: string;
   ownerEmail?: string;
   password?: string;
+  /** @deprecated No longer collected; ignored if present in old drafts. */
+  shopSlug?: string;
 };
 
 /** Per-method signup drafts so email data cannot leak into phone (and vice versa). */
@@ -157,8 +160,15 @@ export function loadRememberedLogin(): RememberedLogin | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as RememberedLogin;
-    if (!parsed.shopSlug || (parsed.method !== "phone" && parsed.method !== "email")) return null;
-    return parsed;
+    const shopName = (parsed.shopName || parsed.shopSlug || "").trim();
+    if (!shopName || (parsed.method !== "phone" && parsed.method !== "email")) return null;
+    return {
+      shopName,
+      shopSlug: parsed.shopSlug,
+      method: parsed.method,
+      phone: parsed.phone,
+      email: parsed.email,
+    };
   } catch {
     return null;
   }
@@ -200,19 +210,17 @@ function normalizeRememberedRegister(
   const authMethod =
     value.authMethod === "phone" || value.authMethod === "email" ? value.authMethod : fallbackMethod;
   const shopName = value.shopName ?? "";
-  const shopSlug = value.shopSlug ?? "";
   const ownerFullName = value.ownerFullName ?? "";
   const ownerPhone = authMethod === "phone" ? value.ownerPhone : undefined;
   const ownerEmail = authMethod === "email" ? value.ownerEmail : undefined;
   const password = typeof value.password === "string" && value.password ? value.password : undefined;
   // Ignore empty shells created by method switches / autofill noise.
-  if (!shopName && !shopSlug && !ownerFullName && !ownerPhone && !ownerEmail && !password) {
+  if (!shopName && !ownerFullName && !ownerPhone && !ownerEmail && !password) {
     return null;
   }
   return {
     authMethod,
     shopName,
-    shopSlug,
     ownerFullName,
     ownerPhone,
     ownerEmail,
@@ -228,11 +236,11 @@ export function sanitizeRememberedRegisterStore(
   const email = normalizeRememberedRegister(store.email, "email") ?? undefined;
 
   if (phone && email) {
-    const sameSlug = Boolean(phone.shopSlug && phone.shopSlug === email.shopSlug);
+    const sameShop = Boolean(phone.shopName && phone.shopName === email.shopName);
     const samePassword = Boolean(phone.password && phone.password === email.password);
     const phoneHasContact = Boolean(phone.ownerPhone && phone.ownerPhone.trim());
     // If phone draft is just a copy of email credentials (typical autofill leak), discard it.
-    if ((sameSlug || samePassword) && !phoneHasContact) {
+    if ((sameShop || samePassword) && !phoneHasContact) {
       phone = undefined;
     }
   }
@@ -423,8 +431,11 @@ async function parseError(res: Response): Promise<string> {
         body.detail
           .map((d: { loc?: unknown[]; msg?: string; type?: string }) => {
             const field = Array.isArray(d.loc) ? String(d.loc[d.loc.length - 1] ?? "") : "";
+            if (field === "shop_name") {
+              return "Enter your shop name.";
+            }
             if (field === "shop_slug") {
-              return "Shop slug must use lowercase letters, numbers, and hyphens (e.g. acme-auto).";
+              return "Shop could not be identified. Check the shop name.";
             }
             if (field === "owner_phone") {
               return "Enter a valid phone number.";
@@ -529,7 +540,6 @@ export async function verifyOtp(input: {
 
 export async function registerShop(input: {
   shopName: string;
-  shopSlug: string;
   authMethod: AuthMethod;
   ownerFullName: string;
   password: string;
@@ -538,7 +548,6 @@ export async function registerShop(input: {
 }): Promise<AuthSession> {
   const payload = {
     shop_name: input.shopName,
-    shop_slug: input.shopSlug,
     auth_method: input.authMethod,
     owner_full_name: input.ownerFullName,
     password: input.password,
@@ -589,7 +598,7 @@ export class AdminLoginLockoutError extends Error {
 
 export async function login(input: {
   password: string;
-  shopSlug: string;
+  shopName: string;
   phone?: string;
   email?: string;
 }): Promise<AuthSession> {
@@ -603,7 +612,7 @@ export async function login(input: {
         phone: input.phone || null,
         email: input.email || null,
         password: input.password,
-        shop_slug: input.shopSlug,
+        shop_name: input.shopName,
       }),
     });
   } catch {

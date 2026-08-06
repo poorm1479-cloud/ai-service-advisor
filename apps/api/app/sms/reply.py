@@ -55,7 +55,7 @@ def _next_appointment_bit(upcoming: list[dict]) -> str:
     when = _format_appt_when(appt.get("start"))
     service = appt.get("service_name")
     if when and service:
-        return f" you've got {service} on {when}."
+        return f" your {service} is on {when}."
     if when:
         return f" you've got an appointment on {when}."
     return ""
@@ -165,7 +165,12 @@ class ContextualReplyGenerator:
         needs_name = counselor.needs_customer_name(customer_name or snapshot.get("name"))
 
         # Booking without a service → ask which service first (before day/time).
-        if intent == CustomerIntent.BOOK_APPOINTMENT and not service_name:
+        # Time-change phrasing must not fall into this (keep existing service).
+        if (
+            intent == CustomerIntent.BOOK_APPOINTMENT
+            and not service_name
+            and not counselor.looks_like_reschedule_desire(last_customer)
+        ):
             ask = counselor.ask_service(
                 customer_name=None
             )
@@ -175,9 +180,41 @@ class ContextualReplyGenerator:
                 follow_up_question="What service do you need?",
             )
 
+        # Misclassified BOOK that is actually a time change → ask for new time.
+        if (
+            intent == CustomerIntent.BOOK_APPOINTMENT
+            and not service_name
+            and counselor.looks_like_reschedule_desire(last_customer)
+        ):
+            if upcoming:
+                service_name = upcoming[0].get("service_name") or service_name
+            existing = schedule_bit.strip()
+            if existing:
+                return ReplyDraft(
+                    body=(
+                        f"{greeting}no problem, we can change it. "
+                        f"{existing} What new day/time works?"
+                    ),
+                    follow_up_question="New preferred day/time?",
+                )
+            return ReplyDraft(
+                body=counselor.summarize_reschedule_confirm(
+                    customer_name=address_name,
+                    service_name=service_name,
+                    when=None,
+                ),
+                follow_up_question="New preferred day/time?",
+            )
+
         # Customer answered the open "what can I help with?" with a booking desire.
+        # Skip for reschedule/cancel — those keep the existing service and ask for time.
         if (
             not service_name
+            and intent
+            not in {
+                CustomerIntent.RESCHEDULE,
+                CustomerIntent.CANCEL_APPOINTMENT,
+            }
             and counselor.looks_like_booking_desire(last_customer)
             and (
                 counselor.is_purpose_question(memory.pending_question)
@@ -200,7 +237,15 @@ class ContextualReplyGenerator:
 
         # Vague ("anytime"), day-only ("Friday"), or part-of-day ("morning") —
         # ask for a concrete clock time; only list openings on availability asks.
-        if entities.get("vague_time") or entities.get("needs_time"):
+        # Reschedule/cancel keep their own paths (acknowledge change, ask new time).
+        if (
+            intent
+            not in {
+                CustomerIntent.RESCHEDULE,
+                CustomerIntent.CANCEL_APPOINTMENT,
+            }
+            and (entities.get("vague_time") or entities.get("needs_time"))
+        ):
             if intent == CustomerIntent.CHECK_AVAILABILITY and sched_data and sched_data.available_slots:
                 ranges = [
                     (slot.start, getattr(slot, "end", None))
@@ -230,6 +275,26 @@ class ContextualReplyGenerator:
         if memory.pending_question and intent == CustomerIntent.OTHER:
             # Never re-ask the same open purpose question after the customer answered.
             if counselor.is_purpose_question(memory.pending_question):
+                if counselor.looks_like_reschedule_desire(last_customer):
+                    if not service_name and upcoming:
+                        service_name = upcoming[0].get("service_name") or service_name
+                    existing = schedule_bit.strip()
+                    if existing:
+                        return ReplyDraft(
+                            body=(
+                                f"{greeting}no problem, we can change it. "
+                                f"{existing} What new day/time works?"
+                            ),
+                            follow_up_question="New preferred day/time?",
+                        )
+                    return ReplyDraft(
+                        body=counselor.summarize_reschedule_confirm(
+                            customer_name=address_name,
+                            service_name=service_name,
+                            when=None,
+                        ),
+                        follow_up_question="New preferred day/time?",
+                    )
                 if counselor.looks_like_booking_desire(last_customer):
                     return ReplyDraft(
                         body=counselor.ask_service(
@@ -372,12 +437,34 @@ class ContextualReplyGenerator:
                         when=sched_data.appointment.start,
                     )
                 )
+            sched_meta = (getattr(sched_data, "metadata", None) or {}) if sched_data else {}
+            sched_message = getattr(sched_data, "message", None) if sched_data else None
+            if (
+                sched_message == "preferred_time_unavailable"
+                or sched_meta.get("preferred_time_unavailable")
+            ):
+                preferred = _parse_dt(entities.get("preferred_start")) or _parse_dt(
+                    sched_meta.get("preferred_start")
+                )
+                return ReplyDraft(
+                    body=counselor.time_unavailable(
+                        preferred, customer_name=address_name
+                    ),
+                    follow_up_question="What other day or time works?",
+                )
             pending_when = _parse_dt(
-                (getattr(sched_data, "metadata", None) or {}).get("pending_slot_start")
-                if sched_data
-                else None
+                sched_meta.get("pending_slot_start")
             ) or _parse_dt(getattr(decision, "recommended_slot_start", None))
-            if pending_when:
+            has_preference = bool(
+                entities.get("preferred_start")
+                or entities.get("prefer_earliest")
+                or entities.get("prefer_latest")
+            )
+            customer_chose_clock = (
+                has_preference and entities.get("time_precision") == "clock"
+            )
+            # Only confirm a slot the customer actually picked — never invent one.
+            if pending_when and customer_chose_clock:
                 return ReplyDraft(
                     body=counselor.summarize_reschedule_confirm(
                         customer_name=address_name,
@@ -386,7 +473,8 @@ class ContextualReplyGenerator:
                     ),
                     follow_up_question="Should I move it?",
                 )
-            if sched_data and sched_data.available_slots:
+            # Soft day / earliest preference → list openings. Bare "change time" → ask.
+            if sched_data and sched_data.available_slots and has_preference:
                 ranges = [
                     (slot.start, getattr(slot, "end", None))
                     for slot in sched_data.available_slots[:4]
@@ -404,7 +492,10 @@ class ContextualReplyGenerator:
             existing = schedule_bit.strip()
             if existing:
                 return ReplyDraft(
-                    body=f"{greeting}no problem, we can change it. {existing} What new day/time works?",
+                    body=(
+                        f"{greeting}no problem, we can change it. "
+                        f"{existing} What new day/time works?"
+                    ),
                     follow_up_question="New preferred day/time?",
                 )
             return ReplyDraft(
@@ -552,6 +643,15 @@ class ContextualReplyGenerator:
                     "What's up — need to change that, check on something, or something else?"
                 ),
                 follow_up_question="What do you need?",
+            )
+        if counselor.looks_like_reschedule_desire(last_customer):
+            return ReplyDraft(
+                body=counselor.summarize_reschedule_confirm(
+                    customer_name=address_name,
+                    service_name=service_name,
+                    when=None,
+                ),
+                follow_up_question="New preferred day/time?",
             )
         if counselor.looks_like_booking_desire(last_customer):
             ask = counselor.ask_service(

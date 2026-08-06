@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app.enterprise.factory import get_enterprise_runtime
 from app.infrastructure.config import settings
@@ -280,6 +280,72 @@ class AdminConsoleService:
             "user_id": user_id,
             "channel": "email" if email else "phone",
             "dev_token": result.get("dev_token"),
+        }
+
+    async def initialize_member_password(
+        self,
+        shop_id: str,
+        user_id: str,
+        *,
+        new_password: str | None = None,
+    ) -> dict:
+        """Set a temporary password for a shop member. Returns plaintext once."""
+        import secrets
+        import string
+
+        from app.domain.exceptions import NotFoundError, ValidationError
+        from app.infrastructure.security import hash_password
+
+        try:
+            shop_uuid = UUID(shop_id)
+            user_uuid = UUID(user_id)
+        except ValueError as exc:
+            raise NotFoundError("Member not found") from exc
+
+        password = (new_password or "").strip()
+        if password:
+            if len(password) < 8:
+                raise ValidationError("Password must be at least 8 characters")
+            if len(password) > 128:
+                raise ValidationError("Password must be at most 128 characters")
+        else:
+            alphabet = string.ascii_letters + string.digits
+            password = "".join(secrets.choice(alphabet) for _ in range(12))
+
+        async with SessionLocal() as session:
+            membership = await session.scalar(
+                select(ShopMembershipModel).where(
+                    ShopMembershipModel.shop_id == shop_uuid,
+                    ShopMembershipModel.user_id == user_uuid,
+                )
+            )
+            if membership is None:
+                raise NotFoundError("Member not found")
+            user = await session.get(UserModel, user_uuid)
+            if user is None:
+                raise NotFoundError("Member not found")
+            if (user.account_type or "").strip().lower() == "platform_admin":
+                raise ValidationError("Cannot initialize platform admin password here")
+            if not user.is_active:
+                raise ValidationError("Cannot initialize password for inactive member")
+
+            user.password_hash = hash_password(password)
+            now = datetime.now(timezone.utc)
+            await session.execute(
+                update(RefreshTokenModel)
+                .where(
+                    RefreshTokenModel.user_id == user_uuid,
+                    RefreshTokenModel.revoked_at.is_(None),
+                )
+                .values(revoked_at=now)
+            )
+            await session.commit()
+
+        return {
+            "ok": True,
+            "shop_id": shop_id,
+            "user_id": user_id,
+            "temporary_password": password,
         }
 
     async def billing_monitor(self) -> dict:

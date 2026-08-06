@@ -158,6 +158,7 @@ async def login(body: LoginRequest, request: Request, uow: SqlAlchemyUnitOfWork 
     try:
         tokens = await service.login(
             password=body.password,
+            shop_name=body.shop_name,
             shop_slug=body.shop_slug,
             phone=body.phone,
             email=str(body.email) if body.email else None,

@@ -49,6 +49,7 @@ export type CustomerDetail = {
   customer: Customer;
   vehicles: Vehicle[];
   communications: Communication[];
+  repair_history?: RepairHistory[];
 };
 
 export type VehicleDetail = {
@@ -104,6 +105,19 @@ export async function searchCustomers(q?: string): Promise<Customer[]> {
   return res.json();
 }
 
+export type CustomerDirectoryItem = {
+  customer: Customer;
+  vehicles: Vehicle[];
+  last_service: RepairHistory | null;
+};
+
+export async function listCustomerDirectory(q?: string): Promise<CustomerDirectoryItem[]> {
+  const qs = q ? `?q=${encodeURIComponent(q)}` : "";
+  const res = await authFetch(`/v1/customers/directory${qs}`);
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
 export async function createCustomer(input: {
   name: string;
   phone?: string;
@@ -120,7 +134,12 @@ export async function createCustomer(input: {
 
 export async function updateCustomer(
   id: string,
-  input: Partial<{ name: string; phone: string; email: string; address: string }>,
+  input: Partial<{
+    name: string;
+    phone: string | null;
+    email: string | null;
+    address: string | null;
+  }>,
 ): Promise<Customer> {
   const res = await authFetch(`/v1/customers/${id}`, {
     method: "PATCH",
@@ -134,6 +153,13 @@ export async function getCustomerDetail(id: string): Promise<CustomerDetail> {
   const res = await authFetch(`/v1/customers/${id}`);
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
+}
+
+export async function deleteCustomer(id: string): Promise<void> {
+  const res = await authFetch(`/v1/customers/${id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(await parseError(res));
 }
 
 export async function createVehicle(
@@ -153,6 +179,32 @@ export async function createVehicle(
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
+}
+
+export async function updateVehicle(
+  vehicleId: string,
+  input: Partial<{
+    vin: string;
+    license_plate: string | null;
+    year: number;
+    make: string;
+    model: string;
+    mileage: number;
+  }>,
+): Promise<Vehicle> {
+  const res = await authFetch(`/v1/vehicles/${vehicleId}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function deleteVehicle(vehicleId: string): Promise<void> {
+  const res = await authFetch(`/v1/vehicles/${vehicleId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(await parseError(res));
 }
 
 export async function addCommunication(
@@ -192,4 +244,14 @@ export async function addRepairHistory(
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
+}
+
+export async function deleteRepairHistory(
+  vehicleId: string,
+  repairId: string,
+): Promise<void> {
+  const res = await authFetch(`/v1/vehicles/${vehicleId}/history/${repairId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(await parseError(res));
 }

@@ -182,6 +182,18 @@ async def complete_call(
     )
 
 
+@router.delete("/calls/{call_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_call(
+    call_id: UUID,
+    user: CurrentUser = Depends(get_current_user),
+    runtime: VoiceRuntime = Depends(_runtime),
+) -> None:
+    try:
+        await runtime.service.delete_call(shop_id=user.shop_id, call_id=call_id)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
 @router.get("/metrics")
 async def voice_metrics(
     user: CurrentUser = Depends(get_current_user),

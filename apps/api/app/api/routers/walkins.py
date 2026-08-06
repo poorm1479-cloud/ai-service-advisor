@@ -1,5 +1,7 @@
 from uuid import UUID
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import CurrentUser, get_current_user, get_uow
@@ -68,11 +70,16 @@ async def create_walk_in(
 @router.get("", response_model=list[WalkInVisitOut])
 async def list_walk_ins(
     status_filter: WalkInStatus | None = Query(default=None, alias="status"),
+    arrived_after: datetime | None = Query(default=None),
     current: CurrentUser = Depends(get_current_user),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
 ) -> list[WalkInVisitOut]:
     service = WalkInService(uow)
-    visits = await service.list(shop_id=current.shop_id, status=status_filter)
+    visits = await service.list(
+        shop_id=current.shop_id,
+        status=status_filter,
+        arrived_after=arrived_after,
+    )
     return [WalkInVisitOut.model_validate(v) for v in visits]
 
 

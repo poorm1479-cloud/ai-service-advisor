@@ -94,8 +94,11 @@ async function authFetch(path: string, init: RequestInit = {}, session?: AuthSes
   return res;
 }
 
-export async function listSmsConversations(status?: string): Promise<SmsConversation[]> {
-  const qs = status ? `?status_filter=${encodeURIComponent(status)}` : "";
+export async function listSmsConversations(status?: string, limit = 50): Promise<SmsConversation[]> {
+  const params = new URLSearchParams();
+  if (status) params.set("status_filter", status);
+  if (limit !== 50) params.set("limit", String(limit));
+  const qs = params.toString() ? `?${params.toString()}` : "";
   const res = await authFetch(`/v1/sms/conversations${qs}`);
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
@@ -123,6 +126,13 @@ export async function setSmsTakeover(id: string, enabled: boolean): Promise<SmsC
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
+}
+
+export async function deleteSmsConversation(id: string): Promise<void> {
+  const res = await authFetch(`/v1/sms/conversations/${id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(await parseError(res));
 }
 
 export async function getSmsMetrics(): Promise<SmsMetrics> {

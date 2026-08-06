@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.api.deps import CurrentUser, get_current_user
@@ -107,11 +108,12 @@ def _msg_out(m) -> MessageOut:
 @router.get("/conversations", response_model=list[ConversationOut])
 async def list_conversations(
     status_filter: str | None = None,
+    limit: int = Query(50, ge=1, le=100),
     user: CurrentUser = Depends(get_current_user),
     runtime: SmsRuntime = Depends(_runtime),
 ) -> list[ConversationOut]:
     items = await runtime.store.list_conversations(
-        user.shop_id, status=status_filter, limit=100
+        user.shop_id, status=status_filter, limit=limit
     )
     return [_conv_out(c) for c in items]
 
@@ -119,27 +121,35 @@ async def list_conversations(
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetailOut)
 async def get_conversation(
     conversation_id: UUID,
+    include_timeline: bool = Query(False),
     user: CurrentUser = Depends(get_current_user),
     runtime: SmsRuntime = Depends(_runtime),
 ) -> ConversationDetailOut:
     conv = await runtime.store.get_conversation(user.shop_id, conversation_id)
     if conv is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
-    messages = await runtime.store.list_messages(user.shop_id, conversation_id)
-    memory = await runtime.memory.load(
-        shop_id=user.shop_id,
-        customer_phone=conv.customer_phone,
-        conversation_id=conv.id,
-    )
-    timeline = [
-        {
-            "role": t.role,
-            "content": t.content,
-            "intent": t.intent,
-            "at": t.at.isoformat() if t.at else None,
-        }
-        for t in memory.turns
-    ]
+    if include_timeline:
+        messages, memory = await asyncio.gather(
+            runtime.store.list_messages(user.shop_id, conversation_id),
+            runtime.memory.load(
+                shop_id=user.shop_id,
+                customer_phone=conv.customer_phone,
+                conversation_id=conv.id,
+            ),
+        )
+        timeline = [
+            {
+                "role": t.role,
+                "content": t.content,
+                "intent": t.intent,
+                "at": t.at.isoformat() if t.at else None,
+            }
+            for t in memory.turns
+        ]
+    else:
+        # Inbox UI only needs messages — skip memory load on the hot path.
+        messages = await runtime.store.list_messages(user.shop_id, conversation_id)
+        timeline = []
     return ConversationDetailOut(
         conversation=_conv_out(conv),
         messages=[_msg_out(m) for m in messages],
@@ -185,6 +195,21 @@ async def human_takeover(
     except ValueError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _conv_out(conv)
+
+
+@router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conversation(
+    conversation_id: UUID,
+    user: CurrentUser = Depends(get_current_user),
+    runtime: SmsRuntime = Depends(_runtime),
+) -> None:
+    try:
+        await runtime.service.delete_conversation(
+            shop_id=user.shop_id,
+            conversation_id=conversation_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.get("/metrics")

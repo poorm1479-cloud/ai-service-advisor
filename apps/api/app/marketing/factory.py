@@ -78,6 +78,11 @@ def get_marketing_runtime() -> MarketingRuntime:
     return _runtime
 
 
+def peek_marketing_runtime() -> MarketingRuntime | None:
+    """Return the singleton if already built — never cold-starts marketing/SMS."""
+    return _runtime
+
+
 def reset_marketing_runtime() -> None:
     global _runtime
     _runtime = None

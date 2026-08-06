@@ -44,6 +44,7 @@ def test_offer_slots_spoken_uses_from_to_windows():
     end = datetime(2026, 8, 5, 16, 0, tzinfo=timezone.utc)
     body = offer_slots_spoken([(start, end)], customer_name="Alex")
     assert "from 8:00 AM to 9:00 AM" in body
+    assert "I've got openings" in body
     assert "go ahead" not in body.lower()
     assert "going" not in body.lower()
 
@@ -130,4 +131,21 @@ def test_greeting_introduces_shop_and_asks_purpose():
     assert first_reply_prefix(shop_name="Main Street Auto") == "Hello, this is Main Street Auto. "
     assert is_purpose_question(ask_purpose())
     assert looks_like_booking_desire("I want to make a reservation")
+    assert looks_like_booking_desire("I'd like to book an appointment")
     assert not looks_like_booking_desire("hello there")
+    # Time-change / cancel must not look like a new booking (would ask for service).
+    assert not looks_like_booking_desire("Can I change my appointment time?")
+    assert not looks_like_booking_desire("I want to change my appointment")
+    assert not looks_like_booking_desire("Please reschedule my appointment")
+    assert not looks_like_booking_desire("Cancel my appointment")
+    assert not looks_like_booking_desire("move my appointment to Friday")
+    assert not looks_like_booking_desire("I need an appointment time change")
+    assert not looks_like_booking_desire("reservation time change")
+    from app.agents.counselor.persona import looks_like_reschedule_desire
+
+    assert looks_like_reschedule_desire("I need an appointment time change")
+    assert looks_like_reschedule_desire("reservation time change")
+    assert looks_like_reschedule_desire("I want to change my time")
+    # Oil change booking must not look like a time-change ask.
+    assert not looks_like_reschedule_desire("I need an oil change appointment")
+    assert looks_like_booking_desire("I need an oil change appointment")

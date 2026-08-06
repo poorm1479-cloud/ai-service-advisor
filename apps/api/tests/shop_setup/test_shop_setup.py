@@ -193,6 +193,52 @@ async def test_setup_wizard_and_phone_catalog(client: AsyncClient):
     assert all(h["closed"] is True for h in closed_reload.json()["business_hours"])
 
 
+async def test_create_service_rejects_duplicate_name(client: AsyncClient):
+    reg = await register_shop_via_otp(client, shop_name="Dup Service Garage")
+    headers = {"Authorization": f"Bearer {reg['access_token']}"}
+
+    complete = await client.post(
+        "/v1/shop/setup/complete",
+        headers=headers,
+        json={
+            "profile": {
+                "name": "Dup Service Garage",
+                "timezone": "America/Los_Angeles",
+                "phone": "+15551234567",
+            },
+            "business_hours": _hours(),
+            "services": [
+                {
+                    "name": "Oil Change",
+                    "category": "maintenance",
+                    "duration_minutes": 30,
+                    "price": "49.99",
+                    "skill": "oil_change",
+                    "bay": "quick_service",
+                    "active": True,
+                }
+            ],
+        },
+    )
+    assert complete.status_code == 200, complete.text
+
+    dup = await client.post(
+        "/v1/shop/services",
+        headers=headers,
+        json={
+            "name": "oil change",
+            "category": "maintenance",
+            "duration_minutes": 45,
+            "price": "59.00",
+            "skill": "oil_change",
+            "bay": "quick_service",
+            "active": True,
+        },
+    )
+    assert dup.status_code == 409, dup.text
+    assert "already exists" in dup.json()["detail"].lower()
+
+
 async def test_phone_signup_setup_email_syncs_to_owner_profile(client: AsyncClient):
     """Phone-only register has no User.email; setup shop email must fill Settings."""
     import uuid

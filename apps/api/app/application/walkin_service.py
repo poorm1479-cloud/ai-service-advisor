@@ -106,11 +106,17 @@ class WalkInService:
         return await self._detail(shop_id, visit.id)
 
     async def list(
-        self, *, shop_id: UUID, status: WalkInStatus | None = None
+        self,
+        *,
+        shop_id: UUID,
+        status: WalkInStatus | None = None,
+        arrived_after: datetime | None = None,
     ) -> list[WalkInVisit]:
         await self._uow.bind_shop(shop_id)
         return await self._uow.walk_ins.list_by_shop(
-            shop_id, status=status.value if status else None
+            shop_id,
+            status=status.value if status else None,
+            arrived_after=arrived_after,
         )
 
     async def get(self, *, shop_id: UUID, visit_id: UUID) -> WalkInDetail:

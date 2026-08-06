@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # Modular AI — "heuristic" | "openai" (with local fallbacks) | "ollama"
     # openai mode fallbacks:
     #   AI: OpenAI → Ollama | STT: Whisper → Local Whisper | TTS: OpenAI → Piper
-    ai_provider: str = "heuristic"
+    ai_provider: str = "ollama"
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     openai_stt_model: str = "whisper-1"
@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     openai_tts_voice: str = "alloy"
     openai_extraction_model: str = "gpt-4o-mini"
     ollama_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen3:8b"
+    ollama_model: str = "qwen3:14b"
     # Local Whisper (OpenAI-compatible /v1/audio/transcriptions)
     local_whisper_url: str = "http://localhost:9000/v1"
     local_whisper_model: str = "whisper-1"

@@ -128,6 +128,11 @@ export async function bookAppointment(input: {
   priority?: string;
   notes?: string;
   mechanic_id?: string;
+  bay_id?: string;
+  customer_id?: string;
+  vehicle_id?: string;
+  walk_in_id?: string;
+  source?: string;
 }): Promise<Record<string, unknown>> {
   const res = await authFetch("/v1/appointments/book", {
     method: "POST",
@@ -153,6 +158,18 @@ export async function rescheduleAppointment(
   const res = await authFetch(`/v1/appointments/${id}/reschedule`, {
     method: "POST",
     body: JSON.stringify({ preferred_start }),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function changeAppointmentService(
+  id: string,
+  service_id: string,
+): Promise<Record<string, unknown>> {
+  const res = await authFetch(`/v1/appointments/${id}/change-service`, {
+    method: "POST",
+    body: JSON.stringify({ service_id }),
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();

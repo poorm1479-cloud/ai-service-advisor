@@ -1,8 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import dynamic from "next/dynamic";
+import {
+  FormEvent,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   convertWalkIn,
   createWalkIn,
@@ -19,12 +28,29 @@ import {
   Vehicle,
 } from "@/lib/crm";
 import { useAuth } from "@/lib/auth";
-import { VinInput } from "@/components/VinInput";
 import { listShopServices, ShopService } from "@/lib/shopSetup";
+
+const VinInput = dynamic(
+  () => import("@/components/VinInput").then((m) => ({ default: m.VinInput })),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="h-10 animate-pulse rounded-md border border-[var(--line)] bg-[var(--background)]/60" />
+    ),
+  },
+);
 
 const VIN_ALPHABET = "ABCDEFGHJKLMNPRSTUVWXYZ0123456789";
 
 type EntryMode = "vin" | "manual";
+type PageView = "intake" | "todays";
+/** URL `?view=` — keeps No VIN / Today's selection across menu navigation. */
+type WalkInView = "vin" | "manual" | "todays";
+
+function parseWalkInView(value: string | null): WalkInView {
+  if (value === "manual" || value === "todays" || value === "vin") return value;
+  return "vin";
+}
 
 type MatchContext = {
   vehicle: Vehicle;
@@ -67,15 +93,20 @@ function buildAiRecommendations(complaint: string, repairs: RepairHistory[]): st
   return [...new Set(tips)].slice(0, 4);
 }
 
-export default function WalkInsPage() {
+function WalkInsContent() {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { session, loading: authLoading } = useAuth();
   const [visits, setVisits] = useState<WalkInVisit[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [services, setServices] = useState<ShopService[]>([]);
 
-  const [entryMode, setEntryMode] = useState<EntryMode>("vin");
+  const walkInView = parseWalkInView(searchParams.get("view"));
+  const pageView: PageView = walkInView === "todays" ? "todays" : "intake";
+  const entryMode: EntryMode = walkInView === "manual" ? "manual" : "vin";
+
   const [vin, setVin] = useState("");
   const [plate, setPlate] = useState("");
   const [year, setYear] = useState("");
@@ -143,11 +174,13 @@ export default function WalkInsPage() {
     });
   }
 
-  async function load() {
+  async function loadTodays() {
     setLoading(true);
     setError(null);
     try {
-      setVisits(await listWalkIns());
+      const start = new Date();
+      start.setHours(0, 0, 0, 0);
+      setVisits(await listWalkIns(undefined, start.toISOString()));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load walk-ins");
     } finally {
@@ -157,12 +190,19 @@ export default function WalkInsPage() {
 
   useEffect(() => {
     if (!authLoading && session) {
-      void load();
+      // Intake only needs services — defer walk-in list until Today's tab
       void listShopServices(true)
         .then(setServices)
         .catch(() => setServices([]));
     }
   }, [authLoading, session]);
+
+  useEffect(() => {
+    if (!authLoading && session && walkInView === "todays") {
+      void loadTodays();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh when opening Today's view
+  }, [authLoading, session, walkInView]);
 
   async function hydrateMatch(v: Vehicle, seq: number) {
     let customer: Customer | null = null;
@@ -313,18 +353,30 @@ export default function WalkInsPage() {
     return () => window.clearTimeout(timer);
   }, [entryMode, plate, year, make, model]);
 
-  function switchEntryMode(mode: EntryMode) {
-    setEntryMode(mode);
-    setVinStatus(null);
-    setMatch(null);
-    setAutoFilled(false);
-    if (mode === "manual") {
-      assistSeq.current += 1;
-      setVin("");
-      setVinLooking(false);
-      setMatchLoading(false);
-    }
-  }
+  const selectView = useCallback(
+    (next: WalkInView) => {
+      if (next === "vin" || next === "manual") {
+        setVinStatus(null);
+        setMatch(null);
+        setAutoFilled(false);
+        if (next === "manual") {
+          assistSeq.current += 1;
+          setVin("");
+          setVinLooking(false);
+          setMatchLoading(false);
+        }
+      }
+      const params = new URLSearchParams(searchParams.toString());
+      if (next === "vin") {
+        params.delete("view");
+      } else {
+        params.set("view", next);
+      }
+      const qs = params.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    },
+    [pathname, router, searchParams],
+  );
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
@@ -354,7 +406,7 @@ export default function WalkInsPage() {
         throw new Error("Select at least one service request");
       }
 
-      const detail = await createWalkIn({
+      let detail = await createWalkIn({
         vin: submitVin,
         license_plate: plate || undefined,
         year: Number(year),
@@ -368,13 +420,14 @@ export default function WalkInsPage() {
       // Link a guest customer so Customers + dashboard New Customers update
       if (!detail.customer) {
         const vehicleLabel = [year, make, model].filter(Boolean).join(" ").trim();
-        await convertWalkIn(detail.visit.id, {
+        detail = await convertWalkIn(detail.visit.id, {
           name: vehicleLabel
             ? `Unknown walk-in · ${vehicleLabel}`
             : "Unknown walk-in",
         });
       }
 
+      // Schedule from the visit page: Start now or Appointment
       router.push(`/dashboard/walk-ins/${detail.visit.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start service visit");
@@ -388,30 +441,97 @@ export default function WalkInsPage() {
     : "unknown";
 
   return (
-    <div className="space-y-6">
-      <div>
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:h-full">
+      <div className="shrink-0">
         <h1 className="page-title">Walk-ins</h1>
-        <p className="mt-1 text-sm text-[var(--muted)]">
-          Counter intake — scan VIN or enter vehicle, then start the visit
-        </p>
       </div>
 
-      <form
-        onSubmit={onCreate}
-        className="space-y-4 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4"
-      >
-        <div className="flex flex-wrap gap-2">
+      {error && (
+        <p className="shrink-0 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+          {error}
+        </p>
+      )}
+
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+        <div className="flex shrink-0 flex-wrap gap-2">
           <ModeChip
-            active={entryMode === "vin"}
-            onClick={() => switchEntryMode("vin")}
+            active={pageView === "intake" && entryMode === "vin"}
+            onClick={() => selectView("vin")}
             label="Scan / enter VIN"
           />
           <ModeChip
-            active={entryMode === "manual"}
-            onClick={() => switchEntryMode("manual")}
+            active={pageView === "intake" && entryMode === "manual"}
+            onClick={() => selectView("manual")}
             label="No VIN — enter vehicle"
           />
+          <ModeChip
+            active={pageView === "todays"}
+            onClick={() => selectView("todays")}
+            label="Today's walk-ins"
+          />
         </div>
+
+        {pageView === "todays" ? (
+          <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4">
+            <h2 className="mb-2 shrink-0 text-sm font-semibold">Today&apos;s walk-ins</h2>
+            <div className="table-scroll asa-scroll min-h-0 flex-1 overflow-auto overscroll-contain">
+              <table>
+                <thead className="border-b border-[var(--line)] text-xs uppercase tracking-[0.08em] text-[var(--muted)]">
+                  <tr>
+                    <th className="px-3 py-2">Arrived</th>
+                    <th className="px-3 py-2">Service Request</th>
+                    <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2">Customer</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr>
+                      <td colSpan={4} className="px-3 py-6 text-[var(--muted)]">
+                        Loading…
+                      </td>
+                    </tr>
+                  ) : visits.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="px-3 py-6 text-[var(--muted)]">
+                        No walk-ins yet
+                      </td>
+                    </tr>
+                  ) : (
+                    visits.map((v) => (
+                      <tr
+                        key={v.id}
+                        className="border-t border-[var(--line)] hover:bg-[var(--accent-soft)]/40"
+                      >
+                        <td className="px-3 py-2 text-xs text-[var(--muted)]">
+                          {v.arrived_at ? new Date(v.arrived_at).toLocaleString() : "—"}
+                        </td>
+                        <td className="px-3 py-2">
+                          <Link
+                            href={`/dashboard/walk-ins/${v.id}`}
+                            className="text-sm font-medium text-[var(--accent)]"
+                          >
+                            <span className="whitespace-pre-line">
+                              {v.complaint.split("\n").filter(Boolean).join(" · ") || v.complaint}
+                            </span>
+                          </Link>
+                        </td>
+                        <td className="px-3 py-2 capitalize text-xs text-[var(--muted)]">{v.status}</td>
+                        <td className="px-3 py-2 text-xs text-[var(--muted)]">
+                          {v.customer_id ? "Linked" : "Unknown"}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        ) : (
+      <form
+        onSubmit={onCreate}
+        className="asa-scroll min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4"
+      >
 
         {entryMode === "vin" ? (
           <VinInput
@@ -671,72 +791,20 @@ export default function WalkInsPage() {
           disabled={saving || vinLooking || services.length === 0}
           className="rounded-md bg-[var(--accent)] px-4 py-2.5 text-sm font-medium text-white disabled:opacity-60"
         >
-          {saving ? "Starting…" : "Start Service Visit"}
+          {saving ? "Starting…" : "Start Service"}
         </button>
       </form>
-
-      {error && (
-        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
-          {error}
-        </p>
-      )}
-
-      <div>
-        <h2 className="mb-2 text-sm font-semibold">Today&apos;s walk-ins</h2>
-        <div className="table-scroll">
-          <table>
-            <thead className="border-b border-[var(--line)] text-xs uppercase tracking-[0.08em] text-[var(--muted)]">
-              <tr>
-                <th className="px-4 py-3">Arrived</th>
-                <th className="px-4 py-3">Service Request</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">Customer</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={4} className="px-4 py-8 text-[var(--muted)]">
-                    Loading…
-                  </td>
-                </tr>
-              ) : visits.length === 0 ? (
-                <tr>
-                  <td colSpan={4} className="px-4 py-8 text-[var(--muted)]">
-                    No walk-ins yet
-                  </td>
-                </tr>
-              ) : (
-                visits.map((v) => (
-                  <tr
-                    key={v.id}
-                    className="border-t border-[var(--line)] hover:bg-[var(--accent-soft)]/40"
-                  >
-                    <td className="px-4 py-3 text-[var(--muted)]">
-                      {v.arrived_at ? new Date(v.arrived_at).toLocaleString() : "—"}
-                    </td>
-                    <td className="px-4 py-3">
-                      <Link
-                        href={`/dashboard/walk-ins/${v.id}`}
-                        className="font-medium text-[var(--accent)]"
-                      >
-                        <span className="whitespace-pre-line">
-                          {v.complaint.split("\n").filter(Boolean).join(" · ") || v.complaint}
-                        </span>
-                      </Link>
-                    </td>
-                    <td className="px-4 py-3 capitalize text-[var(--muted)]">{v.status}</td>
-                    <td className="px-4 py-3 text-[var(--muted)]">
-                      {v.customer_id ? "Linked" : "Unknown"}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+        )}
       </div>
     </div>
+  );
+}
+
+export default function WalkInsPage() {
+  return (
+    <Suspense fallback={<p className="text-sm text-[var(--muted)]">Loading walk-ins…</p>}>
+      <WalkInsContent />
+    </Suspense>
   );
 }
 

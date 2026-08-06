@@ -1,12 +1,14 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import {
   Appointment,
   bookAppointment,
   CalendarPayload,
   cancelAppointment,
+  changeAppointmentService,
   getCalendar,
   rescheduleAppointment,
 } from "@/lib/appointments";
@@ -24,16 +26,35 @@ function hourLabel(h: number) {
   return `${hr}${ampm}`;
 }
 
-function formatTime(iso: string) {
+/**
+ * Shop wall-clock from API ISO (offset wall time).
+ * Do not use Date#getHours() — browser TZ would place appointments on the wrong row.
+ */
+function wallClockParts(iso: string): { date: string; hour: number; minute: number } {
+  const m = iso.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})/);
+  if (m) {
+    return { date: m[1], hour: Number(m[2]), minute: Number(m[3]) };
+  }
   const d = new Date(iso);
-  return d.toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return {
+    date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+    hour: d.getHours(),
+    minute: d.getMinutes(),
+  };
+}
+
+function formatTime(iso: string) {
+  const { hour, minute } = wallClockParts(iso);
+  const ampm = hour >= 12 ? "PM" : "AM";
+  const hr = ((hour + 11) % 12) + 1;
+  return `${hr}:${String(minute).padStart(2, "0")} ${ampm}`;
 }
 
 function formatDay(iso: string) {
-  return new Date(iso).toLocaleDateString([], {
+  const date = iso.length >= 10 ? iso.slice(0, 10) : wallClockParts(iso).date;
+  // Noon local avoids DST/backdate quirks for YYYY-MM-DD labels.
+  return new Date(`${date}T12:00:00`).toLocaleDateString([], {
     weekday: "short",
     month: "short",
     day: "numeric",
@@ -41,9 +62,10 @@ function formatDay(iso: string) {
 }
 
 function dayKey(iso: string) {
-  const d = typeof iso === "string" && iso.length === 10 ? new Date(`${iso}T12:00:00`) : new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  if (typeof iso === "string" && /^\d{4}-\d{2}-\d{2}/.test(iso)) {
+    return iso.slice(0, 10);
+  }
+  return wallClockParts(iso).date;
 }
 
 /** Format a Date as datetime-local value (browser local wall clock). */
@@ -71,10 +93,10 @@ function localDateTimeToIso(value: string): string {
 }
 
 function defaultRescheduleLocal(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  d.setDate(d.getDate() + 1);
-  return toLocalDateTimeValue(d);
+  const { date, hour, minute } = wallClockParts(iso);
+  if (!date || !Number.isFinite(hour)) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date}T${pad(hour)}:${pad(minute)}`;
 }
 
 function parseHourMinute(value: string): { hour: number; minute: number } {
@@ -91,13 +113,6 @@ function apiWeekdayFromAnchor(dayAnchor: string): number {
   return (d.getDay() + 6) % 7;
 }
 
-function formatHmLabel(value: string): string {
-  const { hour, minute } = parseHourMinute(value);
-  const ampm = hour >= 12 ? "PM" : "AM";
-  const hr = ((hour + 11) % 12) + 1;
-  return minute === 0 ? `${hr}${ampm}` : `${hr}:${String(minute).padStart(2, "0")}${ampm}`;
-}
-
 function dayBusinessWindow(
   businessHours: CalendarPayload["business_hours"] | undefined,
   dayAnchor: string,
@@ -105,17 +120,13 @@ function dayBusinessWindow(
   openHour: number;
   closeHour: number;
   closed: boolean;
-  openLabel: string;
-  closeLabel: string;
 } {
   const fallback = {
     openHour: 8,
     closeHour: 17,
     closed: false,
-    openLabel: "8AM",
-    closeLabel: "5PM",
   };
-  if (!businessHours?.length) return fallback;
+  if (!dayAnchor || !businessHours?.length) return fallback;
   const today = businessHours.find((h) => h.weekday === apiWeekdayFromAnchor(dayAnchor));
   if (!today) return fallback;
   if (today.closed) return { ...fallback, closed: true };
@@ -126,8 +137,6 @@ function dayBusinessWindow(
     // Include the closing hour row (matches prior 8–17 grid for close=17:00).
     closeHour: Math.max(open.hour, close.hour),
     closed: false,
-    openLabel: formatHmLabel(today.open_time),
-    closeLabel: formatHmLabel(today.close_time),
   };
 }
 
@@ -159,10 +168,10 @@ function appointmentLabel(a: Appointment) {
 
 export default function AppointmentsPage() {
   const { session, loading: authLoading } = useAuth();
+  const searchParams = useSearchParams();
   const [calendar, setCalendar] = useState<CalendarPayload | null>(null);
   const [selected, setSelected] = useState<Appointment | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [services, setServices] = useState<ShopService[]>([]);
   const [serviceId, setServiceId] = useState("");
@@ -174,17 +183,18 @@ export default function AppointmentsPage() {
   const [teamMembers, setTeamMembers] = useState<ShopMember[]>([]);
   const [rescheduleAt, setRescheduleAt] = useState("");
   const [rescheduling, setRescheduling] = useState(false);
+  const [detailServiceId, setDetailServiceId] = useState("");
   const [booking, setBooking] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  /** Shop-local calendar day for "today" (from API, not browser). */
+  const [shopToday, setShopToday] = useState("");
 
-  const selectedService = useMemo(
-    () => services.find((s) => s.id === serviceId) ?? null,
-    [services, serviceId],
-  );
+  // Empty until first calendar response (shop-local today or ?date=).
+  const [dayAnchor, setDayAnchor] = useState("");
 
-  const [dayAnchor, setDayAnchor] = useState(() => dayKey(new Date().toISOString()));
-
-  const load = useCallback(async (anchor?: string) => {
-    const day = anchor ?? dayAnchor;
+  const load = useCallback(async (anchor?: string | null) => {
+    // Omit / empty anchor → API uses shop timezone "today".
+    const day = anchor?.trim() || undefined;
     const [cal, svc, membersResult] = await Promise.all([
       getCalendar("day", day),
       listShopServices(true),
@@ -198,7 +208,10 @@ export default function AppointmentsPage() {
       ),
     ]);
     setCalendar(cal);
-    if (cal.anchor) setDayAnchor(cal.anchor);
+    if (cal.anchor) {
+      setDayAnchor(cal.anchor);
+      if (!day) setShopToday(cal.anchor);
+    }
     setServices(svc);
     setTeamMembers(membersResult.members);
     setServiceId((prev) => prev || (svc[0]?.id ?? ""));
@@ -206,15 +219,20 @@ export default function AppointmentsPage() {
       // Non-fatal: Assign to still falls back to calendar.mechanics.
       console.warn("Team roster unavailable for Assign to:", membersResult.message);
     }
-  }, [dayAnchor]);
+    return cal;
+  }, []);
 
   useEffect(() => {
     if (authLoading || !session) return;
+    const dateParam = searchParams.get("date");
+    const initialDay =
+      dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : null;
     (async () => {
       setLoading(true);
       setError(null);
       try {
-        await load();
+        // null = shop today; explicit date from walk-in / deep links.
+        await load(initialDay);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load schedule");
       } finally {
@@ -228,7 +246,6 @@ export default function AppointmentsPage() {
   async function goToDay(next: string) {
     setDayAnchor(next);
     setError(null);
-    setNotice(null);
     setLoading(true);
     try {
       await load(next);
@@ -248,13 +265,22 @@ export default function AppointmentsPage() {
     );
   }
   const dayWindow = useMemo(
-    () => dayBusinessWindow(calendar?.business_hours, dayAnchor),
-    [calendar?.business_hours, dayAnchor],
+    () => dayBusinessWindow(calendar?.business_hours, dayAnchor || calendar?.anchor || ""),
+    [calendar?.business_hours, calendar?.anchor, dayAnchor],
   );
-  const hours = useMemo(
-    () => scheduleHourRows(dayWindow.openHour, dayWindow.closeHour),
-    [dayWindow.openHour, dayWindow.closeHour],
-  );
+  const hours = useMemo(() => {
+    let open = dayWindow.openHour;
+    let close = dayWindow.closeHour;
+    // Expand grid so walk-in / off-nominal slots still render in a row.
+    for (const a of calendar?.appointments ?? []) {
+      const h = wallClockParts(a.start).hour;
+      if (Number.isFinite(h)) {
+        open = Math.min(open, h);
+        close = Math.max(close, h);
+      }
+    }
+    return scheduleHourRows(open, close);
+  }, [dayWindow.openHour, dayWindow.closeHour, calendar?.appointments]);
 
   // Preferred start once calendar hours are known (avoids hardcoded 8–17).
   useEffect(() => {
@@ -265,13 +291,16 @@ export default function AppointmentsPage() {
   const selectAppointment = useCallback((appointment: Appointment) => {
     setSelected(appointment);
     setRescheduleAt(defaultRescheduleLocal(appointment.start));
+    const fromMeta =
+      typeof appointment.metadata?.service_id === "string"
+        ? appointment.metadata.service_id
+        : "";
+    setDetailServiceId(appointment.service_id || fromMeta || "");
     setError(null);
-    setNotice(null);
-    requestAnimationFrame(() => {
-      document
-        .getElementById("appointment-detail")
-        ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    });
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelected(null);
   }, []);
 
   const mechanicMap = useMemo(() => {
@@ -325,29 +354,24 @@ export default function AppointmentsPage() {
     e.preventDefault();
     if (!serviceId) {
       setError("Select a service first");
-      setNotice(null);
       return;
     }
     if (!preferredStart) {
       setError("Pick a preferred start time");
-      setNotice(null);
       return;
     }
     const start = parseLocalDateTime(preferredStart);
     if (Number.isNaN(start.getTime())) {
       setError("Invalid preferred start time");
-      setNotice(null);
       return;
     }
     const now = new Date();
     now.setSeconds(0, 0);
     if (start.getTime() < now.getTime()) {
       setError("Preferred start cannot be in the past. Pick a current or future time.");
-      setNotice(null);
       return;
     }
     setError(null);
-    setNotice(null);
     setBooking(true);
     try {
       const result = await bookAppointment({
@@ -368,15 +392,9 @@ export default function AppointmentsPage() {
           : "";
         throw new Error(`${base}${hint}`);
       }
-      await load();
-      if (result.appointment) {
-        const booked = result.appointment as Appointment;
-        setSelected(booked);
-        const when = `${formatDay(booked.start)} ${formatTime(booked.start)}`;
-        setNotice(`Booked for ${when}`);
-      } else {
-        setNotice(typeof result.message === "string" ? result.message : "Booked");
-      }
+      await load(dayAnchor || null);
+      setCreateOpen(false);
+      clearSelection();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Book failed");
     } finally {
@@ -389,7 +407,7 @@ export default function AppointmentsPage() {
     try {
       await cancelAppointment(selected.id, "Cancelled from dashboard");
       setSelected(null);
-      await load();
+      await load(dayAnchor || null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Cancel failed");
     }
@@ -397,35 +415,62 @@ export default function AppointmentsPage() {
 
   async function onReschedule() {
     if (!selected) return;
-    if (!rescheduleAt) {
-      setError("Pick a new date and time to reschedule");
+    const currentServiceId =
+      selected.service_id ||
+      (typeof selected.metadata?.service_id === "string"
+        ? selected.metadata.service_id
+        : "");
+    const serviceChanged =
+      Boolean(detailServiceId) && detailServiceId !== currentServiceId;
+    const originalLocal = defaultRescheduleLocal(selected.start);
+    const timeChanged = Boolean(rescheduleAt) && rescheduleAt !== originalLocal;
+
+    if (!serviceChanged && !timeChanged) {
+      setError("Change the service or pick a new date and time to reschedule");
       return;
     }
-    const preferredStartAt = parseLocalDateTime(rescheduleAt);
-    if (Number.isNaN(preferredStartAt.getTime())) {
-      setError("Invalid reschedule time");
+    if (serviceChanged && !detailServiceId) {
+      setError("Select a service");
       return;
     }
-    const now = new Date();
-    now.setSeconds(0, 0);
-    if (preferredStartAt.getTime() < now.getTime()) {
-      setError("Reschedule time cannot be in the past. Pick a current or future time.");
-      return;
+    if (timeChanged) {
+      const preferredStartAt = parseLocalDateTime(rescheduleAt);
+      if (Number.isNaN(preferredStartAt.getTime())) {
+        setError("Invalid reschedule time");
+        return;
+      }
+      const now = new Date();
+      now.setSeconds(0, 0);
+      if (preferredStartAt.getTime() < now.getTime()) {
+        setError("Reschedule time cannot be in the past. Pick a current or future time.");
+        return;
+      }
     }
+
     setRescheduling(true);
     setError(null);
     try {
-      const result = await rescheduleAppointment(
-        selected.id,
-        localDateTimeToIso(rescheduleAt),
-      );
-      if (!result.success) throw new Error(String(result.message || "Reschedule failed"));
-      await load();
-      if (result.appointment) {
-        const next = result.appointment as Appointment;
-        setSelected(next);
-        setRescheduleAt(defaultRescheduleLocal(next.start));
+      let appointmentId = selected.id;
+      if (serviceChanged) {
+        const serviceResult = await changeAppointmentService(
+          appointmentId,
+          detailServiceId,
+        );
+        if (!serviceResult.success) {
+          throw new Error(String(serviceResult.message || "Failed to change service"));
+        }
+        const updated = serviceResult.appointment as Appointment | undefined;
+        if (updated?.id) appointmentId = updated.id;
       }
+      if (timeChanged) {
+        const result = await rescheduleAppointment(
+          appointmentId,
+          localDateTimeToIso(rescheduleAt),
+        );
+        if (!result.success) throw new Error(String(result.message || "Reschedule failed"));
+      }
+      setSelected(null);
+      await load(dayAnchor || null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Reschedule failed");
     } finally {
@@ -434,51 +479,64 @@ export default function AppointmentsPage() {
   }
 
   if (loading) {
-    return <p className="text-sm text-[var(--muted)]">Loading appointments…</p>;
+    return (
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:h-full">
+        <p className="text-sm text-[var(--muted)]">Loading appointments…</p>
+      </div>
+    );
   }
 
-  // Calendar day view is already scoped by the API (shop-local day bounds).
-  // Do not re-filter by browser-local dayKey — that can drop staff bookings
-  // near timezone edges.
-  const todayAppointments = [...(calendar?.appointments ?? [])].sort(
-    (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime(),
-  );
+  // Prefer wall-clock order within the shop day (stable across browser TZ).
+  const todayAppointments = [...(calendar?.appointments ?? [])].sort((a, b) => {
+    const da = wallClockParts(a.start);
+    const db = wallClockParts(b.start);
+    return da.hour * 60 + da.minute - (db.hour * 60 + db.minute);
+  });
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="page-title">Appointments</h1>
-        <p className="text-sm text-[var(--muted)]">
-          Today&apos;s schedule and AI booking.
-        </p>
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:h-full">
+      <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="page-title">Schedule</h1>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            clearSelection();
+            setError(null);
+            setCreateOpen(true);
+          }}
+          className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white"
+        >
+          Add
+        </button>
       </div>
 
-      {error && <p className="text-sm text-red-700">{error}</p>}
-      {notice && !error && <p className="text-sm text-emerald-700">{notice}</p>}
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <DaySchedule
+          appointments={todayAppointments}
+          hours={hours}
+          dayAnchor={dayAnchor}
+          isToday={Boolean(shopToday && dayAnchor && dayAnchor === shopToday)}
+          closed={dayWindow.closed}
+          mechanics={assigneeOptions}
+          mechanicRoleMap={mechanicRoleMap}
+          selectedId={selected?.id}
+          selectedAssigneeId={mechanicId}
+          onSelect={selectAppointment}
+          onPickAssignee={setMechanicId}
+          onPrevDay={() => shiftDay(-1)}
+          onNextDay={() => shiftDay(1)}
+          onToday={() => void goToDay("")}
+          onSelectDay={(day) => void goToDay(day)}
+        />
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,320px)]">
-        {/* Primary: today's appointments */}
-        <section className="order-2 min-w-0 space-y-4 lg:order-1">
-          <DaySchedule
-            appointments={todayAppointments}
-            hours={hours}
-            dayAnchor={dayAnchor}
-            closed={dayWindow.closed}
-            openLabel={dayWindow.openLabel}
-            closeLabel={dayWindow.closeLabel}
-            mechanics={assigneeOptions}
-            mechanicRoleMap={mechanicRoleMap}
-            selectedId={selected?.id}
-            selectedAssigneeId={mechanicId}
-            onSelect={selectAppointment}
-            onPickAssignee={setMechanicId}
-            onPrevDay={() => shiftDay(-1)}
-            onNextDay={() => shiftDay(1)}
-            onToday={() => void goToDay(dayKey(new Date().toISOString()))}
-          />
-
+        {selected && (
           <AppointmentDetail
             selected={selected}
+            services={services}
+            detailServiceId={detailServiceId}
+            setDetailServiceId={setDetailServiceId}
             mechanicMap={mechanicMap}
             mechanicRoleMap={mechanicRoleMap}
             rescheduleAt={rescheduleAt}
@@ -486,31 +544,46 @@ export default function AppointmentsPage() {
             rescheduling={rescheduling}
             onReschedule={() => void onReschedule()}
             onCancel={() => void onCancel()}
+            onClose={clearSelection}
+            error={error}
           />
-        </section>
+        )}
+      </section>
 
-        {/* Primary: create appointment */}
-        <aside className="order-1 space-y-4 lg:order-2">
-          <BookForm
-            services={services}
-            serviceId={serviceId}
-            setServiceId={setServiceId}
-            selectedService={selectedService}
-            preferredStart={preferredStart}
-            setPreferredStart={setPreferredStart}
-            vehicleType={vehicleType}
-            setVehicleType={setVehicleType}
-            priority={priority}
-            setPriority={setPriority}
-            assigneeOptions={assigneeOptions}
-            mechanicRoleMap={mechanicRoleMap}
-            mechanicId={mechanicId}
-            setMechanicId={setMechanicId}
-            booking={booking}
-            onBook={onBook}
-          />
-        </aside>
-      </div>
+      {createOpen && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="create-appointment-title"
+          onClick={() => !booking && setCreateOpen(false)}
+        >
+          <div
+            className="asa-scroll max-h-[min(90dvh,40rem)] w-full max-w-md overflow-y-auto overscroll-contain"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <BookForm
+              services={services}
+              serviceId={serviceId}
+              setServiceId={setServiceId}
+              preferredStart={preferredStart}
+              setPreferredStart={setPreferredStart}
+              vehicleType={vehicleType}
+              setVehicleType={setVehicleType}
+              priority={priority}
+              setPriority={setPriority}
+              assigneeOptions={assigneeOptions}
+              mechanicRoleMap={mechanicRoleMap}
+              mechanicId={mechanicId}
+              setMechanicId={setMechanicId}
+              booking={booking}
+              error={error}
+              onBook={onBook}
+              onClose={() => setCreateOpen(false)}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -519,9 +592,8 @@ function DaySchedule({
   appointments,
   hours,
   dayAnchor,
+  isToday,
   closed,
-  openLabel,
-  closeLabel,
   mechanics,
   mechanicRoleMap,
   selectedId,
@@ -531,13 +603,13 @@ function DaySchedule({
   onPrevDay,
   onNextDay,
   onToday,
+  onSelectDay,
 }: {
   appointments: Appointment[];
   hours: number[];
   dayAnchor: string;
+  isToday: boolean;
   closed: boolean;
-  openLabel: string;
-  closeLabel: string;
   mechanics: { id: string; name: string }[];
   mechanicRoleMap: Map<string, string>;
   selectedId?: string;
@@ -547,6 +619,7 @@ function DaySchedule({
   onPrevDay: () => void;
   onNextDay: () => void;
   onToday: () => void;
+  onSelectDay: (day: string) => void;
 }) {
   const knownIds = new Set(mechanics.map((m) => m.id));
   const hasOrphans = appointments.some(
@@ -558,16 +631,16 @@ function DaySchedule({
         ? [...mechanics, { id: "__unassigned__", name: "Unassigned" }]
         : mechanics
       : [{ id: "__unassigned__", name: "Unassigned" }];
-  const isToday = dayAnchor === dayKey(new Date().toISOString());
 
   return (
-    <div className="overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)]">
-      <header className="border-b border-[var(--line)] px-4 py-3 text-sm font-medium">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)]">
+      <header className="shrink-0 border-b border-[var(--line)] px-4 py-3 text-sm font-medium">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span>
-            {isToday ? "Today" : "Schedule"} · {formatDay(dayAnchor + "T12:00:00")}
+            {isToday ? "Today" : "Schedule"} ·{" "}
+            {dayAnchor ? formatDay(dayAnchor) : "…"}
           </span>
-          <div className="flex items-center gap-1">
+          <div className="flex flex-wrap items-center gap-1">
             <button
               type="button"
               onClick={onPrevDay}
@@ -591,61 +664,39 @@ function DaySchedule({
             >
               →
             </button>
+            <label className="sr-only" htmlFor="schedule-day-picker">
+              Pick a date
+            </label>
+            <input
+              id="schedule-day-picker"
+              type="date"
+              value={dayAnchor}
+              onChange={(e) => {
+                const next = e.target.value;
+                if (next) onSelectDay(next);
+              }}
+              className="rounded-md border border-[var(--line)] bg-[var(--panel)] px-2 py-1 text-xs font-normal text-[var(--foreground)] hover:bg-[var(--background)]"
+              aria-label="Pick a schedule date"
+            />
           </div>
         </div>
-        <span className="mt-0.5 block text-xs font-normal text-[var(--muted)]">
-          {closed
-            ? "Closed this day (Settings → Business hours)."
-            : `${openLabel}–${closeLabel} · Columns are Team members. SMS bookings often land on the next open slot — use ← → to check other days.`}
-        </span>
+        {closed ? (
+          <span className="mt-0.5 block text-xs font-normal text-[var(--muted)]">
+            Closed this day (Settings → Business hours).
+          </span>
+        ) : null}
       </header>
 
-      {/* Mobile agenda */}
-      <div className="max-h-[28rem] space-y-2 overflow-y-auto p-3 lg:hidden">
-        {appointments.length === 0 && (
-          <p className="px-1 py-6 text-center text-sm text-[var(--muted)]">No appointments</p>
-        )}
-        {appointments.map((a) => {
-          const person =
-            columns.find((m) => m.id === a.mechanic_id)?.name ??
-            (a.mechanic_id ? "Assigned" : "Unassigned");
-          const role = a.mechanic_id ? mechanicRoleMap.get(a.mechanic_id) : null;
-          return (
-            <button
-              key={a.id}
-              type="button"
-              onClick={() => onSelect(a)}
-              className={`w-full rounded-lg border px-3 py-3 text-left ${
-                selectedId === a.id
-                  ? "border-[var(--accent)] bg-[var(--accent-soft)]"
-                  : "border-[var(--line)] bg-[var(--background)]"
-              }`}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <p className="text-sm font-medium capitalize">{appointmentLabel(a)}</p>
-                <p className="shrink-0 text-xs text-[var(--muted)]">{a.priority}</p>
-              </div>
-              <p className="mt-1 text-xs text-[var(--muted)]">
-                {formatTime(a.start)}–{formatTime(a.end)}
-              </p>
-              <p className="mt-1 truncate text-xs text-[var(--muted)]">
-                {person}
-                {role ? ` · ${role}` : ""}
-              </p>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Desktop: one column per Team member */}
-      <div className="hidden overflow-x-auto p-4 lg:block">
+      {/* Day grid (all breakpoints) — scrolls vertically + horizontally on narrow screens */}
+      <div className="asa-scroll min-h-0 flex-1 overflow-auto overscroll-contain p-3 sm:p-4 [-webkit-overflow-scrolling:touch]">
         <div
           className="grid gap-2"
           style={{
-            gridTemplateColumns: `56px repeat(${columns.length}, minmax(120px, 1fr))`,
+            gridTemplateColumns: `48px repeat(${columns.length}, minmax(108px, 1fr))`,
+            minWidth: `${48 + Math.max(columns.length, 1) * 108}px`,
           }}
         >
-          <div />
+          <div className="sticky left-0 top-0 z-20 bg-[var(--panel)]" />
           {columns.map((m) => {
             const role = mechanicRoleMap.get(m.id);
             const active = selectedAssigneeId !== "" && selectedAssigneeId === m.id;
@@ -657,10 +708,10 @@ function DaySchedule({
                   if (m.id === "__unassigned__") return;
                   onPickAssignee(active ? "" : m.id);
                 }}
-                className={`rounded-md px-1 py-1 text-center transition-colors ${
+                className={`sticky top-0 z-10 rounded-md px-1 py-1 text-center transition-colors ${
                   active
                     ? "bg-[var(--accent-soft)] ring-1 ring-[var(--accent)]"
-                    : "hover:bg-[var(--background)]"
+                    : "bg-[var(--panel)] hover:bg-[var(--background)]"
                 }`}
                 title={
                   m.id === "__unassigned__"
@@ -697,7 +748,6 @@ function BookForm({
   services,
   serviceId,
   setServiceId,
-  selectedService,
   preferredStart,
   setPreferredStart,
   vehicleType,
@@ -709,12 +759,13 @@ function BookForm({
   mechanicId,
   setMechanicId,
   booking,
+  error,
   onBook,
+  onClose,
 }: {
   services: ShopService[];
   serviceId: string;
   setServiceId: (v: string) => void;
-  selectedService: ShopService | null;
   preferredStart: string;
   setPreferredStart: (v: string) => void;
   vehicleType: string;
@@ -726,15 +777,35 @@ function BookForm({
   mechanicId: string;
   setMechanicId: (v: string) => void;
   booking: boolean;
+  error: string | null;
   onBook: (e: FormEvent) => void;
+  onClose: () => void;
 }) {
   return (
     <form
       onSubmit={onBook}
       noValidate
-      className="space-y-3 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4"
+      className="space-y-3 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 shadow-xl"
     >
-      <h2 className="text-sm font-medium">Create appointment</h2>
+      <div className="flex items-start justify-between gap-3">
+        <h2 id="create-appointment-title" className="text-sm font-medium">
+          Create appointment
+        </h2>
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={booking}
+          className="rounded-md border border-[var(--line)] px-2.5 py-1 text-xs disabled:opacity-60"
+          aria-label="Close create appointment"
+        >
+          Close
+        </button>
+      </div>
+      {error && (
+        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+          {error}
+        </p>
+      )}
       <label className="block text-xs text-[var(--muted)]">
         Service
         <select
@@ -783,13 +854,6 @@ function BookForm({
           className="mt-1 w-full rounded-md border border-[var(--line)] px-2 py-2.5 text-sm text-[var(--foreground)]"
         />
       </label>
-      {selectedService && (
-        <p className="rounded-md bg-[var(--bg)] px-3 py-2 text-xs text-[var(--muted)]">
-          Duration: <span className="font-medium text-[var(--fg)]">{selectedService.duration_minutes} min</span>
-          {" · "}
-          End time = start + duration
-        </p>
-      )}
       <label className="block text-xs text-[var(--muted)]">
         Vehicle
         <select
@@ -831,6 +895,9 @@ function BookForm({
 
 function AppointmentDetail({
   selected,
+  services,
+  detailServiceId,
+  setDetailServiceId,
   mechanicMap,
   mechanicRoleMap,
   rescheduleAt,
@@ -838,8 +905,13 @@ function AppointmentDetail({
   rescheduling,
   onReschedule,
   onCancel,
+  onClose,
+  error,
 }: {
-  selected: Appointment | null;
+  selected: Appointment;
+  services: ShopService[];
+  detailServiceId: string;
+  setDetailServiceId: (v: string) => void;
   mechanicMap: Map<string, string>;
   mechanicRoleMap: Map<string, string>;
   rescheduleAt: string;
@@ -847,37 +919,93 @@ function AppointmentDetail({
   rescheduling: boolean;
   onReschedule: () => void;
   onCancel: () => void;
+  onClose: () => void;
+  error: string | null;
 }) {
-  const assigneeRole = selected?.mechanic_id
+  const assigneeRole = selected.mechanic_id
     ? (mechanicRoleMap.get(selected.mechanic_id) ?? "Staff")
     : null;
-  const assigneeName = selected?.mechanic_id
+  const assigneeName = selected.mechanic_id
     ? (mechanicMap.get(selected.mechanic_id) ?? selected.mechanic_id)
     : "—";
+  const currentServiceId =
+    selected.service_id ||
+    (typeof selected.metadata?.service_id === "string"
+      ? selected.metadata.service_id
+      : "");
+  const serviceChanged = Boolean(detailServiceId) && detailServiceId !== currentServiceId;
+  const originalLocal = defaultRescheduleLocal(selected.start);
+  const timeChanged = Boolean(rescheduleAt) && rescheduleAt !== originalLocal;
+  const canReschedule = serviceChanged || timeChanged;
 
   return (
     <div
-      id="appointment-detail"
-      className={`rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 ${
-        selected ? "ring-2 ring-[var(--accent)]/25" : ""
-      }`}
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="appointment-detail-title"
+      onClick={onClose}
     >
-      <h2 className="text-sm font-medium">Appointment detail</h2>
-      {!selected && (
-        <p className="mt-2 text-sm text-[var(--muted)]">Select an appointment to inspect.</p>
-      )}
-      {selected && (
+      <div
+        id="appointment-detail"
+        className="asa-scroll max-h-[min(90dvh,40rem)] w-full max-w-md overflow-y-auto overscroll-contain rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 shadow-xl ring-2 ring-[var(--accent)]/25"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <h2 id="appointment-detail-title" className="text-sm font-medium">
+            Appointment detail
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md border border-[var(--line)] px-2.5 py-1 text-xs"
+            aria-label="Close appointment detail"
+          >
+            Close
+          </button>
+        </div>
         <div className="mt-3 space-y-2 text-sm">
+          {error && (
+            <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+              {error}
+            </p>
+          )}
           <p className="break-words">
             <span className="text-[var(--muted)]">When: </span>
             {formatDay(selected.start)} {formatTime(selected.start)}–{formatTime(selected.end)}
           </p>
-          <p className="break-words">
-            <span className="text-[var(--muted)]">Service: </span>
-            {typeof selected.metadata?.service_name === "string"
-              ? selected.metadata.service_name
-              : selected.repair_type}{" "}
-            · {selected.estimated_duration_min} min · {selected.priority}
+          <label className="block text-xs text-[var(--muted)]">
+            Service
+            <select
+              className="mt-1 w-full rounded-md border border-[var(--line)] px-2 py-2 text-sm text-[var(--foreground)]"
+              value={detailServiceId}
+              onChange={(e) => setDetailServiceId(e.target.value)}
+              disabled={rescheduling}
+            >
+              {services.length === 0 ? (
+                <option value="">No active services — add in Service Catalog</option>
+              ) : (
+                <>
+                  {!services.some((s) => s.id === detailServiceId) && detailServiceId ? (
+                    <option value={detailServiceId}>
+                      {typeof selected.metadata?.service_name === "string"
+                        ? selected.metadata.service_name
+                        : selected.repair_type}{" "}
+                      (current)
+                    </option>
+                  ) : null}
+                  {services.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.duration_minutes} min)
+                    </option>
+                  ))}
+                </>
+              )}
+            </select>
+          </label>
+          <p className="text-xs text-[var(--muted)]">
+            {selected.estimated_duration_min} min · {selected.priority}
+            {serviceChanged ? " · duration/revenue update on reschedule" : ""}
           </p>
           <p className="break-words">
             <span className="text-[var(--muted)]">{assigneeRole ?? "Staff"}: </span>
@@ -901,14 +1029,15 @@ function AppointmentDetail({
               value={rescheduleAt}
               onChange={(e) => setRescheduleAt(e.target.value)}
               className="mt-1 w-full rounded-md border border-[var(--line)] px-2 py-2 text-sm text-[var(--foreground)]"
+              disabled={rescheduling}
             />
           </label>
           <div className="flex flex-wrap gap-2 pt-2">
             <button
               type="button"
               onClick={onReschedule}
-              disabled={rescheduling || !rescheduleAt}
-              className="min-h-9 rounded-md border border-[var(--line)] px-3 py-1.5 text-xs disabled:opacity-60"
+              disabled={rescheduling || !canReschedule}
+              className="min-h-9 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60"
             >
               {rescheduling ? "Rescheduling…" : "Reschedule"}
             </button>
@@ -922,7 +1051,7 @@ function AppointmentDetail({
             </button>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -946,12 +1075,13 @@ function HourRow({
 }) {
   return (
     <>
-      <div className="py-2 text-right text-[10px] text-[var(--muted)]">{hourLabel(hour)}</div>
+      <div className="sticky left-0 z-[5] bg-[var(--panel)] py-2 pr-1 text-right text-[10px] text-[var(--muted)]">
+        {hourLabel(hour)}
+      </div>
       {columns.map((col) => {
         const cellAppts = appointments.filter((a) => {
-          const d = new Date(a.start);
-          // Day view payload is already one shop day; place by local hour.
-          if (d.getHours() !== hour) return false;
+          // Day view is shop-local; place by ISO wall-clock hour (not browser TZ).
+          if (wallClockParts(a.start).hour !== hour) return false;
           if (col.id === "__unassigned__") {
             // Null or stale/seed mechanic ids (not in Team columns).
             return !a.mechanic_id || !columns.some((c) => c.id === a.mechanic_id && c.id !== "__unassigned__");

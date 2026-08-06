@@ -317,6 +317,12 @@ async def update_shop_settings(
         shop.name = body.name.strip()
         if len(shop.name) < 2:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Shop name too short")
+        # Keep internal slug in sync with display name (hidden from owners).
+        from app.application.services import AuthService
+
+        shop.slug = await AuthService(uow).allocate_shop_slug(
+            shop.name, exclude_shop_id=shop.id
+        )
     if body.timezone is not None:
         shop.timezone = body.timezone.strip()
         if not shop.timezone:

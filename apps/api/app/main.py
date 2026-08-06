@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import asyncio
 import logging
 import time
 
@@ -6,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.api.router import api_router
+from app.api.router import include_core_routers, include_deferred_routers
 from app.infrastructure.config import settings
 from app.ops.metrics import REQUEST_LATENCY, REQUESTS
 from app.saas.observability import init_observability
@@ -35,15 +36,44 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         return response
 
 
+async def _warm_sms_runtime() -> None:
+    """Build SMS/agent graph after the API is already accepting traffic."""
+    try:
+        from app.sms.runtime import get_sms_runtime
+
+        await asyncio.to_thread(get_sms_runtime)
+        logger.info("sms runtime warmup complete")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sms runtime warmup skipped: %s", exc)
+
+
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
+async def lifespan(app: FastAPI):
     try:
         from app.admin.bootstrap import ensure_platform_admin
 
         await ensure_platform_admin()
     except Exception as exc:  # noqa: BLE001
         logger.warning("startup bootstrap skipped: %s", exc)
-    yield
+
+    # Heavy routers register here (not at import) so `import app.main` stays light.
+    # Must finish before yield so endpoints never 404 during boot.
+    try:
+        include_deferred_routers(app)
+        logger.info("deferred API routers registered")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("deferred router registration skipped: %s", exc)
+
+    # Do not block readiness on the full SMS/agent graph.
+    warm_task = asyncio.create_task(_warm_sms_runtime())
+    try:
+        yield
+    finally:
+        warm_task.cancel()
+        try:
+            await warm_task
+        except asyncio.CancelledError:
+            pass
 
 
 def create_app() -> FastAPI:
@@ -78,7 +108,7 @@ def create_app() -> FastAPI:
         expose_headers=["Retry-After"],
     )
     app.add_middleware(MetricsMiddleware)
-    app.include_router(api_router)
+    include_core_routers(app)
     return app
 
 

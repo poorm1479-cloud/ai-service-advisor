@@ -11,7 +11,7 @@ async def register_shop_via_otp(
     client: AsyncClient,
     *,
     suffix: str | None = None,
-    shop_name: str = "Test Garage",
+    shop_name: str | None = None,
     shop_slug: str | None = None,
     owner_full_name: str = "Owner",
     password: str = "password123",
@@ -19,15 +19,17 @@ async def register_shop_via_otp(
 ) -> dict:
     tag = (suffix or uuid.uuid4().hex[:8]).replace("-", "")[:8]
     phone = f"+1555{int(tag[:7], 16) % 10_000_000:07d}"
-    slug = shop_slug or f"shop-{tag}"
+    # Unique name by default so parallel tests don't collide on slug/name uniqueness.
+    resolved_name = (shop_name or f"Test Garage {tag}").strip()
     payload = {
-        "shop_name": shop_name,
-        "shop_slug": slug,
+        "shop_name": resolved_name,
         "auth_method": "phone",
         "owner_phone": phone,
         "owner_full_name": owner_full_name,
         "password": password,
     }
+    if shop_slug:
+        payload["shop_slug"] = shop_slug
     if email:
         payload["owner_email"] = email
     else:
@@ -36,6 +38,7 @@ async def register_shop_via_otp(
     assert register.status_code == 201, register.text
     body = register.json()
     body["_test_phone"] = phone
-    body["_test_slug"] = slug
+    body["_test_slug"] = body.get("shop_slug") or shop_slug or ""
     body["_test_email"] = payload["owner_email"]
+    body["_test_shop_name"] = resolved_name
     return body

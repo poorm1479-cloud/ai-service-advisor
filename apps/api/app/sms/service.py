@@ -295,6 +295,7 @@ class SmsAiService:
                     "ask_preferred_time",
                     "preferred_time_unavailable",
                     "awaiting_booking_confirmation",
+                    "awaiting_reschedule_confirmation",
                     "awaiting_customer_name",
                 }
                 or (getattr(sched.data, "metadata", None) or {}).get("ask_preferred_time")
@@ -323,12 +324,17 @@ class SmsAiService:
                     duration = memory.pending_duration_minutes
                 # Prefer catalog fields from the scheduling decision when present.
                 decision = getattr(sched.data, "decision", None)
+                hold_appointment_id: str | None = None
                 if decision is not None:
                     service_name = getattr(decision, "service_name", None) or service_name
                     if getattr(decision, "service_id", None):
                         service_id = str(decision.service_id)
                     if getattr(decision, "duration_minutes", None):
                         duration = decision.duration_minutes
+                    if getattr(decision, "appointment_id", None):
+                        hold_appointment_id = str(decision.appointment_id)
+                if not hold_appointment_id:
+                    hold_appointment_id = memory.appointment_id
                 sched_meta = getattr(sched.data, "metadata", None) or {}
                 pending_start = sched_meta.get("pending_slot_start")
                 pending_end = sched_meta.get("pending_slot_end")
@@ -347,15 +353,20 @@ class SmsAiService:
                     # Asking for a preferred time — keep service, clear prior offers.
                     offered = []
                 pending_action = str(sched_meta.get("action") or "")
-                if pending_action not in {"book", "reschedule"}:
-                    pending_action = (
-                        "reschedule"
-                        if intent_val == "reschedule"
-                        else "book"
-                    )
+                # Live reschedule intent must not inherit a stale "book" hold.
+                if intent_val == "reschedule":
+                    pending_action = "reschedule"
+                elif pending_action not in {"book", "reschedule"}:
+                    pending_action = "book"
+                # Only bind appointment_id on reschedule holds — persisting a
+                # prior booking id into a new book hold poisons BOOK→RESCHEDULE.
+                memory_appointment_id = (
+                    hold_appointment_id if pending_action == "reschedule" else None
+                )
                 await self._memory.update_state(
                     shop_id=shop_id,
                     customer_phone=phone,
+                    appointment_id=memory_appointment_id,
                     slots_offered=offered,
                     pending_service=service_name or "",
                     pending_service_id=str(service_id) if service_id else "",
@@ -520,6 +531,15 @@ class SmsAiService:
         if enabled:
             conv.owner_summary = (conv.owner_summary or "") + " | Human takeover enabled"
         return await self._store.update_conversation(conv)
+
+    async def delete_conversation(self, *, shop_id: UUID, conversation_id: UUID) -> None:
+        conv = await self._store.get_conversation(shop_id, conversation_id)
+        if conv is None:
+            raise ValueError("Conversation not found")
+        deleted = await self._store.delete_conversation(shop_id, conversation_id)
+        if not deleted:
+            raise ValueError("Conversation not found")
+        await self._memory.clear(shop_id=shop_id, customer_phone=conv.customer_phone)
 
     async def mirror_outbound(
         self,
