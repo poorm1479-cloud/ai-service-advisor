@@ -11,7 +11,8 @@ from app.scheduling.engines.conflict import ConflictEngine
 from app.scheduling.engines.optimization import OptimizationEngine
 from app.scheduling.monitoring import SchedulingMonitor
 from app.scheduling.service import AppointmentIntelligenceService
-from app.scheduling.store import InMemoryShopResourceStore, ShopResourcePort
+from app.scheduling.sql_store import build_default_shop_resource_store
+from app.scheduling.store import ShopResourcePort
 
 
 @dataclass(slots=True)
@@ -31,7 +32,7 @@ def build_scheduling_runtime(
     store: ShopResourcePort | None = None,
     agents: AgentRuntime | None = None,
 ) -> SchedulingRuntime:
-    resource_store = store or InMemoryShopResourceStore()
+    resource_store = store or build_default_shop_resource_store()
     availability = AvailabilityEngine()
     conflict = ConflictEngine()
     optimization = OptimizationEngine(availability, conflict)

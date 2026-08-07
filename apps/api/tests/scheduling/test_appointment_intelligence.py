@@ -149,10 +149,34 @@ async def test_reschedule_and_cancel(runtime, shop_id):
         BookingRequest(shop_id=shop_id, repair_type="tires")
     )
     assert booked.appointment
+    hours = await runtime.service._store.list_business_hours(shop_id)
+    # Prefer next open calendar day (not +1 which may land on a closed weekend).
+    new_start = None
+    base = booked.appointment.start
+    for offset in range(1, 8):
+        candidate = base + timedelta(days=offset)
+        window = runtime.service._availability.day_window(
+            hours, runtime.service._availability.local_date(candidate)
+        )
+        if window is None:
+            continue
+        local = candidate.astimezone(runtime.service._availability._shop_tz)
+        new_start = local.replace(
+            hour=max(10, window[0].astimezone(runtime.service._availability._shop_tz).hour),
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        if new_start < window[0]:
+            new_start = window[0]
+        if new_start + timedelta(minutes=60) <= window[1]:
+            break
+        new_start = None
+    assert new_start is not None
     moved = await runtime.service.reschedule(
         shop_id=shop_id,
         appointment_id=booked.appointment.id,
-        preferred_start=booked.appointment.start + timedelta(days=1),
+        preferred_start=new_start,
     )
     assert moved.success
     assert moved.appointment is not None
@@ -219,13 +243,13 @@ async def test_agent_adapter_lists_slots_for_catalog_skill(runtime, shop_id):
             )
         ],
     )
-    # Hardcoded general would return []. Catalog skill / fallback must recover.
-    empty_general = await runtime.service.recommend_slots(
+    # Free staff without a "general" tag still count as capacity (soft skill).
+    general_slots = await runtime.service.recommend_slots(
         BookingRequest(shop_id=shop_id, repair_type="general", estimated_duration_min=30),
         days_ahead=5,
         limit=10,
     )
-    assert empty_general == []
+    assert general_slots
     slots = await runtime.agent_store.list_available_slots(
         shop_id, days_ahead=5, duration_minutes=30, repair_type="oil_change"
     )
@@ -234,6 +258,61 @@ async def test_agent_adapter_lists_slots_for_catalog_skill(runtime, shop_id):
         shop_id, days_ahead=5, duration_minutes=30
     )
     assert fallback
+
+
+@pytest.mark.asyncio
+async def test_probe_and_book_when_staff_free_without_skill_tags(runtime, shop_id):
+    """Free Team member without catalog skill tags must still take preferred clock."""
+    from decimal import Decimal
+
+    from app.scheduling.models import Mechanic
+
+    store = runtime.service._store  # noqa: SLF001
+    store.set_mechanics(
+        shop_id,
+        [
+            Mechanic(
+                id=uuid4(),
+                shop_id=shop_id,
+                name="Untagged Tech",
+                skills=[],  # common after Team sync without skill matrix
+                hourly_rate=Decimal("70"),
+            )
+        ],
+    )
+    hours = await runtime.service._store.list_business_hours(shop_id)
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    preferred = None
+    for offset in range(1, 8):
+        day = (now + timedelta(days=offset)).date()
+        window = runtime.service._availability.day_window(hours, day)
+        if window is None:
+            continue
+        preferred = window[0].replace(hour=10, minute=0)
+        if preferred >= window[0] and preferred + timedelta(minutes=60) <= window[1]:
+            break
+    assert preferred is not None
+
+    probed = await runtime.agent_store.probe_slot_at(
+        shop_id,
+        preferred_start=preferred,
+        duration_minutes=30,
+        repair_type="oil_change",
+    )
+    assert probed is not None
+    assert probed.start == preferred
+
+    book = await runtime.service.book(
+        BookingRequest(
+            shop_id=shop_id,
+            repair_type="oil_change",
+            preferred_start=preferred,
+            estimated_duration_min=30,
+        )
+    )
+    assert book.success
+    assert book.appointment is not None
+    assert book.appointment.start == preferred
 
 
 @pytest.mark.asyncio
@@ -506,6 +585,61 @@ async def test_overflow_preferred_time_rejects_with_alternatives(runtime, shop_i
     assert overflow.recommended_slot.start != preferred
     msg = (overflow.message or "").lower()
     assert "available" in msg or "unavailable" in msg or "conflict" in msg
+
+
+@pytest.mark.asyncio
+async def test_agent_validate_rejects_full_preferred_time(runtime, shop_id):
+    """Voice/SMS VALIDATE_APPOINTMENT must refuse times at Team capacity."""
+    from app.plugins.scheduling.availability.service import AvailabilityPluginService
+
+    store = runtime.service._store
+    mechanics = await store.list_mechanics(shop_id)
+    store.set_bays(
+        shop_id,
+        [
+            Bay(id=uuid4(), shop_id=shop_id, name=f"Bay {i + 1}", bay_type="general")
+            for i in range(len(mechanics))
+        ],
+    )
+    hours = await store.list_business_hours(shop_id)
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    preferred = None
+    for offset in range(1, 8):
+        day = (now + timedelta(days=offset)).date()
+        window = runtime.service._availability.day_window(hours, day)
+        if window is None:
+            continue
+        preferred = window[0].replace(hour=10, minute=0)
+        if preferred >= window[0] and preferred + timedelta(minutes=30) <= window[1]:
+            break
+    assert preferred is not None
+
+    for _ in range(len(mechanics)):
+        filled = await runtime.service.book(
+            BookingRequest(
+                shop_id=shop_id,
+                repair_type="oil_change",
+                preferred_start=preferred,
+                estimated_duration_min=30,
+            )
+        )
+        assert filled.success
+
+    avail = AvailabilityPluginService(
+        store=runtime.agent_store, intelligence=runtime.service
+    )
+    end = preferred + timedelta(minutes=30)
+    validation = await avail.validate_appointment(shop_id, start=preferred, end=end)
+    assert not validation["valid"]
+    assert validation["has_conflict"]
+    joined = " ".join(validation.get("errors") or []).lower()
+    assert "staff" in joined or "bay" in joined or "available" in joined
+
+    free = preferred + timedelta(hours=2)
+    free_ok = await avail.validate_appointment(
+        shop_id, start=free, end=free + timedelta(minutes=30)
+    )
+    assert free_ok["valid"]
 
 
 @pytest.mark.asyncio

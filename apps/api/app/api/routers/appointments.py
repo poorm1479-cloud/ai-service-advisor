@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -20,6 +20,7 @@ from app.scheduling.catalog import (
     require_service_for_booking,
     sync_shop_resources,
 )
+from app.scheduling.engines.availability import DEFAULT_SHOP_TZ
 from app.scheduling.factory import SchedulingRuntime, get_scheduling_runtime
 
 router = APIRouter(prefix="/v1/appointments", tags=["appointments"])
@@ -120,14 +121,29 @@ class BayOut(BaseModel):
     supports_vehicle_types: list[str]
 
 
+def _shop_wall(when: datetime | None) -> datetime | None:
+    """Serialize starts/ends in shop wall-clock so the calendar grid aligns.
+
+    Dashboard wallClockParts reads ISO hour/minute digits — UTC offsets would
+    place voice/SMS bookings on the wrong hour (e.g. 3 PM LA → 10 PM).
+    """
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone(DEFAULT_SHOP_TZ)
+
+
 def _appt_out(a) -> AppointmentOut:
+    start = _shop_wall(a.start) or a.start
+    end = _shop_wall(a.end) or a.end
     return AppointmentOut(
         id=a.id,
         shop_id=a.shop_id,
-        start=a.start,
-        end=a.end,
-        start_time=a.start,
-        end_time=a.end,
+        start=start,
+        end=end,
+        start_time=start,
+        end_time=end,
         status=a.status,
         priority=a.priority,
         repair_type=a.repair_type,
@@ -142,7 +158,7 @@ def _appt_out(a) -> AppointmentOut:
         source=a.source,
         notes=a.notes,
         estimated_revenue=str(a.estimated_revenue),
-        estimated_completion=a.estimated_completion,
+        estimated_completion=_shop_wall(a.estimated_completion),
         wait_time_min=a.wait_time_min,
         metadata=a.metadata or {},
     )

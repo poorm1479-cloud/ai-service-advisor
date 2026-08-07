@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -82,6 +83,8 @@ class _ShopAudienceContext:
     walk_ins: list[Any] = field(default_factory=list)
     appointments: list[Appointment] = field(default_factory=list)
     declined_memory_customer_ids: set[UUID] = field(default_factory=set)
+    # Precomputed max activity timestamp per customer — avoids O(C×(R+W+A)) when resolving inactive.
+    last_activity_by_customer: dict[UUID, datetime] = field(default_factory=dict)
     now: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -219,6 +222,15 @@ async def _load_context(uow: SqlAlchemyUnitOfWork, shop_id: UUID) -> _ShopAudien
     except Exception:  # noqa: BLE001 — memory is optional/in-memory
         declined_ids = set()
 
+    last_activity = _build_last_activity(
+        customers=customers,
+        vehicles_by_id=vehicles_by_id,
+        repairs=repairs,
+        walk_ins=walk_ins,
+        appointments=appointments,
+        now=datetime.now(timezone.utc),
+    )
+
     return _ShopAudienceContext(
         shop_id=shop_id,
         shop_name=shop_name,
@@ -229,28 +241,57 @@ async def _load_context(uow: SqlAlchemyUnitOfWork, shop_id: UUID) -> _ShopAudien
         walk_ins=walk_ins,
         appointments=appointments,
         declined_memory_customer_ids=declined_ids,
+        last_activity_by_customer=last_activity,
     )
 
 
-def _last_activity(ctx: _ShopAudienceContext, customer_id: UUID) -> datetime:
-    stamps: list[datetime] = []
-    customer = ctx.customers[customer_id]
-    if customer.created_at:
-        stamps.append(_aware(customer.created_at) or ctx.now)
-    for repair in ctx.repairs:
+def _bump_activity(
+    acc: dict[UUID, datetime], customer_id: UUID | None, stamp: datetime | None
+) -> None:
+    if customer_id is None or stamp is None:
+        return
+    aware = _aware(stamp)
+    if aware is None:
+        return
+    prev = acc.get(customer_id)
+    if prev is None or aware > prev:
+        acc[customer_id] = aware
+
+
+def _build_last_activity(
+    *,
+    customers: dict[UUID, Customer],
+    vehicles_by_id: dict[UUID, Vehicle],
+    repairs: list[RepairHistory],
+    walk_ins: list[Any],
+    appointments: list[Appointment],
+    now: datetime,
+) -> dict[UUID, datetime]:
+    """Single-pass activity index used by inactive-customer resolution."""
+    acc: dict[UUID, datetime] = {}
+    for customer in customers.values():
+        _bump_activity(acc, customer.id, customer.created_at)
+    for repair in repairs:
         cid = repair.customer_id
         if cid is None:
-            vehicle = ctx.vehicles_by_id.get(repair.vehicle_id)
+            vehicle = vehicles_by_id.get(repair.vehicle_id)
             cid = vehicle.customer_id if vehicle else None
-        if cid == customer_id and repair.created_at:
-            stamps.append(_aware(repair.created_at) or ctx.now)
-    for visit in ctx.walk_ins:
-        if visit.customer_id == customer_id and visit.arrived_at:
-            stamps.append(_aware(visit.arrived_at) or ctx.now)
-    for appt in ctx.appointments:
-        if appt.customer_id == customer_id and appt.start:
-            stamps.append(_aware(appt.start) or ctx.now)
-    return max(stamps) if stamps else (_aware(customer.created_at) or ctx.now)
+        _bump_activity(acc, cid, repair.created_at)
+    for visit in walk_ins:
+        _bump_activity(acc, getattr(visit, "customer_id", None), getattr(visit, "arrived_at", None))
+    for appt in appointments:
+        _bump_activity(acc, appt.customer_id, appt.start)
+    # Ensure every customer has a stamp (default now if nothing known).
+    for cid in customers:
+        acc.setdefault(cid, now)
+    return acc
+
+
+def _last_activity(ctx: _ShopAudienceContext, customer_id: UUID) -> datetime:
+    if customer_id in ctx.last_activity_by_customer:
+        return ctx.last_activity_by_customer[customer_id]
+    customer = ctx.customers[customer_id]
+    return _aware(customer.created_at) or ctx.now
 
 
 def _resolve_declined(ctx: _ShopAudienceContext) -> list[AudienceMember]:
@@ -481,7 +522,14 @@ async def resolve_audience(
 async def list_suggested_action_counts(
     uow: SqlAlchemyUnitOfWork,
     shop_id: UUID,
+    *,
+    exclude_customer_ids: Callable[[str], Awaitable[set[UUID]]] | None = None,
 ) -> list[SuggestedActionCount]:
+    """Build AI recommendation cards.
+
+    exclude_customer_ids: optional async callable (campaign_type) -> customer IDs to
+    suppress (recent SMS/email until cooldown elapses).
+    """
     ctx = await _load_context(uow, shop_id)
     results: list[SuggestedActionCount] = []
     for action in SUGGESTED_ACTION_DEFS:
@@ -491,6 +539,10 @@ async def list_suggested_action_counts(
             tags=[action["id"]],
             segment=action.get("segment"),
         )
+        if exclude_customer_ids is not None:
+            suppressed: set[UUID] = await exclude_customer_ids(action["campaign_type"])
+            if suppressed:
+                members = [m for m in members if m.customer_id not in suppressed]
         results.append(
             SuggestedActionCount(
                 id=action["id"],

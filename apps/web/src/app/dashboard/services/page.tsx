@@ -202,6 +202,21 @@ export default function ServiceCatalogPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:h-full">
+      <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="page-title">Services</h1>
+        </div>
+        {isOwner && (
+          <button
+            type="button"
+            onClick={openAddForm}
+            className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white"
+          >
+            Add
+          </button>
+        )}
+      </div>
+
       {error && !formOpen && !deleteTarget && (
         <p className="shrink-0 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
           {error}
@@ -214,18 +229,6 @@ export default function ServiceCatalogPage() {
       )}
 
       <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)]">
-        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--line)] px-5 py-4">
-          <h1 className="text-sm font-semibold text-[var(--ink)]">Services</h1>
-          {isOwner && (
-            <button
-              type="button"
-              onClick={openAddForm}
-              className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white"
-            >
-              Add
-            </button>
-          )}
-        </div>
         <div className="table-scroll asa-scroll min-h-0 flex-1 overflow-auto overscroll-contain px-5 py-4">
           {loading ? (
             <p className="text-sm text-[var(--muted)]">Loading…</p>

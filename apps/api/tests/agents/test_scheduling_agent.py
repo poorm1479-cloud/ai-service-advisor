@@ -95,6 +95,44 @@ async def test_reschedule_and_cancel(context):
 
 
 @pytest.mark.asyncio
+async def test_cancel_without_appointment_is_soft(context):
+    """Missing appointment must not fail the agent stage (which escalates the call)."""
+    agent = SchedulingAgent()
+    result = await agent.process(
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="cancel_appointment",
+        ),
+        context,
+    )
+    assert result.success
+    assert result.data is not None
+    assert result.data.success is False
+    assert result.data.message == "no_appointment_to_cancel"
+    assert result.data.decision is not None
+    assert result.data.decision.action == "noop"
+
+
+@pytest.mark.asyncio
+async def test_reschedule_without_appointment_is_soft(context):
+    """Missing appointment must not emit a mutative reschedule decision."""
+    agent = SchedulingAgent()
+    result = await agent.process(
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="reschedule",
+        ),
+        context,
+    )
+    assert result.success
+    assert result.data is not None
+    assert result.data.success is False
+    assert result.data.message == "no_appointment_to_reschedule"
+    assert result.data.decision is not None
+    assert result.data.decision.action == "noop"
+
+
+@pytest.mark.asyncio
 async def test_book_after_conversation_booking_reschedules_previous(context):
     """Time change after AI already booked must not leave the old slot active."""
     agent = SchedulingAgent()
@@ -257,6 +295,49 @@ async def test_reschedule_unavailable_clock_does_not_snap(context):
 
 
 @pytest.mark.asyncio
+async def test_reschedule_confirm_unavailable_does_not_snap(context):
+    """YES on a preferred time that is free nowhere must refuse, not book next slot."""
+    agent = SchedulingAgent()
+    openings = await agent.process(
+        SchedulingRequest(action=SchedulingAction.LIST_SLOTS, days_ahead=14),
+        context,
+    )
+    first = openings.data.available_slots[0].start
+    booked = await _decide_and_apply(
+        agent,
+        SchedulingRequest(
+            action=SchedulingAction.BOOK,
+            preferred_start=first,
+            time_precision="clock",
+            confirm_booking=True,
+        ),
+        context,
+    )
+    appt_id = booked.data.appointment.id
+    weird = first.replace(minute=17) + __import__("datetime").timedelta(days=1)
+
+    moved = await _decide_and_apply(
+        agent,
+        SchedulingRequest(
+            action=SchedulingAction.RESCHEDULE,
+            appointment_id=appt_id,
+            preferred_start=weird,
+            time_precision="clock",
+            confirm_booking=True,
+        ),
+        context,
+    )
+    assert moved.data is not None
+    assert not moved.data.success or moved.data.appointment is None
+    assert moved.data.message == "preferred_time_unavailable"
+    assert moved.data.appointment is None
+    # Original booking remains active.
+    old = await agent.store.get(context.shop_id, appt_id)
+    assert old is not None
+    assert old.status == "booked"
+
+
+@pytest.mark.asyncio
 async def test_book_with_pending_reschedule_moves_existing(context):
     """pending_action=reschedule + appointment_id must reschedule, not duplicate."""
     agent = SchedulingAgent()
@@ -296,6 +377,64 @@ async def test_book_with_pending_reschedule_moves_existing(context):
     assert moved.data.action == "reschedule"
     assert moved.data.appointment is not None
     assert moved.data.appointment.start == later
+    old = await agent.store.get(context.shop_id, old_id)
+    assert old is not None
+    assert old.status == "rescheduled"
+
+
+@pytest.mark.asyncio
+async def test_reschedule_can_change_service(context):
+    """Voice/SMS appointment moves must persist a newly requested catalog service."""
+    from app.agents.scheduling.catalog_port import InMemoryServiceCatalog
+
+    catalog = InMemoryServiceCatalog()
+    seed = catalog.seed_from_starter(context.shop_id)
+    oil = next(s for s in seed if s.name == "Oil Change")
+    brake = next(s for s in seed if s.name == "Brake Repair")
+    agent = SchedulingAgent(catalog=catalog)
+    openings = await agent.process(
+        SchedulingRequest(action=SchedulingAction.LIST_SLOTS, days_ahead=14),
+        context,
+    )
+    first = openings.data.available_slots[0].start
+    later = openings.data.available_slots[4].start
+
+    booked = await _decide_and_apply(
+        agent,
+        SchedulingRequest(
+            action=SchedulingAction.BOOK,
+            preferred_start=first,
+            time_precision="clock",
+            requested_service="Oil Change",
+            service_id=oil.id,
+            confirm_booking=True,
+        ),
+        context,
+    )
+    assert booked.data.appointment is not None
+    assert booked.data.appointment.service_id == oil.id
+    old_id = booked.data.appointment.id
+
+    moved = await _decide_and_apply(
+        agent,
+        SchedulingRequest(
+            action=SchedulingAction.RESCHEDULE,
+            appointment_id=old_id,
+            preferred_start=later,
+            time_precision="clock",
+            requested_service="Brake Repair",
+            service_id=brake.id,
+            confirm_booking=True,
+        ),
+        context,
+    )
+    assert moved.success
+    assert moved.data.success
+    assert moved.data.appointment is not None
+    assert moved.data.appointment.id != old_id
+    assert moved.data.appointment.start == later
+    assert moved.data.appointment.service_id == brake.id
+    assert moved.data.appointment.service_name == "Brake Repair"
     old = await agent.store.get(context.shop_id, old_id)
     assert old is not None
     assert old.status == "rescheduled"
@@ -515,6 +654,7 @@ async def test_unavailable_preferred_start_rejects_without_suggesting(context):
     assert pending.data.message == "preferred_time_unavailable"
     assert pending.data.available_slots == []
     assert not pending.data.metadata.get("pending_slot_start")
+    assert pending.data.metadata.get("unavailable_aspect") == "time"
 
 
 @pytest.mark.asyncio
@@ -545,6 +685,63 @@ async def test_outside_business_hours_preferred_is_unavailable(context):
     assert pending.data.message == "preferred_time_unavailable"
     assert pending.data.available_slots == []
     assert not pending.data.metadata.get("pending_slot_start")
+    # Same day still has openings → re-ask clock only
+    assert pending.data.metadata.get("unavailable_aspect") == "time"
+
+
+@pytest.mark.asyncio
+async def test_closed_day_preferred_marks_date_unavailable_aspect(context):
+    """Preferred clock on a day with no openings → re-ask day only (keep hour)."""
+    from zoneinfo import ZoneInfo
+
+    from app.agents.intent.datetime_parse import DEFAULT_SHOP_TZ
+
+    agent = SchedulingAgent()
+    openings = await agent.process(
+        SchedulingRequest(action=SchedulingAction.LIST_SLOTS, days_ahead=14),
+        context,
+    )
+    assert openings.data.available_slots
+    # Pick a Sunday well beyond the open window if the store only opens weekdays.
+    # Walk forward from first opening until a local date with zero same-day slots.
+    la = DEFAULT_SHOP_TZ
+    first = openings.data.available_slots[0].start.astimezone(la)
+    all_days = {
+        s.start.astimezone(la).date() for s in openings.data.available_slots
+    }
+    closed = None
+    probe = first
+    for _ in range(14):
+        probe = probe + __import__("datetime").timedelta(days=1)
+        if probe.date() not in all_days:
+            closed = probe.replace(hour=10, minute=0, second=0, microsecond=0)
+            break
+    if closed is None:
+        # Store has openings every day — fall back to outside window far future.
+        closed = first.replace(year=first.year + 1, month=1, day=1, hour=10)
+
+    pending = await agent.process(
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="book_appointment",
+            preferred_start=closed,
+            time_precision="clock",
+            days_ahead=14,
+        ),
+        context,
+    )
+    assert pending.data.message == "preferred_time_unavailable"
+    aspect = pending.data.metadata.get("unavailable_aspect")
+    assert aspect in {"date", "both"}
+    if any(s.start.astimezone(la).date() != closed.date() for s in openings.data.available_slots):
+        # Other days exist in listing → date aspect
+        if any(
+            s.start.astimezone(la).date() == d
+            for s in openings.data.available_slots
+            for d in all_days
+            if d != closed.date()
+        ):
+            assert aspect == "date"
 
 
 @pytest.mark.asyncio
@@ -574,3 +771,45 @@ async def test_day_only_preference_asks_for_clock_time(context):
     assert pending.data.message == "ask_preferred_time"
     assert not pending.data.metadata.get("pending_slot_start")
     assert pending.data.available_slots == []
+
+
+@pytest.mark.asyncio
+async def test_closed_day_only_rejects_without_asking_time(context):
+    """Day-only on a closed day must refuse immediately — never ask for a clock."""
+    from app.agents.intent.datetime_parse import DEFAULT_SHOP_TZ
+
+    agent = SchedulingAgent()
+    openings = await agent.process(
+        SchedulingRequest(action=SchedulingAction.LIST_SLOTS, days_ahead=14),
+        context,
+    )
+    assert openings.data.available_slots
+    la = DEFAULT_SHOP_TZ
+    first = openings.data.available_slots[0].start.astimezone(la)
+    open_days = {
+        s.start.astimezone(la).date() for s in openings.data.available_slots
+    }
+    closed = None
+    probe = first
+    for _ in range(21):
+        probe = probe + __import__("datetime").timedelta(days=1)
+        if probe.date() not in open_days:
+            closed = probe.replace(hour=8, minute=0, second=0, microsecond=0)
+            break
+    assert closed is not None, "need a closed calendar day in the open window"
+
+    pending = await agent.process(
+        SchedulingRequest(
+            action=SchedulingAction.NOOP,
+            intent="book_appointment",
+            preferred_start=closed,
+            time_precision="day",
+            days_ahead=14,
+        ),
+        context,
+    )
+    assert pending.data.message == "preferred_time_unavailable"
+    assert pending.data.metadata.get("unavailable_aspect") == "date"
+    assert pending.data.metadata.get("closed_day") is True
+    assert pending.data.message != "ask_preferred_time"
+    assert not pending.data.metadata.get("ask_preferred_time")

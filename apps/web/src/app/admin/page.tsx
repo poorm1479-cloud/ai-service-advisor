@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AdminShell, Panel, Stat } from "@/components/admin/AdminShell";
 import {
   AdminDashboard,
@@ -9,6 +9,9 @@ import {
   statusTone,
   streamAdminDashboard,
 } from "@/lib/admin";
+
+/** Fallback poll only — live updates come from /v1/admin/dashboard/stream. */
+const POLL_MS = 15000;
 
 export default function AdminDashboardPage() {
   return (
@@ -25,53 +28,76 @@ function DashboardBody({ accessToken }: { accessToken: string }) {
   const [live, setLive] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    setBusy(true);
+  const applyData = useCallback((next: AdminDashboard) => {
+    setData((prev) => {
+      if (prev?.generated_at && next.generated_at) {
+        const prevTs = Date.parse(prev.generated_at);
+        const nextTs = Date.parse(next.generated_at);
+        if (Number.isFinite(prevTs) && Number.isFinite(nextTs) && nextTs < prevTs) {
+          return prev;
+        }
+      }
+      return next;
+    });
+    setUpdatedAt(next.generated_at || new Date().toISOString());
+    setLive(true);
     setError(null);
-    void getAdminDashboard(accessToken)
-      .then((next) => {
-        if (!cancelled) {
-          setData(next);
-          setUpdatedAt(next.generated_at);
-          setError(null);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load dashboard");
-          setData(null);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setBusy(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [accessToken]);
+  }, []);
 
+  const load = useCallback(
+    async (quiet = false) => {
+      if (!quiet) {
+        setBusy(true);
+        setError(null);
+      }
+      try {
+        applyData(await getAdminDashboard(accessToken));
+      } catch (err) {
+        if (!quiet) {
+          setLive(false);
+          setError(err instanceof Error ? err.message : "Failed to load dashboard");
+        }
+      } finally {
+        if (!quiet) setBusy(false);
+      }
+    },
+    [accessToken, applyData],
+  );
+
+  // Initial REST load + slow fallback poll; SSE is the live path.
   useEffect(() => {
-    setLive(false);
-    const markSeen = () => setUpdatedAt(new Date().toISOString());
+    void load(false);
+    const id = window.setInterval(() => void load(true), POLL_MS);
+    const onVis = () => {
+      if (document.visibilityState === "visible") void load(true);
+    };
+    const onRefresh = () => void load(true);
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("admin:dashboard-refresh", onRefresh);
+    window.addEventListener("focus", onRefresh);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("admin:dashboard-refresh", onRefresh);
+      window.removeEventListener("focus", onRefresh);
+    };
+  }, [load]);
+
+  // SSE is best-effort; polls keep KPIs accurate if the stream stalls.
+  useEffect(() => {
     const stop = streamAdminDashboard(
       accessToken,
-      (next) => {
-        setData(next);
-        setUpdatedAt(next.generated_at);
-        setLive(true);
-        setError(null);
+      (next) => applyData(next),
+      () => {
+        /* polling keeps data fresh */
       },
       () => {
-        setLive(false);
-      },
-      () => {
-        markSeen();
+        setUpdatedAt(new Date().toISOString());
         setLive(true);
       },
     );
     return stop;
-  }, [accessToken]);
+  }, [accessToken, applyData]);
 
   if (error && !data) {
     return <p className="text-sm text-red-700">{error}</p>;
@@ -80,7 +106,6 @@ function DashboardBody({ accessToken }: { accessToken: string }) {
     return <p className="text-sm text-[var(--muted)]">{busy ? "Loading…" : "No data"}</p>;
   }
 
-  const checks = data.system?.checks ?? {};
   const updatedLabel = new Date(updatedAt ?? data.generated_at).toLocaleString();
 
   return (
@@ -128,25 +153,6 @@ function DashboardBody({ accessToken }: { accessToken: string }) {
         <Stat label="Live voice calls" value={String(data.voice.live_calls ?? 0)} />
       </section>
 
-      <Panel title="System health">
-        <div className="divide-y divide-[var(--line)]">
-          {Object.entries(checks).map(([name, check]) => (
-            <div key={name} className="flex items-center justify-between px-5 py-3 text-sm">
-              <span className="capitalize">{name}</span>
-              <span className={`font-medium capitalize ${statusTone(check.status)}`}>
-                {check.status}
-                {check.error ? (
-                  <span className="ml-2 font-normal text-[var(--muted)]">({check.error})</span>
-                ) : null}
-              </span>
-            </div>
-          ))}
-          {Object.keys(checks).length === 0 && (
-            <p className="px-5 py-4 text-sm text-[var(--muted)]">No health checks returned.</p>
-          )}
-        </div>
-      </Panel>
-
       <div className="grid gap-6 lg:grid-cols-2">
         <Panel title="Plans">
           <ul className="divide-y divide-[var(--line)]">
@@ -165,9 +171,9 @@ function DashboardBody({ accessToken }: { accessToken: string }) {
         </Panel>
 
         <Panel title="Recent shops">
-          <div className="overflow-x-auto">
+          <div className="max-h-80 overflow-auto asa-scroll">
             <table className="min-w-full text-left text-sm">
-              <thead className="border-b border-[var(--line)] bg-[var(--background)] text-[var(--muted)]">
+              <thead className="sticky top-0 z-[1] border-b border-[var(--line)] bg-[var(--background)] text-[var(--muted)]">
                 <tr>
                   <th className="px-5 py-2 font-medium">Shop</th>
                   <th className="px-5 py-2 font-medium">Plan</th>

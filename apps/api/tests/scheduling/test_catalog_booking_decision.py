@@ -92,6 +92,56 @@ def test_reschedule_phrasing_does_not_match_oil_change():
     assert oil.name == "Oil Change"
 
 
+def test_switch_target_prefers_destination_service():
+    from app.agents.scheduling.catalog_match import (
+        extract_service_switch_target,
+        find_catalog_service_candidates,
+        match_catalog_service,
+    )
+
+    oil_id = uuid4()
+    brake_id = uuid4()
+    services = [
+        CatalogServiceView(
+            id=oil_id,
+            name="Oil Change",
+            category="maintenance",
+            duration_minutes=30,
+            skill="oil_change",
+            bay="quick_service",
+        ),
+        CatalogServiceView(
+            id=brake_id,
+            name="Brake Repair",
+            category="brakes",
+            duration_minutes=120,
+            skill="brakes",
+            bay="general",
+        ),
+    ]
+    phrase = "I want to change my oil change to a brake repair"
+    assert extract_service_switch_target(phrase)
+    cands = find_catalog_service_candidates(phrase, services)
+    assert len(cands) == 1
+    assert cands[0].name == "Brake Repair"
+    # Stale appointment service_id must not pin Oil when name says Brake.
+    matched = match_catalog_service("Brake Repair", services, service_id=oil_id)
+    assert matched is not None
+    assert matched.service_id == brake_id
+
+    # Spoken "change the service type to X" must extract destination (space before to).
+    assert (
+        extract_service_switch_target("Please change the service type to brake repair")
+        == "brake repair"
+    )
+    assert extract_service_switch_target("change service to tire rotation") == "tire rotation"
+    type_cands = find_catalog_service_candidates(
+        "Please change the service type to brake repair", services
+    )
+    assert len(type_cands) == 1
+    assert type_cands[0].name == "Brake Repair"
+
+
 @pytest.mark.asyncio
 async def test_intent_extracts_requested_service():
     agent = IntentAgent()

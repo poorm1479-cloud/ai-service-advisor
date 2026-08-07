@@ -14,10 +14,50 @@ import {
   VoiceNoteProcessResult,
 } from "@/lib/voiceNotes";
 
+function pickAudioMimeType(): string | undefined {
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/mp4",
+    "audio/ogg;codecs=opus",
+  ];
+  if (typeof MediaRecorder === "undefined" || !MediaRecorder.isTypeSupported) {
+    return undefined;
+  }
+  return candidates.find((t) => MediaRecorder.isTypeSupported(t));
+}
+
+function extensionForMime(mime: string): string {
+  if (mime.includes("mp4")) return "m4a";
+  if (mime.includes("ogg")) return "ogg";
+  return "webm";
+}
+
+function micErrorMessage(err: unknown): string {
+  if (typeof window !== "undefined" && !window.isSecureContext) {
+    return "Microphone needs HTTPS (or localhost). Open this page over a secure connection, or use the text note below.";
+  }
+  const name = err instanceof DOMException || err instanceof Error ? err.name : "";
+  const message = err instanceof Error ? err.message : "";
+  if (name === "NotAllowedError" || /NotAllowedError|Permission|Permissions policy/i.test(message)) {
+    return "Microphone permission denied or blocked. Allow microphone for this site in the browser, then try again.";
+  }
+  if (name === "NotFoundError" || /NotFoundError|Requested device not found/i.test(message)) {
+    return "No microphone found. Use the text note below, or plug in a mic and try again.";
+  }
+  if (name === "NotReadableError" || /NotReadableError|in use/i.test(message)) {
+    return "Microphone is in use by another app. Close it and try again.";
+  }
+  if (message) return message;
+  return "Could not access the microphone. Use the text note below, or check browser mic permissions.";
+}
+
 export function VoiceNotesPanel() {
   const { session, loading: authLoading } = useAuth();
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
+  const mimeTypeRef = useRef("audio/webm");
 
   const [vehicles, setVehicles] = useState<VehicleOption[]>([]);
   const [vehicleId, setVehicleId] = useState("");
@@ -43,6 +83,13 @@ export function VoiceNotesPanel() {
     })();
   }, [authLoading, session]);
 
+  useEffect(() => {
+    return () => {
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    };
+  }, []);
+
   async function startRecording() {
     setError(null);
     setResult(null);
@@ -50,21 +97,39 @@ export function VoiceNotesPanel() {
       setError("Select a vehicle first");
       return;
     }
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setError("Microphone is not supported in this browser. Use the text note below.");
+      return;
+    }
+    if (typeof window !== "undefined" && !window.isSecureContext) {
+      setError(
+        "Microphone needs HTTPS (or localhost). Open this page over a secure connection, or use the text note below.",
+      );
+      return;
+    }
+    if (typeof MediaRecorder === "undefined") {
+      setError("Recording is not supported in this browser. Use the text note below.");
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
+      const mimeType = pickAudioMimeType();
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+      mimeTypeRef.current = recorder.mimeType || mimeType || "audio/webm";
       chunksRef.current = [];
+      streamRef.current = stream;
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) chunksRef.current.push(event.data);
-      };
-      recorder.onstop = () => {
-        stream.getTracks().forEach((t) => t.stop());
       };
       mediaRecorderRef.current = recorder;
       recorder.start();
       setRecording(true);
-    } catch {
-      setError("Microphone permission is required for voice notes");
+    } catch (err) {
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+      setError(micErrorMessage(err));
     }
   }
 
@@ -74,15 +139,31 @@ export function VoiceNotesPanel() {
 
     setBusy(true);
     setError(null);
+    setRecording(false);
+
     await new Promise<void>((resolve) => {
       recorder.onstop = () => resolve();
+      // Request final chunk before stop (needed for some browsers when no timeslice was used).
+      try {
+        recorder.requestData();
+      } catch {
+        /* requestData unsupported or inactive */
+      }
       recorder.stop();
-      setRecording(false);
     });
 
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    mediaRecorderRef.current = null;
+
     try {
-      const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-      const processed = await uploadVoiceNote(vehicleId, blob, "mechanic-note.webm");
+      const mime = mimeTypeRef.current || "audio/webm";
+      const blob = new Blob(chunksRef.current, { type: mime });
+      if (blob.size === 0) {
+        throw new Error("Recording was empty. Try speaking again, or use the text note below.");
+      }
+      const filename = `mechanic-note.${extensionForMime(mime)}`;
+      const processed = await uploadVoiceNote(vehicleId, blob, filename);
       setResult(processed);
       setNotes(await listVoiceNotes());
     } catch (err) {

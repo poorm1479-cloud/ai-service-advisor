@@ -6,21 +6,21 @@ const PLANS = [
     name: "Free",
     price: "$0",
     blurb: "14-day trial for independent shops",
-    features: ["100 AI calls / mo", "50 SMS / mo", "2 seats"],
+    features: ["50 AI calls / mo", "50 SMS / mo", "2 seats"],
   },
   {
     id: "pro",
     name: "Pro",
     price: "$99",
     blurb: "For growing repair shops",
-    features: ["2,000 AI calls / mo", "1,000 SMS / mo", "10 seats"],
+    features: ["200 AI calls / mo", "200 SMS / mo", "4 seats"],
   },
   {
     id: "enterprise",
     name: "Enterprise",
     price: "$299",
     blurb: "Multi-location and custom limits",
-    features: ["20,000 AI calls / mo", "10,000 SMS / mo", "100 seats"],
+    features: ["500 AI calls / mo", "500 SMS / mo", "10 seats"],
   },
 ];
 

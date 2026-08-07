@@ -12,21 +12,37 @@ from typing import Any
 from app.agents.base.agent import Agent, AgentContext, AgentResult
 from app.agents.base.errors import AgentValidationError
 from app.agents.communication.models import NormalizedMessage
-from app.agents.intent.datetime_parse import parse_preferred_datetime
+from app.agents.intent.datetime_parse import (
+    DEFAULT_SHOP_TZ,
+    combine_day_and_clock,
+    parse_preferred_datetime,
+    parse_same_slot_preference,
+)
 from app.agents.intent.models import CustomerIntent, IntentResult
+from app.agents.intent.reschedule_text import (
+    RESCHEDULE_PATTERN,
+    has_existing_visit_context,
+    looks_like_reschedule_text,
+    looks_like_service_type_change,
+    looks_like_weak_reschedule_text,
+)
 from app.agents.scheduling.catalog_match import (
     CatalogServiceMatch,
+    extract_service_switch_target,
     find_catalog_service_candidates,
     match_catalog_service,
 )
 from app.agents.scheduling.catalog_port import ServiceCatalogPort
 
-# Affirmative reply after summary confirmation / offered slot
-_AFFIRM_BOOK = re.compile(
-    r"^\s*(yes|yeah|yep|yup|ok|okay|sure|confirm|book it|that works|"
-    r"(the\s+)?first\s+one(\s+please)?)\s*[.!?]?\s*$",
-    re.I,
+# Affirmative reply after summary confirmation / offered slot.
+# Voice STT often appends "please" / "go ahead" — keep those as yes.
+_AFFIRM_CORE = (
+    r"(?:yes|yeah|yep|yup|ok|okay|sure|confirm|book\s+it|that\s+works|"
+    r"sounds\s+good|go\s+ahead(?:\s+and\s+(?:book|cancel|do\s+it))?|"
+    r"do\s+it|(?:the\s+)?first\s+one)"
+    r"(?:\s+(?:please|thanks|thank\s+you|cancel(?:\s+it)?|do\s+it|go\s+ahead))*"
 )
+_AFFIRM_BOOK = re.compile(rf"^\s*{_AFFIRM_CORE}\s*[.!?]?\s*$", re.I)
 
 # "Book the first available / earliest opening today" — pick earliest free slot.
 # Do not match "first time customer" (new visitor).
@@ -108,6 +124,10 @@ _NAME_STOPWORDS = frozenset(
         "appointment",
         "cancel",
         "reschedule",
+        "reset",
+        "replace",
+        "redo",
+        "rebook",
         "morning",
         "afternoon",
         "evening",
@@ -176,22 +196,7 @@ _PATTERNS: list[tuple[CustomerIntent, re.Pattern[str], float]] = [
     ),
     (
         CustomerIntent.RESCHEDULE,
-        # Exclude "oil change …" so maintenance/booking phrases stay intact.
-        # Also catch noun-style "appointment/reservation time change".
-        re.compile(
-            r"\b("
-            r"reschedule|"
-            r"move (my )?(appointment|appt|booking|reservation)|"
-            r"(?<!\boil )change (my |the )?(appointment|appt|booking|reservation)(\s+time)?|"
-            r"(?<!\boil )change (my |the )?(time|day)"
-            r"(\s+of\s+(my\s+)?(appointment|appt|booking|reservation))?|"
-            r"(appointment|appt|booking|reservation)(\s+time)?\s+change|"
-            r"time\s+change|"
-            r"different (day|time)|"
-            r"(switch|push back|push forward) (my )?(appointment|appt|booking|reservation)"
-            r")\b",
-            re.I,
-        ),
+        RESCHEDULE_PATTERN,
         0.90,
     ),
     (
@@ -224,15 +229,25 @@ _PATTERNS: list[tuple[CustomerIntent, re.Pattern[str], float]] = [
             r"earliest\s+(available\s+)?(opening|slot|time)|"
             r"next\s+available"
             r")\b.{0,32}\b(book|schedule|reserve|appointment|appt)\b|"
-            r"^\s*(yes|yeah|yep|yup|ok|okay|sure|confirm|book it|that works|"
-            r"(the\s+)?first\s+one(\s+please)?)\s*[.!?]?\s*$",
+            # Bare affirmation ("yes" / "yes please") → continue active booking.
+            rf"^\s*{_AFFIRM_CORE}\s*[.!?]?\s*$",
             re.I,
         ),
         0.86,
     ),
     (
         CustomerIntent.ASK_REPAIR_STATUS,
-        re.compile(r"\b(status|update|ready|done|finished|progress)\b.*\b(car|vehicle|repair|ro)?\b", re.I),
+        # Require vehicle/repair context — bare "update" must not steal reschedule.
+        re.compile(
+            r"\b("
+            r"(status|update|ready|done|finished|progress)\b.{0,40}\b"
+            r"(car|vehicle|repair|ro)\b|"
+            r"(status|update)\s+on\s+(my\s+)?(car|vehicle|repair|ro)|"
+            r"repair\s+(order\s+)?status|"
+            r"is\s+(my\s+)?(car|vehicle)\s+(ready|done|finished)"
+            r")\b",
+            re.I,
+        ),
         0.82,
     ),
     (
@@ -263,7 +278,21 @@ _PATTERNS: list[tuple[CustomerIntent, re.Pattern[str], float]] = [
     ),
     (
         CustomerIntent.RETURNING_CUSTOMER,
-        re.compile(r"\b(again|back|returning|usual|my regular)\b", re.I),
+        # Avoid bare "back" — steals "push my appointment back".
+        re.compile(
+            r"\b("
+            r"returning(\s+customer)?|"
+            r"coming\s+back|"
+            r"i'?m\s+back|"
+            r"been\s+here\s+before|"
+            r"my\s+usual|"
+            r"usual\s+service|"
+            r"again\s+for|"
+            r"back\s+again|"
+            r"back\s+for\s+(my\s+)?(usual|regular|same)"
+            r")\b",
+            re.I,
+        ),
         0.7,
     ),
 ]
@@ -351,6 +380,9 @@ class IntentAgent(Agent[NormalizedMessage, IntentResult]):
             primary, confidence, secondary = _refine_cancel_confirmation(
                 primary, confidence, secondary, text, context
             )
+            primary, confidence, secondary = _refine_reschedule_desire(
+                primary, confidence, secondary, text, context
+            )
             primary, confidence, secondary = _refine_with_name_answer(
                 primary, confidence, secondary, entities, context
             )
@@ -399,6 +431,9 @@ class IntentAgent(Agent[NormalizedMessage, IntentResult]):
         primary, confidence, secondary = _refine_cancel_confirmation(
             primary, confidence, secondary, text, context
         )
+        primary, confidence, secondary = _refine_reschedule_desire(
+            primary, confidence, secondary, text, context
+        )
         primary, confidence, secondary = _refine_with_name_answer(
             primary, confidence, secondary, entities, context
         )
@@ -427,13 +462,30 @@ class IntentAgent(Agent[NormalizedMessage, IntentResult]):
             return None, None, []
         if not services:
             return None, None, []
-        candidates = find_catalog_service_candidates(text, services)
-        match = candidates[0] if len(candidates) == 1 else match_catalog_service(text, services)
-        # Ambiguous: keep candidates, withhold a single locked match.
-        if len(candidates) > 1:
-            match = None
-        if match is None and len(candidates) == 1:
-            match = candidates[0]
+        # Prefer the destination of "change … to X" / "switch to X" so a
+        # reschedule that renames the job is not treated as ambiguous.
+        switch_q = extract_service_switch_target(text)
+        if switch_q:
+            switch_match = match_catalog_service(switch_q, services)
+            if switch_match is not None and switch_match.confidence >= 0.85:
+                candidates = [switch_match]
+                match = switch_match
+            else:
+                switch_match = None
+        else:
+            switch_match = None
+        if switch_match is None:
+            candidates = find_catalog_service_candidates(text, services)
+            match = (
+                candidates[0]
+                if len(candidates) == 1
+                else match_catalog_service(text, services)
+            )
+            # Ambiguous: keep candidates, withhold a single locked match.
+            if len(candidates) > 1:
+                match = None
+            if match is None and len(candidates) == 1:
+                match = candidates[0]
         price_str: str | None = None
         if match is not None:
             for s in services:
@@ -499,22 +551,40 @@ def _refine_with_time_preference(
     """Day/time answers after a slot offer continue the booking flow."""
     if primary in _LOCKED_INTENTS:
         return primary, confidence, secondary
+
+    meta = context.metadata or {}
+    pending_action = str(meta.get("pending_action") or "")
+    has_visit = has_existing_visit_context(meta)
+    # "Same time" / keep-slot during a service-type swap still moves the
+    # *existing* visit (often with a newly named job) — never a fresh book,
+    # even when preferred_start could not be anchored yet.
+    if entities.get("same_slot_preference") and has_visit:
+        if primary != CustomerIntent.RESCHEDULE and primary not in secondary:
+            secondary = [primary, *secondary][:3]
+        return CustomerIntent.RESCHEDULE, max(confidence, 0.9), secondary
+
+    # Mid reschedule hold: naming a replacement job and/or a new day/clock
+    # continues the move (covers "both service + time" multi-turn answers).
+    if pending_action == "reschedule" and (
+        entities.get("preferred_start")
+        or entities.get("prefer_earliest")
+        or entities.get("prefer_latest")
+        or entities.get("requested_service")
+        or entities.get("service")
+    ):
+        if primary != CustomerIntent.RESCHEDULE and primary not in secondary:
+            secondary = [primary, *secondary][:3]
+        return CustomerIntent.RESCHEDULE, max(confidence, 0.9), secondary
+
     if entities.get("vague_time") and not entities.get("preferred_start"):
         return primary, confidence, secondary
     if not entities.get("preferred_start"):
         return primary, confidence, secondary
 
-    meta = context.metadata or {}
-    pending_action = str(meta.get("pending_action") or "")
-    # After we asked for a new time on a reschedule hold, a day/clock answer
-    # continues the move — never start a fresh booking.
-    if pending_action == "reschedule":
-        if primary != CustomerIntent.RESCHEDULE and primary not in secondary:
-            secondary = [primary, *secondary][:3]
-        return CustomerIntent.RESCHEDULE, max(confidence, 0.9), secondary
-
     # Already booked in this conversation + new time → move that visit
     # (unless they clearly named a different service for a second booking).
+    # Compound service+time moves use reschedule phrasing or a reschedule hold
+    # above; bare "Brake Friday" after oil may still be a new book.
     has_appt = bool(
         meta.get("appointment_id") or meta.get("active_appointment_id")
     )
@@ -545,6 +615,14 @@ def _is_same_visit_time_change(
     entities: dict[str, Any], meta: dict[str, Any]
 ) -> bool:
     """True when a new time should replace the conversation's existing booking."""
+    # Keep day/time on the current visit — service name may intentionally differ
+    # (service-type change: "Brake repair, same time").
+    if (
+        entities.get("same_slot_preference")
+        or entities.get("keep_same_time")
+        or entities.get("keep_same_day")
+    ):
+        return True
     requested = (
         entities.get("requested_service") or entities.get("service") or ""
     ).strip().casefold()
@@ -631,6 +709,76 @@ def _refine_cancel_confirmation(
             secondary = [primary, *secondary][:3]
         return CustomerIntent.RESCHEDULE, max(confidence, 0.9), secondary
     return primary, confidence, secondary
+
+
+# Day / clock tokens that look like switch targets but are time moves, not jobs.
+_SWITCH_TARGET_TIME_LIKE = re.compile(
+    r"^(?:"
+    r"tomorrow|today|tonight|yesterday|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"morning|afternoon|evening|noon|midnight|"
+    r"next\s+(?:week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
+    r"this\s+(?:week|morning|afternoon|evening)|"
+    r"\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?|"
+    r"(?:a\s+)?(?:different|another|new)\s+(?:time|day|date|slot)"
+    r")$",
+    re.I,
+)
+
+
+def _looks_like_named_service_switch(
+    text: str, context: AgentContext
+) -> bool:
+    """True when utterance renames the job and an existing visit is in context.
+
+    Covers "make it a brake repair" / "actually I need tire rotation" which name
+    the destination without the bare "service type" phrase.
+    """
+    if not has_existing_visit_context(context.metadata):
+        return False
+    target = extract_service_switch_target(text)
+    if not target or len(target) < 3:
+        return False
+    if _SWITCH_TARGET_TIME_LIKE.match(target.strip()):
+        return False
+    return True
+
+
+def _refine_reschedule_desire(
+    primary: CustomerIntent,
+    confidence: float,
+    secondary: list[CustomerIntent],
+    text: str,
+    context: AgentContext,
+) -> tuple[CustomerIntent, float, list[CustomerIntent]]:
+    """Promote reschedule when pattern hits, or weak cues with an existing visit.
+
+    Never override cancel / emergency / complaint.
+    """
+    if primary in {
+        CustomerIntent.CANCEL_APPOINTMENT,
+        CustomerIntent.EMERGENCY,
+        CustomerIntent.COMPLAINT,
+    }:
+        return primary, confidence, secondary
+
+    strong = looks_like_reschedule_text(text)
+    # Service-type swap synonyms (change job / wrong service / different repair…)
+    # must promote to reschedule so they are not misread as a fresh book.
+    service_swap = looks_like_service_type_change(text) or _looks_like_named_service_switch(
+        text, context
+    )
+    weak = looks_like_weak_reschedule_text(text)
+    if not strong and not service_swap and not (
+        weak and has_existing_visit_context(context.metadata)
+    ):
+        return primary, confidence, secondary
+
+    # Strong "reset" / "reschedule" / service-type swap beats BOOK/MAINTENANCE.
+    if primary != CustomerIntent.RESCHEDULE and primary not in secondary:
+        secondary = [primary, *secondary][:3]
+    conf = 0.91 if (strong or service_swap) else 0.88
+    return CustomerIntent.RESCHEDULE, max(confidence, conf), secondary
 
 
 def _refine_with_name_answer(
@@ -776,27 +924,54 @@ def _extract_entities(
                 entities["requested_service"] = label
                 break
 
+    from datetime import datetime, timedelta
+
+    applied_same = apply_same_slot_preference_to_entities(text, entities, context)
     parsed = parse_preferred_datetime(text)
-    if parsed.start is not None and not entities.get("vague_time"):
-        entities["preferred_start"] = parsed.start.isoformat()
-        entities["time_precision"] = parsed.precision
-        # Day / part-of-day must not invent a clock time — ask / offer slots.
-        # Earliest/latest preference means pick the first/last free opening in window.
-        if parsed.precision in {"day", "part_of_day"} and not (
-            entities.get("prefer_earliest") or entities.get("prefer_latest")
+    if not applied_same and parsed.start is not None and not entities.get("vague_time"):
+        # When customer said "same time" but we lack a visit anchor, do not
+        # demote to a day-only re-ask that drops the keep-time signal.
+        same_slot = parse_same_slot_preference(text)
+        if (
+            same_slot is not None
+            and same_slot.keep_time
+            and parsed.day_explicit
+            and parsed.precision in {"day", "part_of_day"}
         ):
+            entities["preferred_start"] = parsed.start.isoformat()
+            if parsed.end is not None:
+                entities["preferred_end"] = parsed.end.isoformat()
+            entities["time_precision"] = parsed.precision
             entities["needs_time"] = True
-    if parsed.end is not None and not entities.get("vague_time"):
+            entities["same_slot_preference"] = True
+            entities["keep_same_time"] = True
+            entities["keep_same_day"] = same_slot.keep_day
+        else:
+            entities["preferred_start"] = parsed.start.isoformat()
+            entities["time_precision"] = parsed.precision
+            # Time without a day — keep hour for a later merge; ask for the day first.
+            if not parsed.day_explicit and not (
+                entities.get("prefer_earliest") or entities.get("prefer_latest")
+            ):
+                entities["needs_date"] = True
+            # Day / part-of-day must not invent a clock time — ask / offer slots.
+            # Earliest/latest preference means pick the first/last free opening in window.
+            if parsed.precision in {"day", "part_of_day"} and not (
+                entities.get("prefer_earliest") or entities.get("prefer_latest")
+            ):
+                entities["needs_time"] = True
+    if (
+        not applied_same
+        and parsed.end is not None
+        and not entities.get("vague_time")
+        and not entities.get("preferred_end")
+    ):
         entities["preferred_end"] = parsed.end.isoformat()
     # "First/last available" with no day → still prefer edge slot over inventing a clock.
     if (
         entities.get("prefer_earliest") or entities.get("prefer_latest")
     ) and not entities.get("preferred_start"):
         # Default window: remaining shop day today (aligned with day precision).
-        from datetime import datetime, timedelta
-
-        from app.agents.intent.datetime_parse import DEFAULT_SHOP_TZ
-
         now = datetime.now(DEFAULT_SHOP_TZ)
         start = now.replace(second=0, microsecond=0)
         end = now.replace(hour=17, minute=0, second=0, microsecond=0)
@@ -809,3 +984,165 @@ def _extract_entities(
         entities["preferred_end"] = end.isoformat()
         entities["time_precision"] = "day"
     return entities
+
+
+def apply_same_slot_preference_to_entities(
+    text: str,
+    entities: dict[str, Any],
+    context: AgentContext | None,
+) -> bool:
+    """Bind day/clock from keep-slot phrasing + existing visit.
+
+    Safe to call again after schedule context is enriched (intent runs before
+    customer resolve, so visit start often appears later). Returns True when a
+    concrete clock preference was set (fully or with needs_date only).
+    """
+    from datetime import datetime, timedelta
+
+    if not text or entities.get("vague_time"):
+        return False
+
+    same_slot = parse_same_slot_preference(text)
+    if same_slot is None and not (
+        entities.get("same_slot_preference")
+        or entities.get("keep_same_time")
+        or entities.get("keep_same_day")
+    ):
+        return False
+
+    if same_slot is not None:
+        entities["same_slot_preference"] = True
+        entities["keep_same_day"] = same_slot.keep_day
+        entities["keep_same_time"] = same_slot.keep_time
+        keep_day = same_slot.keep_day
+        keep_time = same_slot.keep_time
+    else:
+        keep_day = bool(entities.get("keep_same_day"))
+        keep_time = bool(entities.get("keep_same_time"))
+        # Entities alone say "same slot" without day/time split → full keep.
+        if entities.get("same_slot_preference") and not (keep_day or keep_time):
+            keep_day = True
+            keep_time = True
+
+    if not keep_day and not keep_time:
+        return False
+
+    # Already have a complete clock from a prior apply.
+    if (
+        entities.get("time_precision") == "clock"
+        and not entities.get("needs_time")
+        and not entities.get("needs_date")
+        and entities.get("preferred_start")
+    ):
+        return True
+
+    anchor = _existing_visit_start(context)
+    if anchor is None:
+        return False
+
+    parsed = parse_preferred_datetime(text)
+    applied = False
+
+    def _set_clock(start: datetime) -> None:
+        nonlocal applied
+        entities["preferred_start"] = start.isoformat()
+        entities["preferred_end"] = (start + timedelta(hours=1)).isoformat()
+        entities["time_precision"] = "clock"
+        entities.pop("needs_date", None)
+        entities.pop("needs_time", None)
+        applied = True
+
+    has_new_day = (
+        parsed.start is not None
+        and parsed.day_explicit
+        and parsed.precision in {"day", "part_of_day", "clock"}
+    )
+    if keep_time and has_new_day:
+        # "today same time", "Friday same time", "tomorrow at the same time"
+        _set_clock(combine_day_and_clock(parsed.start, anchor))
+    elif keep_day and keep_time:
+        # "same day and time" / bare "same time" when no new day token
+        _set_clock(anchor)
+    elif keep_time and not keep_day and (
+        parsed.start is None or not parsed.day_explicit
+    ):
+        # Bare "same time" with no day words → keep full visit slot
+        _set_clock(anchor)
+    elif keep_day and not keep_time and parsed.start is not None and (
+        parsed.precision == "clock"
+    ):
+        # "Same day at 4pm"
+        _set_clock(combine_day_and_clock(anchor, parsed.start))
+    elif keep_day and not keep_time and (
+        parsed.start is None or parsed.precision in {"none", "day"}
+    ):
+        # Bare "same day" → reuse the full existing slot (day + clock)
+        if parsed.precision not in {"clock", "part_of_day"}:
+            _set_clock(anchor)
+    elif keep_time and not keep_day and parsed.start is None:
+        entities["preferred_start"] = anchor.isoformat()
+        entities["preferred_end"] = (anchor + timedelta(hours=1)).isoformat()
+        entities["time_precision"] = "clock"
+        entities["needs_date"] = True
+        entities.pop("needs_time", None)
+        applied = True
+
+    return applied
+
+
+def _existing_visit_start(context: AgentContext | None) -> "datetime | None":
+    """Start of the active/upcoming visit, if conversation has one.
+
+    Prefers the pinned appointment (memory appointment_id) so service-type
+    swaps + "same time" keep the correct visit clock, not a stale stash.
+    """
+    from datetime import datetime
+
+    if context is None:
+        return None
+    meta = context.metadata or {}
+    candidates: list[Any] = []
+
+    pin = meta.get("appointment_id") or meta.get("active_appointment_id")
+    pin_s = str(pin) if pin else ""
+    upcoming = list(meta.get("upcoming_appointments") or [])
+    if pin_s and upcoming:
+        for row in upcoming:
+            if str(row.get("id") or "") == pin_s and row.get("start"):
+                candidates.append(row.get("start"))
+                break
+    if upcoming:
+        candidates.append(upcoming[0].get("start"))
+    # Explicit visit wall-clock from voice/SMS memory after a prior book.
+    for key in (
+        "active_visit_start",
+        "visit_start",
+        "appointment_start",
+        "pending_slot_start",
+    ):
+        if meta.get(key):
+            candidates.append(meta.get(key))
+    # Incomplete preferred stash is last resort (may be day-only without a clock).
+    if meta.get("pending_preferred_start") and str(
+        meta.get("pending_time_precision") or ""
+    ) in {"clock", "time_only", ""}:
+        # Prefer when stash itself has a usable clock (not pure day window).
+        prec = str(meta.get("pending_time_precision") or "")
+        if prec in {"clock", "time_only"} or not meta.get("pending_needs_time"):
+            candidates.append(meta.get("pending_preferred_start"))
+
+    for raw in candidates:
+        if raw is None:
+            continue
+        if isinstance(raw, datetime):
+            return raw if raw.tzinfo else raw.replace(tzinfo=DEFAULT_SHOP_TZ)
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=DEFAULT_SHOP_TZ)
+        return dt
+    return None

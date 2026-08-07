@@ -32,7 +32,7 @@ const VoiceNotesPanel = dynamic(
 
 const TABS = [
   { id: "sms", label: "SMS" },
-  { id: "calls", label: "Voice Calls" },
+  { id: "calls", label: "Calls" },
   { id: "notes", label: "Voice Notes" },
 ] as const;
 
@@ -70,9 +70,6 @@ function ConversationsContent() {
       <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="page-title">Conversations</h1>
-          <p className="text-sm text-[var(--muted)]">
-            SMS inbox, voice calls, and mechanic voice notes in one place.
-          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           {TABS.map((t) => (

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   BarcodeFormat,
   BrowserCodeReader,
@@ -878,6 +879,8 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
   const [torchAvailable, setTorchAvailable] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
+  /** Client-only: portal scan UI past overflow-hidden dashboard shells. */
+  const [portalReady, setPortalReady] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const controlsRef = useRef<ScannerControls | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -889,6 +892,10 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
   const captureHandlerRef = useRef<(() => Promise<void>) | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+
+  useEffect(() => {
+    setPortalReady(true);
+  }, []);
 
   useEffect(() => {
     if (!scanning) return;
@@ -1360,91 +1367,99 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
             `${Math.min(value.replace(/[\s-]/g, "").length, 17)}/17 · type or camera scan`}
       </p>
 
-      {scanning && (
-        <div
-          className="fixed inset-0 z-[60] flex items-end justify-center bg-black/50 p-4 sm:items-center"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Scan VIN"
-        >
-          <div className="w-full max-w-md overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-xl">
-            <div className="flex items-center justify-between border-b border-[var(--line)] px-4 py-3">
-              <div>
-                <p className="text-sm font-medium">Scan VIN</p>
-                <p className="text-xs text-[var(--muted)]">
-                  Barcode first · printed VIN OCR · Capture
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                {torchAvailable && (
+      {/* Portal past overflow-hidden shells so dim covers header + full viewport */}
+      {portalReady &&
+        scanning &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[100] flex items-end justify-center bg-black/50 p-4 sm:items-center"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Scan VIN"
+            onClick={closeScanner}
+          >
+            <div
+              className="w-full max-w-md overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-[var(--line)] px-4 py-3">
+                <div>
+                  <p className="text-sm font-medium">Scan VIN</p>
+                  <p className="text-xs text-[var(--muted)]">
+                    Barcode first · printed VIN OCR · Capture
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {torchAvailable && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void toggleTorch();
+                      }}
+                      className="rounded-md border border-[var(--line)] px-3 py-1.5 text-sm"
+                      aria-pressed={torchOn}
+                    >
+                      {torchOn ? "Light on" : "Light"}
+                    </button>
+                  )}
                   <button
                     type="button"
-                    onClick={() => {
-                      void toggleTorch();
-                    }}
+                    onClick={closeScanner}
                     className="rounded-md border border-[var(--line)] px-3 py-1.5 text-sm"
-                    aria-pressed={torchOn}
                   >
-                    {torchOn ? "Light on" : "Light"}
+                    Close
                   </button>
+                </div>
+              </div>
+              <div className="relative bg-black">
+                <video
+                  ref={videoRef}
+                  className="aspect-[4/3] w-full bg-black object-contain"
+                  muted
+                  playsInline
+                  autoPlay
+                />
+                {/* Guide matches barcode + near OCR center band. */}
+                <div className="pointer-events-none absolute inset-0">
+                  <div className="absolute inset-x-0 top-0 h-[34%] bg-black/50" />
+                  <div className="absolute inset-x-0 bottom-0 h-[34%] bg-black/50" />
+                  <div className="absolute inset-y-[34%] left-0 w-[3%] bg-black/50" />
+                  <div className="absolute inset-y-[34%] right-0 w-[3%] bg-black/50" />
+                  <div className="absolute inset-x-[3%] top-[34%] h-[32%] rounded-md border-2 border-[var(--accent)]">
+                    <div className="absolute left-2 top-2 h-3 w-3 border-l-2 border-t-2 border-white/90" />
+                    <div className="absolute right-2 top-2 h-3 w-3 border-r-2 border-t-2 border-white/90" />
+                    <div className="absolute bottom-2 left-2 h-3 w-3 border-b-2 border-l-2 border-white/90" />
+                    <div className="absolute bottom-2 right-2 h-3 w-3 border-b-2 border-r-2 border-white/90" />
+                  </div>
+                  <p className="absolute inset-x-0 bottom-[26%] text-center text-[11px] font-medium tracking-wide text-white/90">
+                    Align barcode or VIN letters here
+                  </p>
+                </div>
+              </div>
+              <div className="space-y-2 px-4 py-3">
+                {scanError ? (
+                  <p className="text-sm text-red-700">{scanError}</p>
+                ) : (
+                  <p className="text-xs text-[var(--muted)]">{scanHint}</p>
                 )}
                 <button
                   type="button"
-                  onClick={closeScanner}
-                  className="rounded-md border border-[var(--line)] px-3 py-1.5 text-sm"
+                  disabled={!cameraReady || capturing || Boolean(scanError)}
+                  onClick={() => {
+                    void captureNow();
+                  }}
+                  className="flex w-full min-h-11 items-center justify-center rounded-md bg-[var(--accent)] px-3 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Close
+                  {capturing ? "Reading…" : "Capture frame"}
                 </button>
-              </div>
-            </div>
-            <div className="relative bg-black">
-              <video
-                ref={videoRef}
-                className="aspect-[4/3] w-full bg-black object-contain"
-                muted
-                playsInline
-                autoPlay
-              />
-              {/* Guide matches barcode + near OCR center band. */}
-              <div className="pointer-events-none absolute inset-0">
-                <div className="absolute inset-x-0 top-0 h-[34%] bg-black/50" />
-                <div className="absolute inset-x-0 bottom-0 h-[34%] bg-black/50" />
-                <div className="absolute inset-y-[34%] left-0 w-[3%] bg-black/50" />
-                <div className="absolute inset-y-[34%] right-0 w-[3%] bg-black/50" />
-                <div className="absolute inset-x-[3%] top-[34%] h-[32%] rounded-md border-2 border-[var(--accent)]">
-                  <div className="absolute left-2 top-2 h-3 w-3 border-l-2 border-t-2 border-white/90" />
-                  <div className="absolute right-2 top-2 h-3 w-3 border-r-2 border-t-2 border-white/90" />
-                  <div className="absolute bottom-2 left-2 h-3 w-3 border-b-2 border-l-2 border-white/90" />
-                  <div className="absolute bottom-2 right-2 h-3 w-3 border-b-2 border-r-2 border-white/90" />
-                </div>
-                <p className="absolute inset-x-0 bottom-[26%] text-center text-[11px] font-medium tracking-wide text-white/90">
-                  Align barcode or VIN letters here
+                <p className="text-xs text-[var(--muted)]">
+                  Best: door-jamb barcode. Printed VIN: hold steady or tap Capture. Tilt to cut glass glare. USB scanners work in the VIN field.
                 </p>
               </div>
             </div>
-            <div className="space-y-2 px-4 py-3">
-              {scanError ? (
-                <p className="text-sm text-red-700">{scanError}</p>
-              ) : (
-                <p className="text-xs text-[var(--muted)]">{scanHint}</p>
-              )}
-              <button
-                type="button"
-                disabled={!cameraReady || capturing || Boolean(scanError)}
-                onClick={() => {
-                  void captureNow();
-                }}
-                className="flex w-full min-h-11 items-center justify-center rounded-md bg-[var(--accent)] px-3 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {capturing ? "Reading…" : "Capture frame"}
-              </button>
-              <p className="text-xs text-[var(--muted)]">
-                Best: door-jamb barcode. Printed VIN: hold steady or tap Capture. Tilt to cut glass glare. USB scanners work in the VIN field.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

@@ -332,6 +332,17 @@ code,
   }
 }
 
+/* Active voice-call waveform bars (conversations / Calls tab) */
+@keyframes call-wave {
+  0%,
+  100% {
+    transform: scaleY(0.4);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .hero-motion,
   .hero-motion-delay,

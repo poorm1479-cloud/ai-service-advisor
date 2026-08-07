@@ -243,6 +243,8 @@ async def ensure_shop_resources_synced(shop_id: UUID, store: ShopResourcePort) -
     Schedule UI syncs on calendar load; agent bookings must sync first so
     appointments land on real Team mechanic ids (not seed defaults).
     """
+    from app.scheduling.store import InMemoryShopResourceStore
+
     if not isinstance(store, InMemoryShopResourceStore):
         return
     try:

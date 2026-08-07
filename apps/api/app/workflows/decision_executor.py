@@ -1433,16 +1433,45 @@ class DecisionExecutor:
                     if decision.preferred_start is not None
                     else None
                 )
+                # Classify date-vs-time so counselor re-asks only the broken half.
+                from app.agents.scheduling.service import SchedulingAgent
+
+                aspect_slots = await self._invoke_cap(
+                    Capability.FIND_AVAILABLE_SLOT.value,
+                    shop_id=shop_id,
+                    ports=ports,
+                    context=context,
+                    days_ahead=decision.days_ahead,
+                    duration_minutes=decision.duration_minutes,
+                    repair_type=decision.required_skill,
+                )
+                aspect = SchedulingAgent.classify_unavailable_aspect(
+                    list(aspect_slots or []),
+                    decision.preferred_start,
+                )
+                pending_action = decision.hold_action or "book"
+                if pending_action not in {"book", "reschedule"}:
+                    pending_action = "book"
+                meta: dict = {
+                    "preferred_time_unavailable": True,
+                    "unavailable_aspect": aspect,
+                    "action": pending_action,
+                    "preferred_start": preferred_iso,
+                }
+                # Preferred calendar day has zero openings → date (closed/full).
+                if decision.preferred_start is not None and not (
+                    SchedulingAgent._same_day_openings(
+                        list(aspect_slots or []), decision.preferred_start
+                    )
+                ):
+                    meta["unavailable_aspect"] = "date"
+                    meta["closed_day"] = True
                 return SchedulingResult(
                     action="list_slots",
                     success=False,
                     available_slots=[],
                     message="preferred_time_unavailable",
-                    metadata={
-                        "preferred_time_unavailable": True,
-                        "action": "book",
-                        "preferred_start": preferred_iso,
-                    },
+                    metadata=meta,
                     decision=decision,
                 )
             slots = await self._invoke_cap(
@@ -1499,7 +1528,8 @@ class DecisionExecutor:
             start = decision.recommended_slot_start
             end = decision.recommended_slot_end
             if start is None or end is None:
-                # Require a concrete preferred time — never invent slots[0].
+                # Require a concrete preferred time — never invent slots[0],
+                # and never silently book a later opening after preferred.
                 if decision.preferred_start is None:
                     return SchedulingResult(
                         action="book",
@@ -1517,19 +1547,64 @@ class DecisionExecutor:
                 )
                 if not slots:
                     return SchedulingResult(action="book", success=False, message="No available slots")
-                slot = next(
-                    (s for s in slots if s.start >= decision.preferred_start),
-                    None,
-                )
+                # Exact preferred minute only (shop-local, ignore sub-minute noise).
+                from app.agents.scheduling.service import SchedulingAgent
+
+                slot = SchedulingAgent._find_exact_slot(slots, decision.preferred_start)
                 if slot is None:
+                    aspect = SchedulingAgent.classify_unavailable_aspect(
+                        slots, decision.preferred_start
+                    )
                     return SchedulingResult(
-                        action="book",
+                        action="list_slots",
                         success=False,
-                        message="No available slots matching preferred start",
+                        available_slots=[],
+                        message="preferred_time_unavailable",
+                        metadata={
+                            "preferred_time_unavailable": True,
+                            "unavailable_aspect": aspect,
+                            "action": "book",
+                            "preferred_start": decision.preferred_start.isoformat(),
+                        },
+                        decision=decision,
                     )
                 start, end = slot.start, slot.end
             if duration and start is not None:
                 end = start + timedelta(minutes=int(duration))
+            preferred_iso = start.isoformat() if start is not None else (
+                decision.preferred_start.isoformat()
+                if decision.preferred_start is not None
+                else None
+            )
+
+            def _unavailable(message: str, *, errors: list[str] | None = None) -> SchedulingResult:
+                # Map capacity/hours failures to counselor's preferred_time_unavailable.
+                from app.agents.scheduling.service import SchedulingAgent
+
+                aspect = SchedulingAgent.classify_unavailable_aspect(
+                    [],  # validation failed for this exact window; treat as time-level
+                    start if start is not None else decision.preferred_start,
+                )
+                # Capacity/hour rejection is almost always the clock (day had a candidate).
+                if aspect == "both" and (
+                    start is not None or decision.preferred_start is not None
+                ):
+                    aspect = "time"
+                return SchedulingResult(
+                    action="list_slots",
+                    success=False,
+                    available_slots=[],
+                    message="preferred_time_unavailable",
+                    metadata={
+                        "preferred_time_unavailable": True,
+                        "unavailable_aspect": aspect,
+                        "action": "book",
+                        "preferred_start": preferred_iso,
+                        "errors": list(errors or [message]),
+                    },
+                    decision=decision,
+                )
+
             # Workflow validates availability before creating the appointment
             validation = await self._invoke_cap(
                 Capability.VALIDATE_APPOINTMENT.value,
@@ -1540,32 +1615,34 @@ class DecisionExecutor:
                 end=end,
             )
             if isinstance(validation, dict) and not validation.get("valid", True):
-                return SchedulingResult(
-                    action="book",
-                    success=False,
-                    message="Slot not available: "
-                    + "; ".join(validation.get("errors") or ["conflict"]),
+                errs = list(validation.get("errors") or ["conflict"])
+                return _unavailable(
+                    "Slot not available: " + "; ".join(errs),
+                    errors=errs,
                 )
             notes = decision.reason
             if decision.service_name:
                 svc_note = f"service:{decision.service_name}"
                 notes = f"{notes}; {svc_note}" if notes else svc_note
-            appt = await self._invoke_cap(
-                Capability.BOOK_APPOINTMENT.value,
-                shop_id=shop_id,
-                ports=ports,
-                context=context,
-                start=start,
-                end=end,
-                customer_id=decision.customer_id or context.customer_id,
-                vehicle_id=decision.vehicle_id or context.vehicle_id,
-                notes=notes,
-                service_id=decision.service_id,
-                service_name=decision.service_name,
-                duration_minutes=duration,
-                repair_type=decision.required_skill,
-                required_bay=decision.required_bay,
-            )
+            try:
+                appt = await self._invoke_cap(
+                    Capability.BOOK_APPOINTMENT.value,
+                    shop_id=shop_id,
+                    ports=ports,
+                    context=context,
+                    start=start,
+                    end=end,
+                    customer_id=decision.customer_id or context.customer_id,
+                    vehicle_id=decision.vehicle_id or context.vehicle_id,
+                    notes=notes,
+                    service_id=decision.service_id,
+                    service_name=decision.service_name,
+                    duration_minutes=duration,
+                    repair_type=decision.required_skill,
+                    required_bay=decision.required_bay,
+                )
+            except Exception as exc:  # noqa: BLE001 — surface capacity race as unavailable
+                return _unavailable(str(exc) or "Unable to book requested slot")
             from app.plugins.scheduling.plugin import reminders_for
 
             reminders = reminders_for(appt)
@@ -1597,6 +1674,8 @@ class DecisionExecutor:
             )
 
         if decision.action == "reschedule":
+            from app.agents.scheduling.service import SchedulingAgent
+
             if not decision.appointment_id:
                 slots = await self._invoke_cap(
                     Capability.FIND_AVAILABLE_SLOT.value,
@@ -1614,25 +1693,116 @@ class DecisionExecutor:
             start = decision.recommended_slot_start
             end = decision.recommended_slot_end
             if start is None or end is None:
+                # Never invent slots[0]. Prefer exact preferred_start only.
+                preferred = decision.preferred_start
+                if preferred is None:
+                    return SchedulingResult(
+                        action="list_slots",
+                        success=False,
+                        available_slots=[],
+                        message="preferred_time_unavailable",
+                        metadata={
+                            "preferred_time_unavailable": True,
+                            "unavailable_aspect": "both",
+                            "action": "reschedule",
+                        },
+                        decision=decision,
+                    )
                 slots = await self._invoke_cap(
                     Capability.FIND_AVAILABLE_SLOT.value,
                     shop_id=shop_id,
                     ports=ports,
                     context=context,
                     repair_type=decision.required_skill,
+                    duration_minutes=decision.duration_minutes,
                 )
-                if not slots:
-                    return SchedulingResult(action="reschedule", success=False, message="No slots available")
-                start, end = slots[0].start, slots[0].end
-            appt = await self._invoke_cap(
-                Capability.RESCHEDULE_APPOINTMENT.value,
+                slot = SchedulingAgent._find_exact_slot(list(slots or []), preferred)
+                if slot is None:
+                    aspect = SchedulingAgent.classify_unavailable_aspect(
+                        list(slots or []), preferred
+                    )
+                    return SchedulingResult(
+                        action="list_slots",
+                        success=False,
+                        available_slots=[],
+                        message="preferred_time_unavailable",
+                        metadata={
+                            "preferred_time_unavailable": True,
+                            "unavailable_aspect": aspect,
+                            "action": "reschedule",
+                            "preferred_start": preferred.isoformat(),
+                        },
+                        decision=decision,
+                    )
+                start, end = slot.start, slot.end
+            duration = decision.duration_minutes
+            if duration and end is not None and start is not None:
+                end = start + timedelta(minutes=int(duration))
+
+            preferred_iso = start.isoformat() if start is not None else (
+                decision.preferred_start.isoformat()
+                if decision.preferred_start is not None
+                else None
+            )
+
+            def _reschedule_unavailable(
+                message: str, *, errors: list[str] | None = None
+            ) -> SchedulingResult:
+                aspect = SchedulingAgent.classify_unavailable_aspect(
+                    [],
+                    start if start is not None else decision.preferred_start,
+                )
+                if aspect == "both" and (
+                    start is not None or decision.preferred_start is not None
+                ):
+                    aspect = "time"
+                return SchedulingResult(
+                    action="list_slots",
+                    success=False,
+                    available_slots=[],
+                    message="preferred_time_unavailable",
+                    metadata={
+                        "preferred_time_unavailable": True,
+                        "unavailable_aspect": aspect,
+                        "action": "reschedule",
+                        "preferred_start": preferred_iso,
+                        "errors": list(errors or [message]),
+                    },
+                    decision=decision,
+                )
+
+            validation = await self._invoke_cap(
+                Capability.VALIDATE_APPOINTMENT.value,
                 shop_id=shop_id,
                 ports=ports,
                 context=context,
-                appointment_id=decision.appointment_id,
                 start=start,
                 end=end,
+                exclude_id=decision.appointment_id,
             )
+            if isinstance(validation, dict) and not validation.get("valid", True):
+                errs = list(validation.get("errors") or ["conflict"])
+                return _reschedule_unavailable(
+                    "Slot not available: " + "; ".join(errs),
+                    errors=errs,
+                )
+            try:
+                appt = await self._invoke_cap(
+                    Capability.RESCHEDULE_APPOINTMENT.value,
+                    shop_id=shop_id,
+                    ports=ports,
+                    context=context,
+                    appointment_id=decision.appointment_id,
+                    start=start,
+                    end=end,
+                    service_id=decision.service_id,
+                    service_name=decision.service_name,
+                    duration_minutes=duration,
+                    repair_type=decision.required_skill,
+                    required_bay=decision.required_bay,
+                )
+            except Exception as exc:  # noqa: BLE001 — capacity / hours rejection
+                return _reschedule_unavailable(str(exc) or "Unable to reschedule")
             from app.plugins.scheduling.plugin import reminders_for
 
             return SchedulingResult(
@@ -1641,6 +1811,11 @@ class DecisionExecutor:
                 appointment=appt,
                 reminders=reminders_for(appt),
                 message="Appointment rescheduled",
+                metadata={
+                    "service_id": str(decision.service_id) if decision.service_id else None,
+                    "service_name": decision.service_name,
+                    "duration_minutes": duration,
+                },
             )
 
         if decision.action == "cancel":

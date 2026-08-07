@@ -196,7 +196,10 @@ class SchedulingPlugin:
 
         if capability == Capability.VALIDATE_APPOINTMENT:
             return await self._availability.validate_appointment(
-                shop_id, start=kwargs["start"], end=kwargs["end"]
+                shop_id,
+                start=kwargs["start"],
+                end=kwargs["end"],
+                exclude_id=kwargs.get("exclude_id"),
             )
 
         if capability == Capability.DETECT_CONFLICT:
@@ -220,11 +223,22 @@ class SchedulingPlugin:
                 notes=kwargs.get("notes"),
                 service_id=kwargs.get("service_id"),
                 service_name=kwargs.get("service_name"),
+                duration_minutes=kwargs.get("duration_minutes"),
+                repair_type=kwargs.get("repair_type") or kwargs.get("required_skill"),
+                required_bay=kwargs.get("required_bay"),
             )
 
         if capability == Capability.RESCHEDULE_APPOINTMENT:
             return await self._appointments.reschedule(
-                shop_id, kwargs["appointment_id"], kwargs["start"], kwargs["end"]
+                shop_id,
+                kwargs["appointment_id"],
+                kwargs["start"],
+                kwargs["end"],
+                service_id=kwargs.get("service_id"),
+                service_name=kwargs.get("service_name"),
+                duration_minutes=kwargs.get("duration_minutes"),
+                repair_type=kwargs.get("repair_type") or kwargs.get("required_skill"),
+                required_bay=kwargs.get("required_bay"),
             )
 
         if capability == Capability.CANCEL_APPOINTMENT:

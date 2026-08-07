@@ -54,9 +54,9 @@ def upgrade() -> None:
         sa.Column("description", sa.Text(), nullable=False, server_default=""),
         sa.Column("price_cents_monthly", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("stripe_price_id", sa.String(120), nullable=True),
-        sa.Column("ai_calls_monthly", sa.Integer(), nullable=False, server_default="100"),
-        sa.Column("sms_monthly", sa.Integer(), nullable=False, server_default="50"),
-        sa.Column("seats", sa.Integer(), nullable=False, server_default="3"),
+        sa.Column("ai_calls_monthly", sa.Integer(), nullable=False, server_default="50"),
+        sa.Column("sms_monthly", sa.Integer(), nullable=False, server_default="100"),
+        sa.Column("seats", sa.Integer(), nullable=False, server_default="2"),
         sa.Column("is_public", sa.Boolean(), nullable=False, server_default=sa.text("true")),
         sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
     )
@@ -92,9 +92,9 @@ def upgrade() -> None:
             """
             INSERT INTO saas_plans (id, name, description, price_cents_monthly, ai_calls_monthly, sms_monthly, seats, is_public, sort_order)
             VALUES
-              ('free', 'Free', 'Trial / starter for independent shops', 0, 100, 50, 2, true, 0),
-              ('pro', 'Pro', 'Growing shops with higher AI and SMS limits', 9900, 2000, 1000, 10, true, 1),
-              ('enterprise', 'Enterprise', 'Multi-location and custom limits', 29900, 20000, 10000, 100, true, 2)
+              ('free', 'Free', 'Trial / starter for independent shops', 0, 50, 50, 2, true, 0),
+              ('pro', 'Pro', 'Growing shops with higher AI and SMS limits', 9900, 200, 200, 4, true, 1),
+              ('enterprise', 'Enterprise', 'Multi-location and custom limits', 29900, 500, 500, 10, true, 2)
             """
         )
     )

@@ -7,7 +7,7 @@ AI agents never mutate CRM / Scheduling / Marketing; Workflow applies Decisions.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -161,29 +161,67 @@ class AgentOrchestrator:
 
     async def _enrich_schedule_context(self, context: AgentContext) -> None:
         """Attach upcoming appointments so reply/advisor can reference schedule."""
-        if context.customer_id is None:
-            return
         try:
             store = getattr(self._scheduling, "store", None)
-            if store is None or not hasattr(store, "list_by_customer"):
+            if store is None:
                 return
-            appts = await store.list_by_customer(context.shop_id, context.customer_id)
             upcoming: list[dict[str, Any]] = []
-            for a in appts[:5]:
-                upcoming.append(
-                    {
-                        "id": str(a.id),
-                        "start": a.start.isoformat() if a.start else None,
-                        "end": a.end.isoformat() if a.end else None,
-                        "status": a.status,
-                        "service_name": getattr(a, "service_name", None),
-                        "service_id": str(a.service_id) if getattr(a, "service_id", None) else None,
-                        "notes": getattr(a, "notes", None),
-                    }
+            if context.customer_id is not None and hasattr(store, "list_by_customer"):
+                appts = await store.list_by_customer(
+                    context.shop_id, context.customer_id
                 )
-            context.metadata["upcoming_appointments"] = upcoming
-            if upcoming and not context.metadata.get("active_appointment_id"):
-                context.metadata["active_appointment_id"] = upcoming[0]["id"]
+                for a in appts[:5]:
+                    upcoming.append(
+                        {
+                            "id": str(a.id),
+                            "start": a.start.isoformat() if a.start else None,
+                            "end": a.end.isoformat() if a.end else None,
+                            "status": a.status,
+                            "service_name": getattr(a, "service_name", None),
+                            "service_id": str(a.service_id)
+                            if getattr(a, "service_id", None)
+                            else None,
+                            "notes": getattr(a, "notes", None),
+                        }
+                    )
+            # Voice/SMS may pin a visit without a resolved customer — still load
+            # its start so "same time" after a service-type change has an anchor.
+            pin = context.metadata.get("appointment_id") or context.metadata.get(
+                "active_appointment_id"
+            )
+            if pin and hasattr(store, "get"):
+                try:
+                    from uuid import UUID as _UUID
+
+                    appt = await store.get(context.shop_id, _UUID(str(pin)))
+                except (TypeError, ValueError, AttributeError):
+                    appt = None
+                if appt is not None:
+                    row = {
+                        "id": str(appt.id),
+                        "start": appt.start.isoformat() if appt.start else None,
+                        "end": appt.end.isoformat() if appt.end else None,
+                        "status": appt.status,
+                        "service_name": getattr(appt, "service_name", None),
+                        "service_id": str(appt.service_id)
+                        if getattr(appt, "service_id", None)
+                        else None,
+                        "notes": getattr(appt, "notes", None),
+                    }
+                    if not any(str(u.get("id")) == row["id"] for u in upcoming):
+                        upcoming.insert(0, row)
+                    if row.get("start") and not context.metadata.get(
+                        "active_visit_start"
+                    ):
+                        context.metadata["active_visit_start"] = row["start"]
+            if upcoming:
+                context.metadata["upcoming_appointments"] = upcoming
+                if not context.metadata.get("active_appointment_id"):
+                    context.metadata["active_appointment_id"] = upcoming[0]["id"]
+                if upcoming[0].get("start") and not context.metadata.get(
+                    "active_visit_start"
+                ):
+                    context.metadata["active_visit_start"] = upcoming[0]["start"]
         except Exception as exc:  # pragma: no cover
             self._logger.warning("schedule.context_enrich_failed err=%s", exc)
 
@@ -240,16 +278,54 @@ class AgentOrchestrator:
         merged = dict(entities)
         reschedule_like = intent in {"reschedule", "cancel_appointment"}
 
-        # Time-change / cancel keep the existing appointment's service — do not
-        # reuse a prior booking offer (pending_service) or invent a new one.
+        # Time-change / cancel default to the existing appointment service.
+        # Prefer pending_service when set (multi-turn service swap: name the new
+        # job on turn 1, then answer day/time on turn 2).
+        # If the customer names a *different* service this turn, honor that.
         if reschedule_like:
             upcoming = list(meta.get("upcoming_appointments") or [])
             appt = upcoming[0] if upcoming else {}
-            if appt.get("service_name") and not merged.get("requested_service"):
-                merged["requested_service"] = appt["service_name"]
-                merged["service"] = appt["service_name"]
-            if appt.get("service_id") and not merged.get("service_id"):
+            named = str(
+                merged.get("requested_service") or merged.get("service") or ""
+            ).strip()
+            appt_name = str(appt.get("service_name") or "").strip()
+            pending_name = str(meta.get("pending_service") or "").strip()
+            pending_id = meta.get("pending_service_id")
+            named_cf = named.casefold()
+            appt_cf = appt_name.casefold()
+            same_service = bool(
+                named_cf
+                and appt_cf
+                and (
+                    named_cf == appt_cf
+                    or named_cf in appt_cf
+                    or appt_cf in named_cf
+                )
+            )
+            if not named:
+                # Service named on a prior reschedule turn (memory) beats the
+                # original appointment service — otherwise a day/time answer
+                # silently reverts a service-type change.
+                if pending_name:
+                    merged["requested_service"] = pending_name
+                    merged["service"] = pending_name
+                    if pending_id and not merged.get("service_id"):
+                        merged["service_id"] = pending_id
+                    if (
+                        not merged.get("duration_minutes")
+                        and meta.get("pending_duration_minutes")
+                    ):
+                        merged["duration_minutes"] = meta["pending_duration_minutes"]
+                else:
+                    if appt_name:
+                        merged["requested_service"] = appt_name
+                        merged["service"] = appt_name
+                    if appt.get("service_id") and not merged.get("service_id"):
+                        merged["service_id"] = appt["service_id"]
+            elif not merged.get("service_id") and same_service and appt.get("service_id"):
+                # Spoken name matches current appointment — bind the known id.
                 merged["service_id"] = appt["service_id"]
+            # else: leave service_id unset so catalog resolves the new name
         else:
             if not merged.get("requested_service") and not merged.get("service"):
                 pending = meta.get("pending_service")
@@ -267,6 +343,139 @@ class AgentOrchestrator:
         time_precision = merged.get("time_precision")
         prefer_earliest = bool(merged.get("prefer_earliest"))
         prefer_latest = bool(merged.get("prefer_latest"))
+        needs_date = bool(merged.get("needs_date"))
+        needs_time = bool(merged.get("needs_time"))
+
+        # Stashed partial day/time from a prior incomplete answer.
+        prev_start = self._parse_iso_dt(meta.get("pending_preferred_start"))
+        prev_end = self._parse_iso_dt(meta.get("pending_preferred_end"))
+        prev_precision = meta.get("pending_time_precision")
+        if not isinstance(prev_precision, str):
+            prev_precision = None
+        prev_needs_date = bool(meta.get("pending_needs_date"))
+        prev_needs_time = bool(meta.get("pending_needs_time"))
+
+        # Compose date-only + time-only answers across turns into one clock time.
+        if preferred is not None and prev_start is not None:
+            if needs_date and not needs_time and prev_precision in {"day", "part_of_day"}:
+                # Current: clock only; prior: day window → use prior day + current clock.
+                preferred = self._combine_day_and_clock(prev_start, preferred)
+                preferred_end = preferred + timedelta(hours=1)
+                time_precision = "clock"
+                needs_date = False
+                needs_time = False
+                merged.pop("needs_date", None)
+                merged.pop("needs_time", None)
+                merged["time_precision"] = "clock"
+            elif (
+                needs_date
+                and not needs_time
+                and prev_precision in {"clock", "time_only"}
+                and not prev_needs_date
+            ):
+                # Current: new clock only; prior full pick still has a known day
+                # (e.g. Friday 3pm unavailable → "4pm") → keep that day, new clock.
+                preferred = self._combine_day_and_clock(prev_start, preferred)
+                preferred_end = preferred + timedelta(hours=1)
+                time_precision = "clock"
+                needs_date = False
+                needs_time = False
+                merged.pop("needs_date", None)
+                merged.pop("needs_time", None)
+                merged["time_precision"] = "clock"
+            elif (
+                needs_time
+                and not needs_date
+                and (time_precision or "day") == "day"
+                and prev_precision in {"clock", "time_only"}
+            ):
+                # Current: day only; prior: known clock (incl. after a failed day) →
+                # rebind the same clock onto the new day. Do not re-ask for time.
+                preferred = self._combine_day_and_clock(preferred, prev_start)
+                preferred_end = preferred + timedelta(hours=1)
+                time_precision = "clock"
+                needs_date = False
+                needs_time = False
+                merged.pop("needs_date", None)
+                merged.pop("needs_time", None)
+                merged["time_precision"] = "clock"
+            elif needs_time and not needs_date and prev_needs_date and (
+                prev_precision in {"clock", "time_only"}
+            ):
+                # Legacy path: prior turn was time-only with needs_date flag.
+                preferred = self._combine_day_and_clock(preferred, prev_start)
+                preferred_end = preferred + timedelta(hours=1)
+                time_precision = "clock"
+                needs_date = False
+                needs_time = False
+                merged.pop("needs_date", None)
+                merged.pop("needs_time", None)
+                merged["time_precision"] = "clock"
+            elif (
+                needs_date
+                and needs_time
+                and prev_precision in {"day", "part_of_day"}
+                and not prev_needs_date
+            ):
+                # e.g. prior Friday + current "morning" — keep day, soft time.
+                preferred = self._combine_day_and_clock(prev_start, preferred)
+                preferred_end = (
+                    self._combine_day_and_clock(prev_start, prev_end)
+                    if prev_end is not None
+                    else preferred + timedelta(hours=3)
+                )
+                time_precision = time_precision or "part_of_day"
+                needs_date = False
+                merged.pop("needs_date", None)
+                merged["time_precision"] = time_precision
+        elif preferred is None and prev_start is not None:
+            # Carry incomplete preference when this turn had no new date/time.
+            # Exception: a concrete hold is already in slots_offered (awaiting name /
+            # YES). A leftover time_only/clock stash after a full hold must not
+            # override binding to the offered slot.
+            held_slot = bool(slots_offered)
+            clock_only_stash = (
+                prev_precision in {"clock", "time_only"}
+                and not prev_needs_date
+                and not prev_needs_time
+            )
+            if not (held_slot and clock_only_stash):
+                preferred = prev_start
+                preferred_end = prev_end or preferred_end
+                time_precision = prev_precision or time_precision
+                if prev_needs_date and not needs_date:
+                    needs_date = True
+                    merged["needs_date"] = True
+                if prev_needs_time and not needs_time:
+                    needs_time = True
+                    merged["needs_time"] = True
+                # time_only always means "clock known, day missing" — force date ask.
+                if (time_precision == "time_only" or prev_precision == "time_only") and (
+                    not held_slot
+                ):
+                    needs_date = True
+                    merged["needs_date"] = True
+                    needs_time = False
+                    merged.pop("needs_time", None)
+                if time_precision:
+                    merged["time_precision"] = time_precision
+            elif held_slot and not clock_only_stash:
+                # Prefer a still-needed day/time half alongside the held slot.
+                if prev_needs_date and not needs_date:
+                    needs_date = True
+                    merged["needs_date"] = True
+                if prev_needs_time and not needs_time:
+                    needs_time = True
+                    merged["needs_time"] = True
+                if prev_precision and not time_precision:
+                    time_precision = prev_precision
+                    merged["time_precision"] = time_precision
+                    preferred = prev_start
+                    preferred_end = prev_end or preferred_end
+                    if time_precision == "time_only":
+                        needs_date = True
+                        merged["needs_date"] = True
+
 
         confirm = bool(merged.get("booking_confirmed"))
         # Soft "yes" after "Want me to book a visit?" (service remembered, no
@@ -290,6 +499,10 @@ class AgentOrchestrator:
             preferred_end = self._parse_iso_dt(slots_offered[0].get("end")) or preferred_end
             time_precision = "clock"
             merged["time_precision"] = "clock"
+            needs_date = False
+            needs_time = False
+            merged.pop("needs_date", None)
+            merged.pop("needs_time", None)
         # "First one" / earliest after we listed openings → bind to first offered.
         # "Last one" / latest → bind to last offered.
         if (prefer_earliest or prefer_latest) and slots_offered and time_precision != "clock":
@@ -298,11 +511,18 @@ class AgentOrchestrator:
             preferred_end = self._parse_iso_dt(slots_offered[idx].get("end")) or preferred_end
             time_precision = "clock"
             merged["time_precision"] = "clock"
+            needs_date = False
+            needs_time = False
             merged.pop("needs_time", None)
+            merged.pop("needs_date", None)
         # Day / part-of-day are filters, not a chosen clock — don't bind to an
         # offered opening until the customer picks a time or says yes.
+        # Clock without an explicit day also cannot bind until day is confirmed.
         can_bind = confirm or (
-            preferred is not None and time_precision == "clock"
+            preferred is not None
+            and time_precision == "clock"
+            and not needs_date
+            and not needs_time
         )
         if can_bind:
             bound = self._pick_offered_slot(preferred, slots_offered)
@@ -310,14 +530,72 @@ class AgentOrchestrator:
                 preferred = bound
                 preferred_end = None
                 # Bound to a concrete offered opening.
+                needs_date = False
+                needs_time = False
                 merged.pop("needs_time", None)
+                merged.pop("needs_date", None)
                 merged["time_precision"] = "clock"
+                time_precision = "clock"
+
+        # Incomplete clock (time said, day missing): do not book as if ready.
+        if needs_date and time_precision == "clock":
+            # Preserve preferred_start hour for merge; scheduling waits for day.
+            time_precision = "time_only"
+            merged["time_precision"] = "time_only"
 
         if preferred is not None:
             merged["preferred_start"] = preferred
         if preferred_end is not None:
             merged["preferred_end"] = preferred_end
+        if needs_date:
+            merged["needs_date"] = True
+        else:
+            merged.pop("needs_date", None)
+        if needs_time:
+            merged["needs_time"] = True
+        else:
+            merged.pop("needs_time", None)
+
+        # Last chance: keep-same-time after schedule enrich put a visit on context.
+        if (
+            (merged.get("keep_same_time") or merged.get("same_slot_preference"))
+            and (
+                needs_time
+                or merged.get("time_precision") in {"day", "part_of_day", None}
+            )
+        ):
+            from app.agents.intent.service import apply_same_slot_preference_to_entities
+
+            inbound = str(meta.get("inbound_text") or "")
+            if apply_same_slot_preference_to_entities(inbound, merged, context):
+                preferred = self._parse_iso_dt(merged.get("preferred_start"))
+                preferred_end = self._parse_iso_dt(merged.get("preferred_end"))
+                time_precision = merged.get("time_precision")
+                needs_date = bool(merged.get("needs_date"))
+                needs_time = bool(merged.get("needs_time"))
+                if preferred is not None:
+                    merged["preferred_start"] = preferred
+                if preferred_end is not None:
+                    merged["preferred_end"] = preferred_end
+                if needs_date:
+                    merged["needs_date"] = True
+                else:
+                    merged.pop("needs_date", None)
+                if needs_time:
+                    merged["needs_time"] = True
+                else:
+                    merged.pop("needs_time", None)
+                if time_precision:
+                    merged["time_precision"] = time_precision
+
         return merged
+
+    @staticmethod
+    def _combine_day_and_clock(day_source: datetime, clock_source: datetime) -> datetime:
+        """Use calendar day of day_source with clock hour/minute of clock_source."""
+        from app.agents.intent.datetime_parse import combine_day_and_clock
+
+        return combine_day_and_clock(day_source, clock_source)
 
     @staticmethod
     def _resolve_appointment_id(
@@ -487,6 +765,10 @@ class AgentOrchestrator:
             source="communication",
         )
 
+        # Prefer visit anchors before intent when we already know who/which appt
+        # (metadata pin or customer_id). Intent "same time" needs that clock.
+        await self._enrich_schedule_context(context)
+
         # 2. Intent (decide only)
         intent_result = await self._intent.run(normalized, context)
         stages["intent"] = intent_result
@@ -554,7 +836,22 @@ class AgentOrchestrator:
             )
             self._inject_memory(context, text=message.content)
             await self._enrich_schedule_context(context)
+            # Intent ran before customer resolve; re-bind "today same time" once
+            # the visit start is known from upcoming appointments.
+            if intent_data is not None and isinstance(
+                getattr(intent_data, "entities", None), dict
+            ):
+                from app.agents.intent.service import (
+                    apply_same_slot_preference_to_entities,
+                )
 
+                inbound = str(
+                    context.metadata.get("inbound_text") or message.content or ""
+                )
+                if apply_same_slot_preference_to_entities(
+                    inbound, intent_data.entities, context
+                ):
+                    entities = intent_data.entities
         # 4. Vehicle (decide) → Workflow apply
         vehicle_req = VehicleResolveRequest(
             vin=entities.get("vin"),
@@ -604,6 +901,24 @@ class AgentOrchestrator:
         # Workflow validates availability and creates the appointment.
         intent_value = intent_data.intent.value if intent_data else None
         booking = self._merge_booking_context(entities, context, intent=intent_value)
+        # Keep reply generators in sync with merged date/time completeness.
+        if intent_data is not None and isinstance(getattr(intent_data, "entities", None), dict):
+            for key in (
+                "preferred_start",
+                "preferred_end",
+                "time_precision",
+                "needs_time",
+                "needs_date",
+            ):
+                if key in booking:
+                    val = booking[key]
+                    if isinstance(val, datetime):
+                        intent_data.entities[key] = val.isoformat()
+                    else:
+                        intent_data.entities[key] = val
+                else:
+                    intent_data.entities.pop(key, None)
+            entities = intent_data.entities
         requested_service = booking.get("requested_service") or booking.get("service")
         appointment_id = self._resolve_appointment_id(
             context, booking, intent=intent_value
@@ -645,6 +960,35 @@ class AgentOrchestrator:
             applied = await self._apply(context, [sched_decision])
             if applied and applied.scheduling_result:
                 scheduling_result = AgentResult.ok(applied.scheduling_result)
+            elif (
+                applied
+                and getattr(applied, "errors", None)
+                and getattr(sched_decision, "action", None) in {"book", "reschedule", "cancel"}
+            ):
+                # Persist failed — never leave the agent "recommended" success
+                # so voice/SMS claim a booked appointment that isn't on the schedule.
+                from app.agents.scheduling.models import SchedulingResult as SchedRes
+
+                action = str(getattr(sched_decision, "action", "list_slots"))
+                is_slot = action in {"book", "reschedule"}
+                scheduling_result = AgentResult.ok(
+                    SchedRes(
+                        action="list_slots" if is_slot else action,
+                        success=False,
+                        message=(
+                            "preferred_time_unavailable"
+                            if is_slot
+                            else (applied.errors[0] if applied.errors else "Scheduling failed")
+                        ),
+                        metadata={
+                            "preferred_time_unavailable": is_slot,
+                            "unavailable_aspect": "time",
+                            "action": action,
+                            "errors": list(applied.errors or []),
+                        },
+                        decision=sched_decision,
+                    )
+                )
         stages["scheduling"] = scheduling_result
         stage_outputs.append(_stage("scheduling", scheduling_result))
         if scheduling_result.data:

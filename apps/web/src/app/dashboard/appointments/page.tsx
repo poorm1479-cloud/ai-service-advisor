@@ -1,6 +1,7 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import {
@@ -12,6 +13,8 @@ import {
   getCalendar,
   rescheduleAppointment,
 } from "@/lib/appointments";
+import { createCustomer, Customer, searchCustomers } from "@/lib/crm";
+import { formatPhoneInput, PHONE_PLACEHOLDER } from "@/lib/phone";
 import { listShopServices, ShopService } from "@/lib/shopSetup";
 import {
   inferShopTeamRole,
@@ -20,6 +23,20 @@ import {
   ShopMember,
 } from "@/lib/tenant";
 
+type CustomerMode = "existing" | "new";
+
+function customerFieldLabel(c: Customer): string {
+  return c.phone ? `${c.name} · ${c.phone}` : c.name;
+}
+
+/** Normalize search box text (handles filled "Name · phone"). */
+function searchNeedle(query: string): string {
+  const raw = query.trim().toLowerCase();
+  if (!raw) return "";
+  const cut = raw.indexOf("·");
+  return cut >= 0 ? raw.slice(0, cut).trim() : raw;
+}
+
 function hourLabel(h: number) {
   const ampm = h >= 12 ? "PM" : "AM";
   const hr = ((h + 11) % 12) + 1;
@@ -27,15 +44,38 @@ function hourLabel(h: number) {
 }
 
 /**
- * Shop wall-clock from API ISO (offset wall time).
- * Do not use Date#getHours() — browser TZ would place appointments on the wrong row.
+ * Shop wall-clock for calendar rows.
+ * Prefer America/Los_Angeles (platform default shop TZ) so UTC/Z ISO from the API
+ * still lands on the correct hour. Fall back to ISO digits, never browser getHours().
  */
+const SHOP_DISPLAY_TZ = "America/Los_Angeles";
+
 function wallClockParts(iso: string): { date: string; hour: number; minute: number } {
+  const d = new Date(iso);
+  if (!Number.isNaN(d.getTime())) {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: SHOP_DISPLAY_TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(d);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+    const year = get("year");
+    const month = get("month");
+    const day = get("day");
+    const hour = Number(get("hour"));
+    const minute = Number(get("minute"));
+    if (year && month && day && Number.isFinite(hour) && Number.isFinite(minute)) {
+      return { date: `${year}-${month}-${day}`, hour, minute };
+    }
+  }
   const m = iso.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})/);
   if (m) {
     return { date: m[1], hour: Number(m[2]), minute: Number(m[3]) };
   }
-  const d = new Date(iso);
   const pad = (n: number) => String(n).padStart(2, "0");
   return {
     date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
@@ -186,6 +226,14 @@ export default function AppointmentsPage() {
   const [detailServiceId, setDetailServiceId] = useState("");
   const [booking, setBooking] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [portalReady, setPortalReady] = useState(false);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customerMode, setCustomerMode] = useState<CustomerMode>("existing");
+  const [selectedCustomerId, setSelectedCustomerId] = useState("");
+  const [customerQuery, setCustomerQuery] = useState("");
+  const [newCustomerName, setNewCustomerName] = useState("");
+  const [newCustomerPhone, setNewCustomerPhone] = useState("");
+  const [newCustomerEmail, setNewCustomerEmail] = useState("");
   /** Shop-local calendar day for "today" (from API, not browser). */
   const [shopToday, setShopToday] = useState("");
 
@@ -195,7 +243,7 @@ export default function AppointmentsPage() {
   const load = useCallback(async (anchor?: string | null) => {
     // Omit / empty anchor → API uses shop timezone "today".
     const day = anchor?.trim() || undefined;
-    const [cal, svc, membersResult] = await Promise.all([
+    const [cal, svc, membersResult, customersResult] = await Promise.all([
       getCalendar("day", day),
       listShopServices(true),
       listMembers().then(
@@ -206,6 +254,14 @@ export default function AppointmentsPage() {
           message: err instanceof Error ? err.message : "Failed to load team",
         }),
       ),
+      searchCustomers().then(
+        (list) => ({ ok: true as const, customers: list }),
+        (err) => ({
+          ok: false as const,
+          customers: [] as Customer[],
+          message: err instanceof Error ? err.message : "Failed to load customers",
+        }),
+      ),
     ]);
     setCalendar(cal);
     if (cal.anchor) {
@@ -214,10 +270,14 @@ export default function AppointmentsPage() {
     }
     setServices(svc);
     setTeamMembers(membersResult.members);
+    setCustomers(customersResult.customers);
     setServiceId((prev) => prev || (svc[0]?.id ?? ""));
     if (!membersResult.ok && membersResult.message) {
       // Non-fatal: Assign to still falls back to calendar.mechanics.
       console.warn("Team roster unavailable for Assign to:", membersResult.message);
+    }
+    if (!customersResult.ok && customersResult.message) {
+      console.warn("Customer list unavailable for booking:", customersResult.message);
     }
     return cal;
   }, []);
@@ -242,6 +302,23 @@ export default function AppointmentsPage() {
     // Initial load only — day shifts call load(anchor) explicitly.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, session]);
+
+  useEffect(() => {
+    setPortalReady(true);
+  }, []);
+
+  // Modal open: block document/background scroll (phone full-screen rubber-band).
+  useEffect(() => {
+    if (!createOpen) return;
+    const prevHtml = document.documentElement.style.overflow;
+    const prevBody = document.body.style.overflow;
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.documentElement.style.overflow = prevHtml;
+      document.body.style.overflow = prevBody;
+    };
+  }, [createOpen]);
 
   async function goToDay(next: string) {
     setDayAnchor(next);
@@ -350,6 +427,112 @@ export default function AppointmentsPage() {
     });
   }, [teamMembers, calendar?.mechanics, mechanicRoleMap]);
 
+  function resetCustomerFields() {
+    setCustomerMode("existing");
+    setSelectedCustomerId("");
+    setCustomerQuery("");
+    setNewCustomerName("");
+    setNewCustomerPhone("");
+    setNewCustomerEmail("");
+  }
+
+  function openCreate() {
+    clearSelection();
+    setError(null);
+    resetCustomerFields();
+    setCreateOpen(true);
+  }
+
+  function closeCreate() {
+    if (booking) return;
+    setCreateOpen(false);
+    resetCustomerFields();
+    setError(null);
+  }
+
+  const customerNameMap = useMemo(() => {
+    const m = new Map<string, string>();
+    customers.forEach((c) => m.set(c.id, c.name));
+    return m;
+  }, [customers]);
+
+  function matchCustomers(query: string): Customer[] {
+    const needle = searchNeedle(query);
+    if (!needle) return customers;
+    const digits = needle.replace(/\D/g, "");
+    return customers.filter((c) => {
+      if (c.name.toLowerCase().includes(needle)) return true;
+      if (c.email?.toLowerCase().includes(needle)) return true;
+      if (c.phone?.toLowerCase().includes(needle)) return true;
+      if (digits && (c.phone?.replace(/\D/g, "") ?? "").includes(digits)) return true;
+      return false;
+    });
+  }
+
+  /** Best match for auto-select: exact name → exact phone digits → first partial. */
+  function pickBestCustomer(query: string, matches: Customer[]): Customer | null {
+    if (matches.length === 0) return null;
+    if (matches.length === 1) return matches[0];
+    const needle = searchNeedle(query);
+    const digits = needle.replace(/\D/g, "");
+    const exactName = matches.find((c) => c.name.toLowerCase() === needle);
+    if (exactName) return exactName;
+    if (digits.length >= 7) {
+      const exactPhone = matches.find(
+        (c) =>
+          (c.phone?.replace(/\D/g, "") ?? "") === digits ||
+          (c.phone?.replace(/\D/g, "") ?? "").endsWith(digits),
+      );
+      if (exactPhone) return exactPhone;
+    }
+    const starts = matches.find((c) => c.name.toLowerCase().startsWith(needle));
+    return starts ?? matches[0];
+  }
+
+  /** Type-to-search: keep what the user typed; soft-select matching customer. */
+  function onCustomerSearch(value: string) {
+    setCustomerQuery(value);
+    const needle = value.trim();
+    if (!needle) {
+      setSelectedCustomerId("");
+      return;
+    }
+
+    const matches = matchCustomers(value);
+    if (matches.length === 0) {
+      setSelectedCustomerId("");
+      return;
+    }
+
+    // Only auto-select id — never overwrite the input (allows edit/delete).
+    const best = pickBestCustomer(value, matches);
+    setSelectedCustomerId(best?.id ?? "");
+  }
+
+  /** List pick: fill field once; user can still edit afterward. */
+  function selectCustomer(customer: Customer) {
+    setSelectedCustomerId(customer.id);
+    setCustomerQuery(customerFieldLabel(customer));
+  }
+
+  const filteredCustomers = useMemo(() => {
+    const needle = searchNeedle(customerQuery);
+    const digits = needle.replace(/\D/g, "");
+    const base = !needle
+      ? customers
+      : customers.filter((c) => {
+          if (c.name.toLowerCase().includes(needle)) return true;
+          if (c.email?.toLowerCase().includes(needle)) return true;
+          if (c.phone?.toLowerCase().includes(needle)) return true;
+          if (digits && (c.phone?.replace(/\D/g, "") ?? "").includes(digits)) return true;
+          return false;
+        });
+    if (!selectedCustomerId) return base;
+    if (base.some((c) => c.id === selectedCustomerId)) return base;
+    const selected = customers.find((c) => c.id === selectedCustomerId);
+    return selected ? [selected, ...base] : base;
+  }, [customers, customerQuery, selectedCustomerId]);
+
   async function onBook(e: FormEvent) {
     e.preventDefault();
     if (!serviceId) {
@@ -371,14 +554,40 @@ export default function AppointmentsPage() {
       setError("Preferred start cannot be in the past. Pick a current or future time.");
       return;
     }
+
+    let customerId = selectedCustomerId.trim();
+    if (customerMode === "existing") {
+      if (!customerId) {
+        setError("Select a customer or switch to New customer");
+        return;
+      }
+    } else if (!newCustomerName.trim()) {
+      setError("Enter a customer name");
+      return;
+    }
+
     setError(null);
     setBooking(true);
     try {
+      if (customerMode === "new") {
+        const created = await createCustomer({
+          name: newCustomerName.trim(),
+          phone: newCustomerPhone.trim() || undefined,
+          email: newCustomerEmail.trim() || undefined,
+        });
+        customerId = created.id;
+        setCustomers((prev) => {
+          if (prev.some((c) => c.id === created.id)) return prev;
+          return [created, ...prev];
+        });
+      }
+
       const result = await bookAppointment({
         service_id: serviceId,
         preferred_start: localDateTimeToIso(preferredStart),
         vehicle_type: vehicleType,
         priority,
+        customer_id: customerId,
         ...(mechanicId ? { mechanic_id: mechanicId } : {}),
       });
       if (!result.success) {
@@ -394,6 +603,7 @@ export default function AppointmentsPage() {
       }
       await load(dayAnchor || null);
       setCreateOpen(false);
+      resetCustomerFields();
       clearSelection();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Book failed");
@@ -501,11 +711,7 @@ export default function AppointmentsPage() {
         </div>
         <button
           type="button"
-          onClick={() => {
-            clearSelection();
-            setError(null);
-            setCreateOpen(true);
-          }}
+          onClick={openCreate}
           className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white"
         >
           Add
@@ -539,6 +745,11 @@ export default function AppointmentsPage() {
             setDetailServiceId={setDetailServiceId}
             mechanicMap={mechanicMap}
             mechanicRoleMap={mechanicRoleMap}
+            customerName={
+              selected.customer_id
+                ? (customerNameMap.get(selected.customer_id) ?? null)
+                : null
+            }
             rescheduleAt={rescheduleAt}
             setRescheduleAt={setRescheduleAt}
             rescheduling={rescheduling}
@@ -550,40 +761,57 @@ export default function AppointmentsPage() {
         )}
       </section>
 
-      {createOpen && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="create-appointment-title"
-          onClick={() => !booking && setCreateOpen(false)}
-        >
+      {portalReady &&
+        createOpen &&
+        createPortal(
           <div
-            className="asa-scroll max-h-[min(90dvh,40rem)] w-full max-w-md overflow-y-auto overscroll-contain"
-            onClick={(e) => e.stopPropagation()}
+            className="fixed inset-0 z-[100] flex items-center justify-center overflow-hidden overscroll-none bg-black/50 p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="create-appointment-title"
+            onClick={closeCreate}
           >
-            <BookForm
-              services={services}
-              serviceId={serviceId}
-              setServiceId={setServiceId}
-              preferredStart={preferredStart}
-              setPreferredStart={setPreferredStart}
-              vehicleType={vehicleType}
-              setVehicleType={setVehicleType}
-              priority={priority}
-              setPriority={setPriority}
-              assigneeOptions={assigneeOptions}
-              mechanicRoleMap={mechanicRoleMap}
-              mechanicId={mechanicId}
-              setMechanicId={setMechanicId}
-              booking={booking}
-              error={error}
-              onBook={onBook}
-              onClose={() => setCreateOpen(false)}
-            />
-          </div>
-        </div>
-      )}
+            <div
+              className="flex max-h-[min(90dvh,40rem)] w-full max-w-md flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <BookForm
+                services={services}
+                serviceId={serviceId}
+                setServiceId={setServiceId}
+                preferredStart={preferredStart}
+                setPreferredStart={setPreferredStart}
+                vehicleType={vehicleType}
+                setVehicleType={setVehicleType}
+                priority={priority}
+                setPriority={setPriority}
+                assigneeOptions={assigneeOptions}
+                mechanicRoleMap={mechanicRoleMap}
+                mechanicId={mechanicId}
+                setMechanicId={setMechanicId}
+                customerMode={customerMode}
+                setCustomerMode={setCustomerMode}
+                customers={customers}
+                filteredCustomers={filteredCustomers}
+                customerQuery={customerQuery}
+                setCustomerQuery={onCustomerSearch}
+                selectedCustomerId={selectedCustomerId}
+                onSelectCustomer={selectCustomer}
+                newCustomerName={newCustomerName}
+                setNewCustomerName={setNewCustomerName}
+                newCustomerPhone={newCustomerPhone}
+                setNewCustomerPhone={setNewCustomerPhone}
+                newCustomerEmail={newCustomerEmail}
+                setNewCustomerEmail={setNewCustomerEmail}
+                booking={booking}
+                error={error}
+                onBook={onBook}
+                onClose={closeCreate}
+              />
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
@@ -758,6 +986,20 @@ function BookForm({
   mechanicRoleMap,
   mechanicId,
   setMechanicId,
+  customerMode,
+  setCustomerMode,
+  customers,
+  filteredCustomers,
+  customerQuery,
+  setCustomerQuery,
+  selectedCustomerId,
+  onSelectCustomer,
+  newCustomerName,
+  setNewCustomerName,
+  newCustomerPhone,
+  setNewCustomerPhone,
+  newCustomerEmail,
+  setNewCustomerEmail,
   booking,
   error,
   onBook,
@@ -776,18 +1018,100 @@ function BookForm({
   mechanicRoleMap: Map<string, string>;
   mechanicId: string;
   setMechanicId: (v: string) => void;
+  customerMode: CustomerMode;
+  setCustomerMode: (v: CustomerMode) => void;
+  customers: Customer[];
+  filteredCustomers: Customer[];
+  customerQuery: string;
+  setCustomerQuery: (v: string) => void;
+  selectedCustomerId: string;
+  onSelectCustomer: (c: Customer) => void;
+  newCustomerName: string;
+  setNewCustomerName: (v: string) => void;
+  newCustomerPhone: string;
+  setNewCustomerPhone: (v: string) => void;
+  newCustomerEmail: string;
+  setNewCustomerEmail: (v: string) => void;
   booking: boolean;
   error: string | null;
   onBook: (e: FormEvent) => void;
   onClose: () => void;
 }) {
+  const customerReady =
+    customerMode === "existing"
+      ? Boolean(selectedCustomerId)
+      : Boolean(newCustomerName.trim());
+  const [listOpen, setListOpen] = useState(false);
+  /** True only while the user is typing to filter; icon/focus shows full list. */
+  const [filtering, setFiltering] = useState(false);
+  const comboRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const selectedOptionRef = useRef<HTMLLIElement | null>(null);
+
+  const listItems = filtering ? filteredCustomers : customers;
+
+  function openList(showFull = true) {
+    if (showFull) setFiltering(false);
+    setListOpen(true);
+  }
+
+  function closeList() {
+    setListOpen(false);
+    setFiltering(false);
+  }
+
+  function toggleList() {
+    setListOpen((open) => {
+      if (open) {
+        setFiltering(false);
+        return false;
+      }
+      setFiltering(false);
+      return true;
+    });
+  }
+
+  useEffect(() => {
+    if (!listOpen) return;
+    function onPointerDown(e: MouseEvent) {
+      if (!comboRef.current?.contains(e.target as Node)) {
+        closeList();
+      }
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [listOpen]);
+
+  useEffect(() => {
+    if (customerMode !== "existing") closeList();
+  }, [customerMode]);
+
+  // Keep selected row visible inside the list only (avoid scrolling the dialog / page).
+  useEffect(() => {
+    if (!listOpen || !selectedCustomerId) return;
+    const id = requestAnimationFrame(() => {
+      const list = listRef.current;
+      const row = selectedOptionRef.current;
+      if (!list || !row) return;
+      const rowTop = row.offsetTop;
+      const rowBottom = rowTop + row.offsetHeight;
+      if (rowTop < list.scrollTop) {
+        list.scrollTop = rowTop;
+      } else if (rowBottom > list.scrollTop + list.clientHeight) {
+        list.scrollTop = rowBottom - list.clientHeight;
+      }
+    });
+    return () => cancelAnimationFrame(id);
+  }, [listOpen, selectedCustomerId, listItems]);
+
   return (
     <form
       onSubmit={onBook}
       noValidate
-      className="space-y-3 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 shadow-xl"
+      className="flex min-h-0 flex-1 flex-col overflow-hidden"
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[var(--line)] px-4 py-3">
         <h2 id="create-appointment-title" className="text-sm font-medium">
           Create appointment
         </h2>
@@ -801,11 +1125,197 @@ function BookForm({
           Close
         </button>
       </div>
+
+      <div className="asa-scroll min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-4">
       {error && (
         <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
           {error}
         </p>
       )}
+
+      <div className="space-y-2">
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            disabled={booking}
+            onClick={() => setCustomerMode("existing")}
+            className={`rounded-md border px-2 py-2 text-xs font-medium transition-colors ${
+              customerMode === "existing"
+                ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
+                : "border-[var(--line)] text-[var(--foreground)] hover:bg-[var(--background)]"
+            }`}
+          >
+            Existing customer
+          </button>
+          <button
+            type="button"
+            disabled={booking}
+            onClick={() => setCustomerMode("new")}
+            className={`rounded-md border px-2 py-2 text-xs font-medium transition-colors ${
+              customerMode === "new"
+                ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
+                : "border-[var(--line)] text-[var(--foreground)] hover:bg-[var(--background)]"
+            }`}
+          >
+            New customer
+          </button>
+        </div>
+
+        {customerMode === "existing" ? (
+          <div className="space-y-1.5">
+            <span className="block text-xs text-[var(--muted)]">Search customer</span>
+            <div ref={comboRef} className="relative">
+              <div className="flex overflow-hidden rounded-md border border-[var(--line)] bg-white focus-within:ring-2 focus-within:ring-[var(--accent)]">
+                <input
+                  ref={inputRef}
+                  type="text"
+                  role="combobox"
+                  aria-expanded={listOpen}
+                  aria-controls="customer-search-listbox"
+                  aria-autocomplete="list"
+                  value={customerQuery}
+                  onChange={(e) => {
+                    setFiltering(true);
+                    setListOpen(true);
+                    setCustomerQuery(e.target.value);
+                  }}
+                  onFocus={() => openList(true)}
+                  placeholder="Name, phone, or email"
+                  disabled={booking}
+                  autoComplete="off"
+                  className="min-w-0 flex-1 border-0 bg-transparent px-2.5 py-2.5 text-sm text-[var(--foreground)] outline-none"
+                />
+                <button
+                  type="button"
+                  disabled={booking}
+                  aria-label={listOpen ? "Hide customer list" : "Show customer list"}
+                  aria-expanded={listOpen}
+                  aria-controls="customer-search-listbox"
+                  onMouseDown={(e) => {
+                    // Prevent input blur race; keep full list on open.
+                    e.preventDefault();
+                    e.stopPropagation();
+                    toggleList();
+                  }}
+                  className="flex shrink-0 items-center justify-center border-l border-[var(--line)] px-2.5 text-[var(--muted)] hover:bg-[var(--background)] disabled:opacity-60"
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 20 20"
+                    fill="none"
+                    aria-hidden="true"
+                    className={`transition-transform ${listOpen ? "rotate-180" : ""}`}
+                  >
+                    <path
+                      d="M5 7.5L10 12.5L15 7.5"
+                      stroke="currentColor"
+                      strokeWidth="1.75"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </button>
+              </div>
+
+              {listOpen && (
+                <ul
+                  ref={listRef}
+                  id="customer-search-listbox"
+                  role="listbox"
+                  aria-label="Customer list"
+                  className="asa-scroll absolute left-0 right-0 z-20 mt-1 max-h-44 overflow-y-auto overscroll-contain rounded-md border border-[var(--line)] bg-white shadow-lg"
+                >
+                  {listItems.length === 0 ? (
+                    <li className="px-2.5 py-3 text-xs text-[var(--muted)]">
+                      {filtering && customerQuery.trim()
+                        ? "No matching customers. Switch to New customer or clear search."
+                        : "No customers yet. Switch to New customer."}
+                    </li>
+                  ) : (
+                    listItems.map((c) => {
+                      const active = c.id === selectedCustomerId;
+                      return (
+                        <li
+                          key={c.id}
+                          role="option"
+                          aria-selected={active}
+                          ref={active ? selectedOptionRef : undefined}
+                        >
+                          <button
+                            type="button"
+                            disabled={booking}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              onSelectCustomer(c);
+                              closeList();
+                            }}
+                            className={`flex w-full flex-col items-start gap-0.5 px-2.5 py-2 text-left text-sm transition-colors disabled:opacity-60 ${
+                              active
+                                ? "bg-[var(--accent-soft)] font-medium text-[var(--accent)]"
+                                : "text-[var(--foreground)] hover:bg-[var(--background)]"
+                            }`}
+                          >
+                            <span>{c.name}</span>
+                            <span
+                              className={`text-xs ${
+                                active ? "text-[var(--accent)]/80" : "text-[var(--muted)]"
+                              }`}
+                            >
+                              {c.phone || c.email || "No contact info"}
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })
+                  )}
+                </ul>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <label className="block min-w-0 text-xs text-[var(--muted)]">
+                Name
+                <input
+                  type="text"
+                  value={newCustomerName}
+                  onChange={(e) => setNewCustomerName(e.target.value)}
+                  required={customerMode === "new"}
+                  disabled={booking}
+                  autoComplete="name"
+                  className="mt-1 w-full rounded-md border border-[var(--line)] px-2 py-2.5 text-sm text-[var(--foreground)]"
+                />
+              </label>
+              <label className="block min-w-0 text-xs text-[var(--muted)]">
+                Phone
+                <input
+                  type="tel"
+                  value={newCustomerPhone}
+                  onChange={(e) => setNewCustomerPhone(formatPhoneInput(e.target.value))}
+                  placeholder={PHONE_PLACEHOLDER}
+                  disabled={booking}
+                  autoComplete="tel"
+                  className="mt-1 w-full rounded-md border border-[var(--line)] px-2 py-2.5 text-sm text-[var(--foreground)]"
+                />
+              </label>
+            </div>
+            <label className="block text-xs text-[var(--muted)]">
+              Email (optional)
+              <input
+                type="email"
+                value={newCustomerEmail}
+                onChange={(e) => setNewCustomerEmail(e.target.value)}
+                disabled={booking}
+                autoComplete="email"
+                className="mt-1 w-full rounded-md border border-[var(--line)] px-2 py-2.5 text-sm text-[var(--foreground)]"
+              />
+            </label>
+          </div>
+        )}
+      </div>
+
       <label className="block text-xs text-[var(--muted)]">
         Service
         <select
@@ -882,13 +1392,17 @@ function BookForm({
           ))}
         </select>
       </label>
-      <button
-        type="submit"
-        disabled={!serviceId || !preferredStart || booking}
-        className="min-h-10 w-full rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
-      >
-        {booking ? "Booking…" : "Optimize & book"}
-      </button>
+      </div>
+
+      <div className="shrink-0 border-t border-[var(--line)] p-4">
+        <button
+          type="submit"
+          disabled={!serviceId || !preferredStart || !customerReady || booking}
+          className="min-h-10 w-full rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
+        >
+          {booking ? "Booking…" : "Optimize & book"}
+        </button>
+      </div>
     </form>
   );
 }
@@ -900,6 +1414,7 @@ function AppointmentDetail({
   setDetailServiceId,
   mechanicMap,
   mechanicRoleMap,
+  customerName,
   rescheduleAt,
   setRescheduleAt,
   rescheduling,
@@ -914,6 +1429,7 @@ function AppointmentDetail({
   setDetailServiceId: (v: string) => void;
   mechanicMap: Map<string, string>;
   mechanicRoleMap: Map<string, string>;
+  customerName: string | null;
   rescheduleAt: string;
   setRescheduleAt: (v: string) => void;
   rescheduling: boolean;
@@ -937,6 +1453,11 @@ function AppointmentDetail({
   const originalLocal = defaultRescheduleLocal(selected.start);
   const timeChanged = Boolean(rescheduleAt) && rescheduleAt !== originalLocal;
   const canReschedule = serviceChanged || timeChanged;
+  const customerLabel = customerName
+    ? customerName
+    : selected.customer_id
+      ? "Linked customer"
+      : "—";
 
   return (
     <div
@@ -970,6 +1491,10 @@ function AppointmentDetail({
               {error}
             </p>
           )}
+          <p className="break-words">
+            <span className="text-[var(--muted)]">Customer: </span>
+            {customerLabel}
+          </p>
           <p className="break-words">
             <span className="text-[var(--muted)]">When: </span>
             {formatDay(selected.start)} {formatTime(selected.start)}–{formatTime(selected.end)}

@@ -145,6 +145,7 @@ async def test_admin_dashboard_stream_requires_auth() -> None:
     "path",
     [
         "/v1/admin/organizations/stream",
+        "/v1/admin/users/stream",
         "/v1/admin/billing/stream",
         "/v1/admin/usage/stream",
         "/v1/admin/system/stream",

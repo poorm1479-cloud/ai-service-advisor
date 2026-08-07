@@ -184,6 +184,19 @@ class OptimizationEngine:
                 priority=priority,
                 require_skill=True,
             )
+            # Free team members often lack catalog skill tags (especially after
+            # Team sync). Prefer skilled staff; fall back to free capacity so
+            # voice/SMS do not reject openings the calendar still shows.
+            if mechanic is None:
+                mechanic, m_reasons = self.recommend_mechanic(
+                    mechanics=mechanics,
+                    repair_type=repair_type,
+                    start=start,
+                    end=end,
+                    existing=existing,
+                    priority=priority,
+                    require_skill=False,
+                )
             if mechanic is None:
                 continue
             bay, b_reasons = self.recommend_bay(

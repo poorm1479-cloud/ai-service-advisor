@@ -5,12 +5,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint, select
+from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint, func, select
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.domain.exceptions import ValidationError
 from app.infrastructure.database import Base, SessionLocal
+from app.infrastructure.models import ShopMembershipModel
 from app.saas.billing import BillingService
 
 
@@ -36,9 +37,29 @@ class QuotaService:
     def __init__(self) -> None:
         self._billing = BillingService()
 
+    async def _seat_count(self, shop_id: UUID) -> int:
+        async with SessionLocal() as session:
+            count = await session.scalar(
+                select(func.count())
+                .select_from(ShopMembershipModel)
+                .where(ShopMembershipModel.shop_id == shop_id)
+            )
+        return int(count or 0)
+
+    async def ensure_seat_available(self, shop_id: UUID) -> None:
+        """Raise if adding one more membership would exceed plan seats."""
+        sub = await self._billing.get_subscription(shop_id)
+        limit = int(sub.plan.seats)
+        current = await self._seat_count(shop_id)
+        if current >= limit:
+            raise ValidationError(
+                f"seats quota exceeded ({current}/{limit}). Upgrade your plan."
+            )
+
     async def get_usage(self, shop_id: UUID) -> dict:
         period = _period_ym()
         sub = await self._billing.get_subscription(shop_id)
+        seats_used = await self._seat_count(shop_id)
         async with SessionLocal() as session:
             rows = (
                 await session.scalars(
@@ -60,6 +81,7 @@ class QuotaService:
             "usage": {
                 "ai_calls": counts.get("ai_calls", 0),
                 "sms": counts.get("sms", 0),
+                "seats": seats_used,
             },
         }
 

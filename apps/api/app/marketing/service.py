@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
-from app.marketing.ai_chooser import MarketingAiChooser
+from app.marketing.ai_chooser import MarketingAiChooser, recommendation_cooldown_days
 from app.marketing.channels import ChannelRouter
 from app.marketing.enums import CampaignStatus, CampaignType, Channel, MessageStatus
 from app.marketing.models import (
@@ -27,6 +27,9 @@ from app.marketing.store import (
     is_demo_campaign,
     is_demo_member,
 )
+
+# Channels that suppress re-recommendation for AI Suggestions.
+_RECOMMENDATION_CHANNELS = (Channel.SMS, Channel.EMAIL)
 
 
 class MarketingAutomationService:
@@ -154,8 +157,13 @@ class MarketingAutomationService:
             raise ValueError("Cannot schedule cancelled campaign")
         return await self._scheduler.schedule_campaign(campaign)
 
-    async def process_queue(self, *, now: datetime | None = None) -> list[CampaignMessage]:
-        return await self._scheduler.process_due(now=now)
+    async def process_queue(
+        self,
+        *,
+        now: datetime | None = None,
+        shop_id: UUID | None = None,
+    ) -> list[CampaignMessage]:
+        return await self._scheduler.process_due(now=now, shop_id=shop_id)
 
     async def process_campaign_now(
         self, shop_id: UUID, campaign_id: UUID, *, now: datetime | None = None
@@ -163,21 +171,60 @@ class MarketingAutomationService:
         """Force pending queue items for a campaign to run immediately (ops / demo)."""
         now = now or datetime.now(timezone.utc)
         await self.get_campaign(shop_id, campaign_id)
-        # Access in-memory queue entries via store protocol extension
-        if hasattr(self._store, "queue"):
-            for item in list(self._store.queue.values()):  # type: ignore[attr-defined]
-                if (
-                    item.shop_id == shop_id
-                    and item.campaign_id == campaign_id
-                    and item.state.value == "pending"
-                ):
-                    item.run_at = now - timedelta(seconds=1)
-                    await self._store.save_queue_item(item)
-        return [
-            m
-            for m in await self._scheduler.process_due(now=now)
-            if m.shop_id == shop_id and m.campaign_id == campaign_id
-        ]
+        await self._store.force_campaign_queue_due(
+            shop_id, campaign_id, now=now - timedelta(seconds=1)
+        )
+        return await self._scheduler.process_due(
+            now=now, shop_id=shop_id, campaign_id=campaign_id
+        )
+
+    async def delete_message(self, shop_id: UUID, message_id: UUID) -> None:
+        message = await self._store.get_message(shop_id, message_id)
+        if message is None:
+            raise LookupError("Message not found")
+        ok = await self._store.delete_message(shop_id, message_id)
+        if not ok:
+            raise LookupError("Message not found")
+        await self._store.add_log(
+            MarketingLog(
+                shop_id=shop_id,
+                campaign_id=message.campaign_id,
+                message_id=message.id,
+                event="message.deleted",
+                detail="Message record deleted",
+            )
+        )
+
+    async def delete_messages(self, shop_id: UUID, message_ids: list[UUID]) -> int:
+        ids = list(dict.fromkeys(message_ids))
+        if not ids:
+            return 0
+        count = await self._store.delete_messages(shop_id, ids)
+        if count > 0:
+            await self._store.add_log(
+                MarketingLog(
+                    shop_id=shop_id,
+                    campaign_id=None,
+                    message_id=None,
+                    event="messages.deleted_bulk",
+                    detail=f"Deleted {count} message record(s)",
+                )
+            )
+        return count
+
+    async def delete_all_messages(self, shop_id: UUID) -> int:
+        count = await self._store.delete_all_messages(shop_id)
+        if count > 0:
+            await self._store.add_log(
+                MarketingLog(
+                    shop_id=shop_id,
+                    campaign_id=None,
+                    message_id=None,
+                    event="messages.deleted_all",
+                    detail=f"Deleted {count} message record(s)",
+                )
+            )
+        return count
 
     async def track_event(
         self,
@@ -192,20 +239,25 @@ class MarketingAutomationService:
         if message is None:
             raise LookupError("Message not found")
         now = datetime.now(timezone.utc)
-        if event == "open":
+        kind = (event or "").strip().lower()
+        # Accept open/opened, click/clicked, reply/replied synonyms from clients.
+        if kind in {"open", "opened"}:
             message.opened_at = message.opened_at or now
             message.status = MessageStatus.OPENED
-        elif event == "click":
+            kind = "open"
+        elif kind in {"click", "clicked"}:
             message.clicked_at = message.clicked_at or now
             message.opened_at = message.opened_at or now
             message.status = MessageStatus.CLICKED
-        elif event == "reply":
+            kind = "click"
+        elif kind in {"reply", "replied"}:
             message.replied_at = message.replied_at or now
             message.status = MessageStatus.REPLIED
-        elif event == "appointment":
+            kind = "reply"
+        elif kind == "appointment":
             message.appointment_id = appointment_id or message.appointment_id or uuid4()
             message.revenue = revenue or message.revenue or Decimal("150")
-        elif event == "revenue":
+        elif kind == "revenue":
             message.revenue = revenue or message.revenue
         else:
             raise ValueError(f"Unknown event: {event}")
@@ -215,7 +267,7 @@ class MarketingAutomationService:
                 shop_id=shop_id,
                 campaign_id=message.campaign_id,
                 message_id=message.id,
-                event=f"track.{event}",
+                event=f"track.{kind}",
                 detail=str(revenue or appointment_id or ""),
             )
         )
@@ -242,7 +294,8 @@ class MarketingAutomationService:
         }
         per_campaign = []
         for c in campaigns:
-            m = await self.get_metrics(shop_id, c.id)
+            messages = await self._store.list_messages(shop_id, c.id)
+            m = compute_metrics(shop_id, c.id, messages)
             totals["sent"] += m.sent
             totals["opened"] += m.opened
             totals["clicked"] += m.clicked
@@ -251,7 +304,6 @@ class MarketingAutomationService:
             totals["revenue"] += m.revenue
             totals["cost"] += m.cost
             totals["by_type"][c.campaign_type.value] = totals["by_type"].get(c.campaign_type.value, 0) + 1
-            messages = await self._store.list_messages(shop_id, c.id)
             for msg in messages:
                 if msg.sent_at:
                     totals["by_channel"][msg.channel.value] = totals["by_channel"].get(msg.channel.value, 0) + 1
@@ -346,12 +398,16 @@ class MarketingAutomationService:
         self, shop_id: UUID, campaign_id: UUID, customer_id: UUID | None = None
     ) -> dict[str, Any]:
         campaign = await self.get_campaign(shop_id, campaign_id)
-        real_audience = [a for a in campaign.audience if not is_demo_member(a)]
-        if not real_audience:
-            raise LookupError("Campaign has no real audience members")
-        member = next((a for a in real_audience if a.customer_id == customer_id), None)
+        if not campaign.audience:
+            raise LookupError("Campaign has no audience members")
+        # Prefer non-demo contacts when mixed. When CRM data reuses sample phone/email
+        # fingerprints (common in local shops), fall back to the campaign audience so
+        # AI Recommendations can still preview after a successful create.
+        preferred = [a for a in campaign.audience if not is_demo_member(a)]
+        pool = preferred or list(campaign.audience)
+        member = next((a for a in pool if a.customer_id == customer_id), None)
         if member is None:
-            member = real_audience[0]
+            member = pool[0]
         plan = self._chooser.plan_for_member(campaign, member)
         meta = member.metadata or {}
         return {
@@ -369,6 +425,43 @@ class MarketingAutomationService:
             "confidence": plan.confidence,
             "reasons": plan.reasons,
         }
+
+    async def customers_in_recommendation_cooldown(
+        self,
+        shop_id: UUID,
+        campaign_type: CampaignType | str,
+        *,
+        now: datetime | None = None,
+        cooldown_days: int | None = None,
+    ) -> set[UUID]:
+        """Customers who received SMS/email for this campaign type within the cooldown window."""
+        now = now or datetime.now(timezone.utc)
+        days = cooldown_days if cooldown_days is not None else recommendation_cooldown_days(
+            campaign_type
+        )
+        if days <= 0:
+            return set()
+        ctype = (
+            campaign_type.value
+            if isinstance(campaign_type, CampaignType)
+            else str(campaign_type)
+        )
+        since = now - timedelta(days=days)
+        return await self._store.recently_contacted_customer_ids(
+            shop_id,
+            campaign_type=ctype,
+            channels=list(_RECOMMENDATION_CHANNELS),
+            since=since,
+        )
+
+    def filter_audience_for_recommendations(
+        self,
+        members: list[AudienceMember],
+        suppressed: set[UUID],
+    ) -> list[AudienceMember]:
+        if not suppressed:
+            return members
+        return [m for m in members if m.customer_id not in suppressed]
 
 
 def _parse_member(raw: dict[str, Any]) -> AudienceMember:

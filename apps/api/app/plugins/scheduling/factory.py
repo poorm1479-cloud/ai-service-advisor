@@ -104,6 +104,19 @@ def scheduling_plugin_from_ports(
     monitor: Any | None = None,
 ) -> SchedulingPlugin:
     """Build unregistered plugin from DecisionPorts (scoped Workflow execution)."""
+    # Keep intelligence when the store is the Phase 8 agent adapter so
+    # VALIDATE / capacity checks match dashboard book behavior.
+    if intelligence is None and scheduling_store is not None:
+        intelligence = getattr(scheduling_store, "_intel", None)
+    if monitor is None and scheduling_store is not None:
+        intel = intelligence or getattr(scheduling_store, "_intel", None)
+        if intel is not None:
+            try:
+                from app.scheduling.factory import get_scheduling_runtime
+
+                monitor = get_scheduling_runtime().monitor
+            except Exception:  # noqa: BLE001
+                monitor = None
     return build_scheduling_plugin(
         store=scheduling_store,
         intelligence=intelligence,

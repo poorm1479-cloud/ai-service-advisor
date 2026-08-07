@@ -77,32 +77,68 @@ class AvailabilityPluginService:
         end: datetime,
         exclude_id: UUID | None = None,
     ) -> dict[str, Any]:
-        if self._intelligence is not None and hasattr(self._intelligence, "_conflict"):
+        """Return whether the window has free parallel capacity (staff + bay).
+
+        Uses the same mechanic/bay availability rules as the Schedule calendar.
+        Do not treat every time overlap as a hard conflict — shops book in parallel
+        up to Team size.
+        """
+        if self._intelligence is not None:
             try:
-                existing = await self._intelligence._store.list_appointments(  # noqa: SLF001
-                    shop_id, start=start, end=end
-                )
-                report = self._intelligence._conflict.check(  # noqa: SLF001
-                    existing,
-                    start=start,
-                    end=end,
-                    mechanic_id=None,
-                    bay_id=None,
-                    exclude_id=exclude_id,
-                )
-                return {
-                    "has_conflict": bool(getattr(report, "has_conflict", False) or getattr(report, "conflicts", [])),
-                    "conflicts": list(getattr(report, "conflicts", []) or []),
-                }
+                store = self._intelligence._store  # noqa: SLF001
+                availability = getattr(self._intelligence, "_availability", None)
+                existing = await store.list_appointments(shop_id, start=start, end=end)
+                if exclude_id is not None:
+                    existing = [a for a in existing if a.id != exclude_id]
+
+                conflicts: list[str] = []
+                if availability is not None:
+                    mechanics = await store.list_mechanics(shop_id)
+                    bays = await store.list_bays(shop_id)
+                    free_mech = any(
+                        availability.mechanic_available(
+                            m,
+                            start=start,
+                            end=end,
+                            existing=existing,
+                            ignore_id=exclude_id,
+                        )
+                        for m in mechanics
+                    )
+                    free_bay = any(
+                        availability.bay_available(
+                            b,
+                            start=start,
+                            end=end,
+                            vehicle_type="sedan",
+                            existing=existing,
+                            required_bay=None,
+                            ignore_id=exclude_id,
+                        )
+                        for b in bays
+                    )
+                    if not free_mech:
+                        conflicts.append("No available staff for this time")
+                    if not free_bay:
+                        conflicts.append("No available bay for this time")
+                    return {
+                        "has_conflict": bool(conflicts),
+                        "conflicts": conflicts,
+                    }
+
+                # No availability engine: fall through to overlap scan below
             except Exception:  # noqa: BLE001
                 pass
 
-        # Fallback: scan in-memory appointments
+        # Fallback: scan in-memory appointments (single-slot store / tests)
         raw = getattr(self._store, "_appointments", None)
         conflicts: list[str] = []
         if isinstance(raw, dict):
             for a in raw.values():
-                if a.shop_id != shop_id or a.status == "cancelled":
+                if a.shop_id != shop_id or str(a.status).lower() in {
+                    "cancelled",
+                    "rescheduled",
+                }:
                     continue
                 if exclude_id and a.id == exclude_id:
                     continue
@@ -111,14 +147,18 @@ class AvailabilityPluginService:
         return {"has_conflict": bool(conflicts), "conflicts": conflicts}
 
     async def validate_appointment(
-        self, shop_id: UUID, *, start: datetime, end: datetime
+        self,
+        shop_id: UUID,
+        *,
+        start: datetime,
+        end: datetime,
+        exclude_id: UUID | None = None,
     ) -> dict[str, Any]:
         if end <= start:
             return {"valid": False, "errors": ["end must be after start"]}
 
         errors: list[str] = []
-        # Business hours are authoritative — conflict-only checks let AI confirm
-        # times outside Schedule hours.
+        # Business hours + parallel capacity are authoritative for AI booking.
         if self._intelligence is not None:
             try:
                 hours = await self._intelligence._store.list_business_hours(shop_id)  # noqa: SLF001
@@ -134,6 +174,8 @@ class AvailabilityPluginService:
             except Exception:  # noqa: BLE001
                 pass
 
-        conflict = await self.detect_conflict(shop_id, start=start, end=end)
+        conflict = await self.detect_conflict(
+            shop_id, start=start, end=end, exclude_id=exclude_id
+        )
         errors.extend(list(conflict.get("conflicts") or []))
         return {"valid": not errors, "errors": errors, **conflict}

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { getApiUrl, loadSession } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
@@ -23,7 +23,7 @@ type BillingState = {
   usage: {
     period: string;
     limits: { ai_calls: number; sms: number; seats: number };
-    usage: { ai_calls: number; sms: number };
+    usage: { ai_calls: number; sms: number; seats: number };
   };
 };
 
@@ -33,14 +33,6 @@ export default function BillingPage() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [exportJson, setExportJson] = useState<string | null>(null);
-  const [deleteSlug, setDeleteSlug] = useState("");
-  const [mfaSecret, setMfaSecret] = useState<string | null>(null);
-  const [mfaUrl, setMfaUrl] = useState<string | null>(null);
-  const [mfaCode, setMfaCode] = useState("");
-  const [mfaDisableCode, setMfaDisableCode] = useState("");
-  const [backupCodes, setBackupCodes] = useState<string[] | null>(null);
-  const [regenCode, setRegenCode] = useState("");
 
   async function authFetch(path: string, init?: RequestInit) {
     const s = loadSession();
@@ -99,95 +91,6 @@ export default function BillingPage() {
     }
   }
 
-  async function onPortal() {
-    setError(null);
-    try {
-      const result = await authFetch("/v1/billing/portal", { method: "POST", body: "{}" });
-      if (result?.portal_url) window.location.href = result.portal_url;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Portal failed");
-    }
-  }
-
-  async function onBeginMfa() {
-    setError(null);
-    try {
-      const result = await authFetch("/v1/auth/mfa/setup/begin", { method: "POST", body: "{}" });
-      setMfaSecret(result.secret);
-      setMfaUrl(result.otpauth_url);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "MFA setup failed");
-    }
-  }
-
-  async function onConfirmMfa() {
-    setError(null);
-    try {
-      const result = await authFetch("/v1/auth/mfa/setup/confirm", {
-        method: "POST",
-        body: JSON.stringify({ code: mfaCode }),
-      });
-      setMfaSecret(null);
-      setMfaUrl(null);
-      setMfaCode("");
-      setBackupCodes(result.backup_codes || null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "MFA confirm failed");
-    }
-  }
-
-  async function onRegenBackupCodes() {
-    setError(null);
-    try {
-      const result = await authFetch("/v1/auth/mfa/backup-codes/regenerate", {
-        method: "POST",
-        body: JSON.stringify({ code: regenCode }),
-      });
-      setBackupCodes(result.backup_codes || null);
-      setRegenCode("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Backup code regenerate failed");
-    }
-  }
-
-  async function onDisableMfa() {
-    setError(null);
-    try {
-      await authFetch("/v1/auth/mfa/disable", {
-        method: "POST",
-        body: JSON.stringify({ code: mfaDisableCode }),
-      });
-      setMfaDisableCode("");
-      alert("MFA disabled");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "MFA disable failed");
-    }
-  }
-
-  async function onExport() {
-    setError(null);
-    try {
-      const payload = await authFetch("/v1/compliance/export");
-      setExportJson(JSON.stringify(payload, null, 2));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Export failed");
-    }
-  }
-
-  async function onDelete(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
-    try {
-      await authFetch("/v1/compliance/delete-shop", {
-        method: "POST",
-        body: JSON.stringify({ confirm_slug: deleteSlug }),
-      });
-      window.location.href = "/";
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Delete failed");
-    }
-  }
-
   if (loading) return <p className="p-6 text-sm text-[var(--muted)]">Loading…</p>;
 
   const currentPlanId = data?.subscription.plan.id;
@@ -197,7 +100,7 @@ export default function BillingPage() {
       <div>
         <p className="section-label">Billing</p>
         <h1 className="page-title mt-2">Plan & usage</h1>
-        <p className="mt-1 text-sm text-[var(--muted)]">Plan, usage quotas, and data controls.</p>
+        <p className="mt-1 text-sm text-[var(--muted)]">Plan and usage quotas for your shop.</p>
       </div>
 
       {error && (
@@ -215,7 +118,8 @@ export default function BillingPage() {
           </p>
           <p className="mt-2 text-sm text-[var(--muted)]">
             Period {data.usage.period}: AI {data.usage.usage.ai_calls}/{data.usage.limits.ai_calls} · SMS{" "}
-            {data.usage.usage.sms}/{data.usage.limits.sms}
+            {data.usage.usage.sms}/{data.usage.limits.sms} · Seats{" "}
+            {data.usage.usage.seats}/{data.usage.limits.seats}
           </p>
         </section>
       )}
@@ -299,113 +203,6 @@ export default function BillingPage() {
             );
           })}
         </div>
-        <button type="button" onClick={() => void onPortal()} className="btn-ghost">
-          Open Stripe customer portal
-        </button>
-      </section>
-
-      <section className="surface-panel space-y-3 p-5 sm:p-6">
-        <h2 className="font-display text-sm font-semibold tracking-tight">Two-factor authentication (MFA)</h2>
-        <p className="text-sm text-[var(--muted)]">
-          Protect owner sign-in with an authenticator app (Google Authenticator, 1Password, etc.).
-        </p>
-        {!mfaSecret ? (
-          <button
-            type="button"
-            onClick={() => void onBeginMfa()}
-            className="rounded-md border border-[var(--line)] px-3 py-2 text-sm"
-          >
-            Set up MFA
-          </button>
-        ) : (
-          <div className="space-y-2">
-            <p className="text-xs break-all text-[var(--muted)]">Secret: {mfaSecret}</p>
-            <p className="text-xs break-all text-[var(--muted)]">URL: {mfaUrl}</p>
-            <input
-              value={mfaCode}
-              onChange={(e) => setMfaCode(e.target.value)}
-              placeholder="6-digit code"
-              className="w-full rounded-md border border-[var(--line)] px-3 py-2 text-sm"
-            />
-            <button
-              type="button"
-              onClick={() => void onConfirmMfa()}
-              className="rounded-md bg-[var(--accent)] px-3 py-2 text-sm text-white"
-            >
-              Confirm & enable
-            </button>
-          </div>
-        )}
-        <div className="flex gap-2 border-t border-[var(--line)] pt-3">
-          <input
-            value={mfaDisableCode}
-            onChange={(e) => setMfaDisableCode(e.target.value)}
-            placeholder="Code to disable MFA"
-            className="flex-1 rounded-md border border-[var(--line)] px-3 py-2 text-sm"
-          />
-          <button
-            type="button"
-            onClick={() => void onDisableMfa()}
-            className="rounded-md border border-[var(--line)] px-3 py-2 text-sm"
-          >
-            Disable MFA
-          </button>
-        </div>
-        <div className="space-y-2 border-t border-[var(--line)] pt-3">
-          <p className="text-sm text-[var(--muted)]">
-            Regenerate backup codes (requires authenticator code). Save them offline — shown once.
-          </p>
-          <div className="flex gap-2">
-            <input
-              value={regenCode}
-              onChange={(e) => setRegenCode(e.target.value)}
-              placeholder="Authenticator code"
-              className="flex-1 rounded-md border border-[var(--line)] px-3 py-2 text-sm"
-            />
-            <button
-              type="button"
-              onClick={() => void onRegenBackupCodes()}
-              className="rounded-md border border-[var(--line)] px-3 py-2 text-sm"
-            >
-              Regenerate
-            </button>
-          </div>
-          {backupCodes && (
-            <ul className="rounded-md bg-amber-50 px-3 py-2 font-mono text-xs text-amber-950">
-              {backupCodes.map((c) => (
-                <li key={c}>{c}</li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </section>
-
-      <section className="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5 space-y-3">
-        <h2 className="text-sm font-medium">Data & compliance</h2>
-        <button
-          type="button"
-          onClick={() => void onExport()}
-          className="rounded-md border border-[var(--line)] px-3 py-2 text-sm"
-        >
-          Export shop data (JSON)
-        </button>
-        {exportJson && (
-          <pre className="max-h-64 overflow-auto rounded-md bg-black/5 p-3 text-xs">{exportJson}</pre>
-        )}
-        <form onSubmit={onDelete} className="space-y-2 border-t border-[var(--line)] pt-4">
-          <p className="text-sm text-[var(--muted)]">
-            Delete this shop permanently. Type your shop slug to confirm.
-          </p>
-          <input
-            value={deleteSlug}
-            onChange={(e) => setDeleteSlug(e.target.value)}
-            placeholder={session?.shopSlug || "shop-slug"}
-            className="w-full rounded-md border border-[var(--line)] px-3 py-2 text-sm"
-          />
-          <button type="submit" className="rounded-md bg-red-600 px-3 py-2 text-sm text-white">
-            Delete shop
-          </button>
-        </form>
       </section>
     </div>
   );

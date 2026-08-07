@@ -141,3 +141,29 @@ export async function simulateVoiceCall(input: {
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
 }
+
+/** Start a live caller-side chat (greeting only; call stays open). */
+export async function startVoiceChat(input: {
+  from_number: string;
+  to_number?: string;
+}): Promise<CallDetail> {
+  const res = await authFetch("/v1/voice/chat/start", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+/** Send one customer message on an open call. Ends only on farewell. */
+export async function sendVoiceChatMessage(
+  callId: string,
+  text: string,
+): Promise<CallDetail> {
+  const res = await authFetch(`/v1/voice/calls/${callId}/message`, {
+    method: "POST",
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}

@@ -193,13 +193,19 @@ def render_gather_twiml(
     speech_timeout: str,
 ) -> str:
     barge = "true" if barge_in else "false"
+    # Allow silent re-listen (empty silence timeout) without speaking.
+    say = (
+        f'<Say voice="{escape(voice)}">{escape(say_text)}</Say>'
+        if (say_text or "").strip()
+        else ""
+    )
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         "<Response>"
         f'<Gather input="speech" action="{escape(action_url)}" method="POST" '
         f'timeout="{gather_timeout}" speechTimeout="{escape(speech_timeout)}" '
         f'bargeIn="{barge}" enhanced="true" actionOnEmptyResult="true">'
-        f'<Say voice="{escape(voice)}">{escape(say_text)}</Say>'
+        f"{say}"
         "</Gather>"
         f'<Redirect method="POST">{escape(action_url)}</Redirect>'
         "</Response>"

@@ -189,6 +189,8 @@ class SmsAiService:
         booking_meta: dict[str, Any] = {}
         if memory.appointment_id:
             booking_meta["appointment_id"] = memory.appointment_id
+        if memory.active_visit_start:
+            booking_meta["active_visit_start"] = memory.active_visit_start
         if memory.slots_offered:
             booking_meta["slots_offered"] = list(memory.slots_offered)
         if memory.pending_service:
@@ -203,6 +205,16 @@ class SmsAiService:
             booking_meta["pending_action"] = memory.pending_action
         if memory.pending_question:
             booking_meta["pending_question"] = memory.pending_question
+        if memory.pending_preferred_start:
+            booking_meta["pending_preferred_start"] = memory.pending_preferred_start
+        if memory.pending_preferred_end:
+            booking_meta["pending_preferred_end"] = memory.pending_preferred_end
+        if memory.pending_time_precision:
+            booking_meta["pending_time_precision"] = memory.pending_time_precision
+        if memory.pending_needs_date:
+            booking_meta["pending_needs_date"] = True
+        if memory.pending_needs_time:
+            booking_meta["pending_needs_time"] = True
 
         pipeline = await self._agents.orchestrator.handle_incoming(
             shop_id=shop_id,
@@ -271,20 +283,39 @@ class SmsAiService:
             if sched.data.success:
                 self._monitor.record_appointment(sched.data.action)
             if sched.data.success and sched.data.appointment:
+                appt = sched.data.appointment
+                visit_start = ""
+                if getattr(appt, "start", None) is not None:
+                    try:
+                        visit_start = appt.start.isoformat()
+                    except Exception:  # noqa: BLE001
+                        visit_start = str(appt.start)
                 await self._memory.update_state(
                     shop_id=shop_id,
                     customer_phone=phone,
-                    appointment_id=str(sched.data.appointment.id),
+                    appointment_id=str(appt.id),
+                    active_visit_start=visit_start,
                     clear_pending_booking=True,
                     conversation_id=conversation.id,
                 )
-            elif (
-                sched.data.message == "awaiting_cancel_confirmation"
-                or (getattr(sched.data, "metadata", None) or {}).get("action") == "cancel"
+            elif sched.data.message == "awaiting_cancel_confirmation" or (
+                (getattr(sched.data, "metadata", None) or {}).get("action") == "cancel"
+                and not (getattr(sched.data, "metadata", None) or {}).get(
+                    "no_appointment"
+                )
+                and not sched.data.success
             ):
+                # Pin the appointment being cancelled so YES confirms the right visit.
+                hold_cancel_id: str | None = None
+                decision = getattr(sched.data, "decision", None)
+                if decision is not None and getattr(decision, "appointment_id", None):
+                    hold_cancel_id = str(decision.appointment_id)
+                if not hold_cancel_id:
+                    hold_cancel_id = memory.appointment_id
                 await self._memory.update_state(
                     shop_id=shop_id,
                     customer_phone=phone,
+                    appointment_id=hold_cancel_id,
                     pending_cancel=True,
                     pending_action="cancel",
                     conversation_id=conversation.id,
@@ -354,7 +385,19 @@ class SmsAiService:
                     offered = []
                 pending_action = str(sched_meta.get("action") or "")
                 # Live reschedule intent must not inherit a stale "book" hold.
+                # Keep an in-progress reschedule through availability Q&A too.
                 if intent_val == "reschedule":
+                    pending_action = "reschedule"
+                elif (
+                    memory.pending_action == "reschedule"
+                    and intent_val
+                    in {
+                        "check_availability",
+                        "book_appointment",
+                        "other",
+                        "maintenance_question",
+                    }
+                ):
                     pending_action = "reschedule"
                 elif pending_action not in {"book", "reschedule"}:
                     pending_action = "book"
@@ -363,6 +406,76 @@ class SmsAiService:
                 memory_appointment_id = (
                     hold_appointment_id if pending_action == "reschedule" else None
                 )
+                if pending_action == "reschedule" and not memory_appointment_id:
+                    memory_appointment_id = memory.appointment_id
+                pref_start = intent_entities.get("preferred_start")
+                pref_end = intent_entities.get("preferred_end")
+                pref_precision = intent_entities.get("time_precision")
+                needs_date = bool(intent_entities.get("needs_date"))
+                needs_time = bool(intent_entities.get("needs_time"))
+                incomplete = needs_date or needs_time or pref_precision in {
+                    "day",
+                    "part_of_day",
+                    "time_only",
+                }
+                # After a full clock pick, stash the still-usable half so the
+                # customer only re-answers what failed (date vs time).
+                keep_clock = (
+                    not incomplete
+                    and pref_precision == "clock"
+                    and bool(pref_start)
+                )
+                unavailable = bool(
+                    sched_meta.get("preferred_time_unavailable")
+                    or sched.data.message == "preferred_time_unavailable"
+                )
+                aspect = str(sched_meta.get("unavailable_aspect") or "both")
+                if aspect not in {"date", "time", "both"}:
+                    aspect = "both"
+                closed_day = bool(sched_meta.get("closed_day"))
+                if (
+                    unavailable
+                    and aspect == "date"
+                    and not keep_clock
+                    and (
+                        closed_day
+                        or pref_precision in {"day", "part_of_day"}
+                    )
+                ):
+                    # Soft day on a closed/full day — do not keep asking for a clock.
+                    stash_start = ""
+                    stash_end = ""
+                    stash_prec = ""
+                    stash_needs_date = False
+                    stash_needs_time = False
+                elif incomplete and pref_start:
+                    stash_start = str(pref_start)
+                    stash_end = str(pref_end) if pref_end else ""
+                    stash_prec = str(pref_precision) if pref_precision else ""
+                    stash_needs_date = needs_date
+                    stash_needs_time = needs_time
+                elif keep_clock and unavailable and aspect == "time":
+                    # Day still open — keep day, re-ask clock only.
+                    stash_start = str(pref_start)
+                    stash_end = str(pref_end) if pref_end else ""
+                    stash_prec = "day"
+                    stash_needs_date = False
+                    stash_needs_time = True
+                elif keep_clock and unavailable:
+                    # Date closed/full — keep hour only; must re-ask day (not day+time).
+                    stash_start = str(pref_start)
+                    stash_end = str(pref_end) if pref_end else ""
+                    stash_prec = "time_only"
+                    stash_needs_date = True
+                    stash_needs_time = False
+                else:
+                    # Held slot / clear path — do not demote a confirmed clock to
+                    # time_only or the next turn re-asks day and time.
+                    stash_start = ""
+                    stash_end = ""
+                    stash_prec = ""
+                    stash_needs_date = False
+                    stash_needs_time = False
                 await self._memory.update_state(
                     shop_id=shop_id,
                     customer_phone=phone,
@@ -373,6 +486,11 @@ class SmsAiService:
                     pending_duration_minutes=int(duration) if duration else 0,
                     pending_cancel=False,
                     pending_action=pending_action,
+                    pending_preferred_start=stash_start,
+                    pending_preferred_end=stash_end,
+                    pending_time_precision=stash_prec,
+                    pending_needs_date=stash_needs_date,
+                    pending_needs_time=stash_needs_time,
                     conversation_id=conversation.id,
                 )
 

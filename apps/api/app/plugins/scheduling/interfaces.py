@@ -24,10 +24,23 @@ class AppointmentServicePort(Protocol):
         notes: str | None = None,
         service_id: UUID | None = None,
         service_name: str | None = None,
+        duration_minutes: int | None = None,
+        repair_type: str | None = None,
+        required_bay: str | None = None,
     ) -> AppointmentRecord: ...
 
     async def reschedule(
-        self, shop_id: UUID, appointment_id: UUID, start: datetime, end: datetime
+        self,
+        shop_id: UUID,
+        appointment_id: UUID,
+        start: datetime,
+        end: datetime,
+        *,
+        service_id: UUID | None = None,
+        service_name: str | None = None,
+        duration_minutes: int | None = None,
+        repair_type: str | None = None,
+        required_bay: str | None = None,
     ) -> AppointmentRecord: ...
 
     async def cancel(
@@ -62,7 +75,7 @@ class AvailabilityServicePort(Protocol):
     ) -> dict[str, Any]: ...
 
     async def validate_appointment(
-        self, shop_id: UUID, *, start: datetime, end: datetime
+        self, shop_id: UUID, *, start: datetime, end: datetime, exclude_id: UUID | None = None
     ) -> dict[str, Any]: ...
 
 

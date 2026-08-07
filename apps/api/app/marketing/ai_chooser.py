@@ -15,6 +15,7 @@ _CHANNEL_HOURS: dict[Channel, tuple[int, int]] = {
     Channel.VOICE: (11, 17),
 }
 
+# Re-recommendation cooldown after a successful SMS/email send (days).
 _FREQUENCY_DAYS: dict[CampaignType, int] = {
     CampaignType.MAINTENANCE_REMINDER: 90,
     CampaignType.DECLINED_ESTIMATE: 14,
@@ -25,6 +26,16 @@ _FREQUENCY_DAYS: dict[CampaignType, int] = {
     CampaignType.BIRTHDAY: 365,
     CampaignType.INACTIVE_CUSTOMER: 60,
 }
+
+
+def recommendation_cooldown_days(campaign_type: CampaignType | str) -> int:
+    """Days before a customer may appear again in AI Recommendations after SMS/email."""
+    ctype = (
+        campaign_type
+        if isinstance(campaign_type, CampaignType)
+        else CampaignType(campaign_type)
+    )
+    return _FREQUENCY_DAYS[ctype]
 
 
 def _prefs(campaign_type: CampaignType) -> list[Channel]:
@@ -140,11 +151,6 @@ class MarketingAiChooser:
         )
         body, subject = self.choose_message(campaign=campaign, member=member, channel=channel)
         freq = self.choose_frequency(campaign.campaign_type, campaign)
-        reasons = [
-            f"channel={channel.value} (availability + campaign type preference)",
-            f"send_window={_CHANNEL_HOURS[channel][0]}-{_CHANNEL_HOURS[channel][1]}",
-            f"frequency={freq}d",
-        ]
         conf = 0.85 if (member.phone or member.email) else 0.55
         return AiPlan(
             channel=channel,
@@ -153,7 +159,7 @@ class MarketingAiChooser:
             subject=subject,
             frequency_days=freq,
             confidence=conf,
-            reasons=reasons,
+            reasons=[],
         )
 
     def plan_campaign_defaults(

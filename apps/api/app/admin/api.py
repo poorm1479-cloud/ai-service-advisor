@@ -67,13 +67,23 @@ async def _fingerprint_sse(
     fetch,
     fingerprint,
 ):
-    """Yield SSE events when fingerprint changes; otherwise ping."""
+    """Yield SSE events when fingerprint changes; otherwise ping.
+
+    Pings/updates are flushed every poll tick so proxies/browsers keep the
+    stream live while the admin stays on the page.
+    """
     last_fp = ""
+    # First payload ASAP so the UI marks Live before the first sleep.
     while True:
         if await request.is_disconnected():
             break
         poll = await PlatformSettingsService().dashboard_poll_seconds()
-        data = await fetch()
+        try:
+            data = await fetch()
+        except Exception:
+            yield f"event: ping\ndata: {json.dumps({'ok': False})}\n\n"
+            await asyncio.sleep(poll)
+            continue
         if data is None:
             yield f"event: ping\ndata: {json.dumps({'ok': True})}\n\n"
             await asyncio.sleep(poll)
@@ -81,7 +91,7 @@ async def _fingerprint_sse(
         fp = fingerprint(data)
         if fp != last_fp:
             last_fp = fp
-            yield f"event: {event_name}\ndata: {json.dumps(data)}\n\n"
+            yield f"event: {event_name}\ndata: {json.dumps(data, default=str)}\n\n"
         else:
             yield f"event: ping\ndata: {json.dumps({'ok': True})}\n\n"
         await asyncio.sleep(poll)
@@ -309,6 +319,25 @@ async def admin_usage_stream(
 @router.get("/users")
 async def admin_users(_: str = Depends(require_platform_admin)) -> dict:
     return await _svc().users()
+
+
+@router.get("/users/stream")
+async def admin_users_stream(
+    request: Request,
+    _: str = Depends(require_platform_admin),
+) -> StreamingResponse:
+    """SSE feed — pushes when membership/online fingerprint changes."""
+    svc = _svc()
+    return StreamingResponse(
+        _fingerprint_sse(
+            request,
+            event_name="users",
+            fetch=svc.users,
+            fingerprint=svc.resource_fingerprint,
+        ),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
 
 
 @router.get("/system")

@@ -594,6 +594,12 @@ class AppointmentIntelligenceService:
         shop_id: UUID,
         appointment_id: UUID,
         preferred_start: datetime | None = None,
+        service_id: UUID | None = None,
+        service_name: str | None = None,
+        estimated_duration_min: int | None = None,
+        repair_type: str | None = None,
+        required_bay: str | None = None,
+        estimated_revenue: Decimal | None = None,
     ) -> BookingResult:
         existing = await self._store.get_appointment(shop_id, appointment_id)
         if existing is None:
@@ -608,23 +614,43 @@ class AppointmentIntelligenceService:
         # Default to next day so one-click reschedule does not silently rebook
         # the exact same freed slot (looks like the button did nothing).
         target_start = preferred_start or (existing.start + timedelta(days=1))
+        next_service_id = service_id if service_id is not None else existing.service_id
+        next_service_name = (
+            service_name if service_name is not None else meta.get("service_name")
+        )
+        next_repair = repair_type if repair_type is not None else existing.repair_type
+        next_bay = (
+            required_bay
+            if required_bay is not None
+            else meta.get("required_bay")
+        )
+        next_duration = (
+            estimated_duration_min
+            if estimated_duration_min is not None
+            else existing.estimated_duration_min
+        )
+        next_revenue = (
+            estimated_revenue
+            if estimated_revenue is not None
+            else existing.estimated_revenue
+        )
         booking = BookingRequest(
             shop_id=shop_id,
             preferred_start=target_start,
             customer_id=existing.customer_id,
             vehicle_id=existing.vehicle_id,
-            service_id=existing.service_id,
-            service_name=meta.get("service_name"),
-            repair_type=existing.repair_type,
-            required_bay=meta.get("required_bay"),
+            service_id=next_service_id,
+            service_name=next_service_name,
+            repair_type=next_repair,
+            required_bay=next_bay,
             vehicle_type=existing.vehicle_type,
             priority=existing.priority,
-            estimated_duration_min=existing.estimated_duration_min,
+            estimated_duration_min=next_duration,
             # Never re-enter walk-in start path (forces "now" + in_progress).
             source="dashboard" if existing.source == "walk_in" else existing.source,
             notes=f"Rescheduled from {existing.id}",
             walk_in_id=existing.walk_in_id,
-            estimated_revenue=existing.estimated_revenue,
+            estimated_revenue=next_revenue,
         )
         result = await self.book(booking)
         # Catalog bay types may have changed since original book — retry soft.
@@ -880,12 +906,16 @@ class AppointmentIntelligenceService:
         self,
         request: BookingRequest,
         start: datetime,
+        *,
+        ignore_appointment_id: UUID | None = None,
     ) -> tuple[SlotCandidate | None, str | None]:
         """Assign the best free mechanic/bay at an exact start time."""
         hours = await self._store.list_business_hours(request.shop_id)
         mechanics = await self._store.list_mechanics(request.shop_id)
         bays = await self._store.list_bays(request.shop_id)
         existing = await self._store.list_appointments(request.shop_id)
+        if ignore_appointment_id is not None:
+            existing = [a for a in existing if a.id != ignore_appointment_id]
         duration = self._availability.estimate_duration(
             repair_type=request.repair_type,
             override_min=request.estimated_duration_min,
@@ -979,6 +1009,7 @@ class AppointmentIntelligenceService:
             bay_id=bay.id,
             existing=existing,
             priority=request.priority,
+            ignore_id=ignore_appointment_id,
         )
         if report.has_conflict and request.priority != "emergency":
             return None, report.conflicts[0] if report.conflicts else "Conflict at preferred start"

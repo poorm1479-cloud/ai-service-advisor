@@ -78,6 +78,10 @@ class TrackRequest(BaseModel):
     revenue: Decimal | None = None
 
 
+class BulkDeleteMessagesRequest(BaseModel):
+    message_ids: list[UUID] = Field(default_factory=list, min_length=1)
+
+
 class AiPlanOut(BaseModel):
     channel: str
     send_at: datetime
@@ -106,6 +110,12 @@ class CampaignOut(BaseModel):
     tags: list[str]
     created_at: datetime | None
     updated_at: datetime | None
+
+
+class CampaignCreateOut(CampaignOut):
+    """Campaign create response includes first-customer AI preview to avoid a second round-trip."""
+
+    ai_preview: dict[str, Any] | None = None
 
 
 class MetricsOut(BaseModel):
@@ -141,6 +151,7 @@ class MessageOut(BaseModel):
     id: UUID
     campaign_id: UUID
     customer_id: UUID
+    customer_name: str | None = None
     channel: str
     status: str
     body: str
@@ -176,6 +187,35 @@ def _ai_out(plan) -> AiPlanOut | None:
         frequency_days=plan.frequency_days,
         confidence=plan.confidence,
         reasons=plan.reasons,
+    )
+
+
+def _audience_name_map(campaign) -> dict[UUID, str]:
+    return {
+        member.customer_id: member.name
+        for member in (campaign.audience or [])
+        if member.name
+    }
+
+
+def _message_out(m, *, customer_name: str | None = None) -> MessageOut:
+    return MessageOut(
+        id=m.id,
+        campaign_id=m.campaign_id,
+        customer_id=m.customer_id,
+        customer_name=customer_name,
+        channel=m.channel.value,
+        status=m.status.value,
+        body=m.body,
+        subject=m.subject,
+        scheduled_at=m.scheduled_at,
+        sent_at=m.sent_at,
+        opened_at=m.opened_at,
+        clicked_at=m.clicked_at,
+        replied_at=m.replied_at,
+        revenue=str(m.revenue),
+        attempt=m.attempt,
+        error=m.error,
     )
 
 
@@ -215,9 +255,16 @@ async def list_channels(_: CurrentUser = Depends(get_current_user)) -> list[str]
 async def suggested_actions(
     user: CurrentUser = Depends(get_current_user),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+    rt: MarketingRuntime = Depends(_runtime),
 ) -> list[SuggestedActionOut]:
     shop_id = _require_shop_id(user)
-    items = await list_suggested_action_counts(uow, shop_id)
+    items = await list_suggested_action_counts(
+        uow,
+        shop_id,
+        exclude_customer_ids=lambda ctype: rt.service.customers_in_recommendation_cooldown(
+            shop_id, ctype
+        ),
+    )
     return [
         SuggestedActionOut(
             id=item.id,
@@ -283,13 +330,13 @@ async def list_campaigns(
     ]
 
 
-@router.post("/campaigns", response_model=CampaignOut, status_code=201)
+@router.post("/campaigns", response_model=CampaignCreateOut, status_code=201)
 async def create_campaign(
     body: CampaignCreate,
     user: CurrentUser = Depends(get_current_user),
     rt: MarketingRuntime = Depends(_runtime),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
-) -> CampaignOut:
+) -> CampaignCreateOut:
     shop_id = _require_shop_id(user)
     if body.use_demo_audience:
         raise HTTPException(
@@ -309,6 +356,10 @@ async def create_campaign(
             body.campaign_type,
             tags=body.tags,
         )
+        suppressed = await rt.service.customers_in_recommendation_cooldown(
+            shop_id, body.campaign_type
+        )
+        members = rt.service.filter_audience_for_recommendations(members, suppressed)
         if not members:
             raise HTTPException(
                 status_code=http_status.HTTP_400_BAD_REQUEST,
@@ -338,7 +389,16 @@ async def create_campaign(
     rt.monitor.record_created(campaign.campaign_type.value)
     if body.auto_schedule:
         rt.monitor.record_scheduled()
-    return _campaign_out(campaign)
+
+    preview: dict[str, Any] | None = None
+    if campaign.audience:
+        try:
+            preview = await rt.service.preview_ai(shop_id, campaign.id)
+        except LookupError:
+            preview = None
+
+    base = _campaign_out(campaign)
+    return CampaignCreateOut(**base.model_dump(), ai_preview=preview)
 
 
 @router.get("/campaigns/{campaign_id}", response_model=CampaignOut)
@@ -413,8 +473,8 @@ async def process_queue(
     user: CurrentUser = Depends(get_current_user),
     rt: MarketingRuntime = Depends(_runtime),
 ) -> dict[str, Any]:
-    sent = await rt.service.process_queue()
-    shop_sent = [m for m in sent if m.shop_id == user.shop_id]
+    shop_id = _require_shop_id(user)
+    shop_sent = await rt.service.process_queue(shop_id=shop_id)
     for m in shop_sent:
         rt.monitor.record_sent(m.channel.value)
     return {"processed": len(shop_sent)}
@@ -427,28 +487,13 @@ async def list_messages(
     rt: MarketingRuntime = Depends(_runtime),
 ) -> list[MessageOut]:
     try:
-        await rt.service.get_campaign(user.shop_id, campaign_id)
+        campaign = await rt.service.get_campaign(user.shop_id, campaign_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    names = _audience_name_map(campaign)
     messages = await rt.store.list_messages(user.shop_id, campaign_id)
     return [
-        MessageOut(
-            id=m.id,
-            campaign_id=m.campaign_id,
-            customer_id=m.customer_id,
-            channel=m.channel.value,
-            status=m.status.value,
-            body=m.body,
-            subject=m.subject,
-            scheduled_at=m.scheduled_at,
-            sent_at=m.sent_at,
-            opened_at=m.opened_at,
-            clicked_at=m.clicked_at,
-            replied_at=m.replied_at,
-            revenue=str(m.revenue),
-            attempt=m.attempt,
-            error=m.error,
-        )
+        _message_out(m, customer_name=names.get(m.customer_id))
         for m in messages
     ]
 
@@ -496,6 +541,40 @@ async def ai_preview(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.delete("/messages/{message_id}", status_code=http_status.HTTP_204_NO_CONTENT)
+async def delete_message(
+    message_id: UUID,
+    user: CurrentUser = Depends(get_current_user),
+    rt: MarketingRuntime = Depends(_runtime),
+) -> None:
+    shop_id = _require_shop_id(user)
+    try:
+        await rt.service.delete_message(shop_id, message_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/messages/bulk-delete")
+async def bulk_delete_messages(
+    body: BulkDeleteMessagesRequest,
+    user: CurrentUser = Depends(get_current_user),
+    rt: MarketingRuntime = Depends(_runtime),
+) -> dict[str, int]:
+    shop_id = _require_shop_id(user)
+    deleted = await rt.service.delete_messages(shop_id, body.message_ids)
+    return {"deleted": deleted}
+
+
+@router.delete("/messages")
+async def delete_all_messages(
+    user: CurrentUser = Depends(get_current_user),
+    rt: MarketingRuntime = Depends(_runtime),
+) -> dict[str, int]:
+    shop_id = _require_shop_id(user)
+    deleted = await rt.service.delete_all_messages(shop_id)
+    return {"deleted": deleted}
+
+
 @router.post("/messages/{message_id}/track", response_model=MessageOut)
 async def track_message(
     message_id: UUID,
@@ -503,9 +582,10 @@ async def track_message(
     user: CurrentUser = Depends(get_current_user),
     rt: MarketingRuntime = Depends(_runtime),
 ) -> MessageOut:
+    shop_id = _require_shop_id(user)
     try:
         m = await rt.service.track_event(
-            user.shop_id,
+            shop_id,
             message_id,
             event=body.event,
             appointment_id=body.appointment_id,
@@ -515,20 +595,10 @@ async def track_message(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return MessageOut(
-        id=m.id,
-        campaign_id=m.campaign_id,
-        customer_id=m.customer_id,
-        channel=m.channel.value,
-        status=m.status.value,
-        body=m.body,
-        subject=m.subject,
-        scheduled_at=m.scheduled_at,
-        sent_at=m.sent_at,
-        opened_at=m.opened_at,
-        clicked_at=m.clicked_at,
-        replied_at=m.replied_at,
-        revenue=str(m.revenue),
-        attempt=m.attempt,
-        error=m.error,
-    )
+    customer_name: str | None = None
+    try:
+        campaign = await rt.service.get_campaign(shop_id, m.campaign_id)
+        customer_name = _audience_name_map(campaign).get(m.customer_id)
+    except LookupError:
+        pass
+    return _message_out(m, customer_name=customer_name)

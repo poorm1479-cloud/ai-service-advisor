@@ -1,10 +1,9 @@
 /**
- * Admin System Health — monitoring layer only.
- * Probes existing public/admin endpoints; does not change backend services.
+ * Admin System Health — derives component levels from /v1/admin/system.
+ * One admin endpoint (or its SSE stream) is enough; no multi-endpoint fan-out.
  */
 
-import { getApiUrl } from "@/lib/api";
-import { getAdminSystem, getAdminUsage, type SystemStatus } from "@/lib/admin";
+import { getAdminSystem, type SystemStatus } from "@/lib/admin";
 
 export type HealthLevel = "green" | "yellow" | "red";
 
@@ -15,6 +14,54 @@ export type HealthComponentId =
   | "sms"
   | "voice"
   | "integrations";
+
+/** Feature groups for admin System Health UI */
+export type HealthFeatureGroupId =
+  | "platform"
+  | "ai"
+  | "messaging"
+  | "voice"
+  | "integrations";
+
+export type HealthFeatureGroup = {
+  id: HealthFeatureGroupId;
+  label: string;
+  description: string;
+  componentIds: HealthComponentId[];
+};
+
+export const HEALTH_FEATURE_GROUPS: HealthFeatureGroup[] = [
+  {
+    id: "platform",
+    label: "Platform",
+    description: "Core API and data layer",
+    componentIds: ["api", "database"],
+  },
+  {
+    id: "ai",
+    label: "AI",
+    description: "LLM stack and usage monitor",
+    componentIds: ["ai"],
+  },
+  {
+    id: "messaging",
+    label: "Messaging",
+    description: "SMS provider and runtime",
+    componentIds: ["sms"],
+  },
+  {
+    id: "voice",
+    label: "Voice",
+    description: "Voice provider and runtime",
+    componentIds: ["voice"],
+  },
+  {
+    id: "integrations",
+    label: "Integrations",
+    description: "External shop and billing connectors",
+    componentIds: ["integrations"],
+  },
+];
 
 export type HealthComponent = {
   id: HealthComponentId;
@@ -48,21 +95,6 @@ function num(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) ? v : 0;
 }
 
-async function probeJson(path: string): Promise<{ ok: boolean; status: number; data: unknown }> {
-  try {
-    const res = await fetch(`${getApiUrl()}${path}`, { cache: "no-store" });
-    let data: unknown = null;
-    try {
-      data = await res.json();
-    } catch {
-      data = null;
-    }
-    return { ok: res.ok, status: res.status, data };
-  } catch {
-    return { ok: false, status: 0, data: null };
-  }
-}
-
 function openIncidentsFor(
   incidents: SystemStatus["incidents"],
   keys: string[],
@@ -86,26 +118,18 @@ function levelLabel(level: HealthLevel): string {
   return "outage";
 }
 
-function providerLevel(probe: {
-  ok: boolean;
-  data: unknown;
-  enabledKey: string;
+function providerLevel(args: {
+  metrics: Record<string, number | string | null>;
+  enabled?: boolean;
+  provider?: string;
+  queueDepth?: number | null;
   failureKeys: string[];
 }): { level: HealthLevel; detail: string } {
-  if (!probe.ok || !probe.data || typeof probe.data !== "object") {
-    return { level: "red", detail: "Provider health endpoint unreachable" };
-  }
-  const body = probe.data as Record<string, unknown>;
-  const enabled = body[probe.enabledKey];
-  const metrics =
-    body.metrics && typeof body.metrics === "object"
-      ? (body.metrics as Record<string, unknown>)
-      : {};
-  const provider = typeof body.provider === "string" ? body.provider : "unknown";
-  const failures = probe.failureKeys.reduce((sum, k) => sum + num(metrics[k]), 0);
-  const queueDepth = num(body.queue_depth);
+  const provider = args.provider || "unknown";
+  const failures = args.failureKeys.reduce((sum, k) => sum + num(args.metrics[k]), 0);
+  const queueDepth = num(args.queueDepth ?? args.metrics.queue_depth);
 
-  if (enabled === false) {
+  if (args.enabled === false) {
     return {
       level: "yellow",
       detail: `Disabled · provider ${provider}`,
@@ -125,7 +149,6 @@ function providerLevel(probe: {
 
 function aiLevel(args: {
   apiOk: boolean;
-  usageOk: boolean;
   incidents: SystemStatus["incidents"];
   sms: Record<string, number | string | null>;
   voice: Record<string, number | string | null>;
@@ -141,9 +164,6 @@ function aiLevel(args: {
       detail: aiIncidents[0]?.title || "Critical AI incident open",
     };
   }
-  if (!args.usageOk) {
-    return { level: "yellow", detail: "AI usage monitor unreachable" };
-  }
   if (aiIncidents.length > 0) {
     return {
       level: "yellow",
@@ -157,7 +177,7 @@ function aiLevel(args: {
       detail: `${escalations} recent AI escalations (SMS/voice)`,
     };
   }
-  return { level: "green", detail: "API reachable · usage monitor OK" };
+  return { level: "green", detail: "API reachable · no open AI incidents" };
 }
 
 function integrationsLevel(args: {
@@ -211,45 +231,21 @@ export function healthTextClass(level: HealthLevel): string {
   return "text-red-700";
 }
 
-export async function loadSystemHealth(accessToken: string): Promise<SystemHealthSnapshot> {
-  const [apiProbe, readyProbe, smsProbe, voiceProbe, systemResult, usageResult] =
-    await Promise.all([
-      probeJson("/health"),
-      probeJson("/ready"),
-      probeJson("/v1/webhooks/twilio/health"),
-      probeJson("/v1/webhooks/twilio/voice/health"),
-      getAdminSystem(accessToken)
-        .then((data) => ({ ok: true as const, data }))
-        .catch(() => ({ ok: false as const, data: null })),
-      getAdminUsage(accessToken)
-        .then(() => true)
-        .catch(() => false),
-    ]);
+/** Build UI snapshot from a single admin system status payload. */
+export function buildSystemHealthFromStatus(system: SystemStatus): SystemHealthSnapshot {
+  const incidents = system.incidents ?? [];
+  const smsMetrics = system.sms ?? {};
+  const voiceMetrics = system.voice ?? {};
+  const providers = system.providers ?? {};
 
-  const system = systemResult.ok ? systemResult.data : null;
-  const incidents = system?.incidents ?? [];
-  const smsMetrics = system?.sms ?? {};
-  const voiceMetrics = system?.voice ?? {};
+  const apiOk = Boolean(system.readiness);
+  const env =
+    system.readiness && typeof system.readiness === "object"
+      ? String((system.readiness as { environment?: string }).environment ?? "—")
+      : "—";
 
-  const apiOk =
-    apiProbe.ok &&
-    typeof apiProbe.data === "object" &&
-    apiProbe.data !== null &&
-    (apiProbe.data as { status?: string }).status === "ok";
-
-  const dbCheck =
-    system?.readiness?.checks?.database ??
-    (readyProbe.data && typeof readyProbe.data === "object"
-      ? (readyProbe.data as { checks?: { database?: { status?: string; error?: string } } }).checks
-          ?.database
-      : undefined);
-  const redisCheck =
-    system?.readiness?.checks?.redis ??
-    (readyProbe.data && typeof readyProbe.data === "object"
-      ? (readyProbe.data as { checks?: { redis?: { status?: string; error?: string } } }).checks
-          ?.redis
-      : undefined);
-
+  const dbCheck = system.readiness?.checks?.database;
+  const redisCheck = system.readiness?.checks?.redis;
   const dbUp = dbCheck?.status === "up";
   const redisUp = redisCheck?.status === "up";
 
@@ -258,13 +254,7 @@ export async function loadSystemHealth(accessToken: string): Promise<SystemHealt
     label: COMPONENT_LABELS.api,
     level: apiOk ? "green" : "red",
     status: apiOk ? "healthy" : "outage",
-    detail: apiOk
-      ? `phase ${
-          typeof apiProbe.data === "object" && apiProbe.data
-            ? String((apiProbe.data as { phase?: string }).phase ?? "—")
-            : "—"
-        }`
-      : "Health probe failed",
+    detail: apiOk ? `env ${env}` : "Admin system endpoint failed",
   };
 
   const database: HealthComponent = {
@@ -276,9 +266,10 @@ export async function loadSystemHealth(accessToken: string): Promise<SystemHealt
   };
 
   const smsProv = providerLevel({
-    ok: smsProbe.ok,
-    data: smsProbe.data,
-    enabledKey: "sms_enabled",
+    metrics: smsMetrics,
+    enabled: providers.sms?.enabled,
+    provider: providers.sms?.provider,
+    queueDepth: providers.sms?.queue_depth,
     failureKeys: ["queue_failures", "webhook_rejected"],
   });
   const sms: HealthComponent = {
@@ -290,9 +281,10 @@ export async function loadSystemHealth(accessToken: string): Promise<SystemHealt
   };
 
   const voiceProv = providerLevel({
-    ok: voiceProbe.ok,
-    data: voiceProbe.data,
-    enabledKey: "voice_enabled",
+    metrics: voiceMetrics,
+    enabled: providers.voice?.enabled,
+    provider: providers.voice?.provider,
+    queueDepth: providers.voice?.queue_depth,
     failureKeys: ["webhook_rejected"],
   });
   const voice: HealthComponent = {
@@ -305,7 +297,6 @@ export async function loadSystemHealth(accessToken: string): Promise<SystemHealt
 
   const aiProv = aiLevel({
     apiOk,
-    usageOk: usageResult,
     incidents,
     sms: smsMetrics,
     voice: voiceMetrics,
@@ -344,10 +335,15 @@ export async function loadSystemHealth(accessToken: string): Promise<SystemHealt
   const overall = worst(...components.map((c) => c.level));
 
   return {
-    generated_at: system?.generated_at ?? new Date().toISOString(),
+    generated_at: system.generated_at ?? new Date().toISOString(),
     overall,
     components,
     incidents,
     metrics: { sms: smsMetrics, voice: voiceMetrics },
   };
+}
+
+export async function loadSystemHealth(accessToken: string): Promise<SystemHealthSnapshot> {
+  const system = await getAdminSystem(accessToken);
+  return buildSystemHealthFromStatus(system);
 }

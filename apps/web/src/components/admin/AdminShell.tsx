@@ -65,12 +65,22 @@ export function AdminShell({ children }: Props) {
       if (e.key === "Escape") setMenuOpen(false);
     };
     document.addEventListener("keydown", onKey);
-    document.body.style.overflow = "hidden";
     return () => {
       document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = "";
     };
   }, [menuOpen]);
+
+  // Prevent document/body scroll — only the main content pane scrolls.
+  useEffect(() => {
+    const prevHtml = document.documentElement.style.overflow;
+    const prevBody = document.body.style.overflow;
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.documentElement.style.overflow = prevHtml;
+      document.body.style.overflow = prevBody;
+    };
+  }, []);
 
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 768px)");
@@ -100,7 +110,7 @@ export function AdminShell({ children }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [accessToken, pathname]);
+  }, [accessToken]);
 
   useEffect(() => {
     if (!accessToken) {
@@ -129,7 +139,10 @@ export function AdminShell({ children }: Props) {
         );
         seenIdsRef.current = ids;
         const orgRelevant = fresh.some(
-          (n) => n.event_type === "saas.signup" || n.event_type === "saas.member_joined",
+          (n) =>
+            n.event_type === "saas.signup" ||
+            n.event_type === "saas.member_joined" ||
+            n.event_type === "saas.shop_deleted",
         );
         const dashboardRelevant = fresh.some(
           (n) => n.event_type != null && DASHBOARD_EVENT_TYPES.has(n.event_type),
@@ -141,6 +154,7 @@ export function AdminShell({ children }: Props) {
         if (highlight && toastEnabledRef.current) {
           showToast(highlight);
         }
+        // Shops + Users pages listen for this to force an immediate list reload.
         if (orgRelevant) {
           window.dispatchEvent(new CustomEvent("admin:shops-refresh"));
         }
@@ -259,16 +273,18 @@ export function AdminShell({ children }: Props) {
             </button>
           </div>        </header>
 
-        <main className="asa-scroll min-h-0 flex-1 space-y-6 overflow-y-scroll overscroll-contain px-4 py-4 sm:px-5 sm:py-5 md:px-7 md:py-7 [scrollbar-gutter:stable]">
-          {maintenanceMode ? (
-            <div
-              role="status"
-              className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
-            >
-              Maintenance mode is enabled. Platform ops banners are active for admins.
-            </div>
-          ) : null}
-          {!forbidden ? children({ username, accessToken }) : null}
+        <main className="asa-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5 sm:py-5 md:px-7 md:py-7 [scrollbar-gutter:stable]">
+          <div className="space-y-6">
+            {maintenanceMode ? (
+              <div
+                role="status"
+                className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+              >
+                Maintenance mode is enabled. Platform ops banners are active for admins.
+              </div>
+            ) : null}
+            {!forbidden ? children({ username, accessToken }) : null}
+          </div>
         </main>
       </div>
 
@@ -331,14 +347,16 @@ export function Panel({
   title,
   action,
   children,
+  className = "",
 }: {
   title: string;
   action?: ReactNode;
   children: ReactNode;
+  className?: string;
 }) {
   return (
-    <section className="surface-panel overflow-hidden">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] px-5 py-3">
+    <section className={`surface-panel overflow-hidden ${className}`.trim()}>
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] px-5 py-3">
         <h2 className="text-sm font-medium">{title}</h2>
         {action}
       </div>

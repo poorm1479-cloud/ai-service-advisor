@@ -22,6 +22,23 @@ logger = logging.getLogger("asa.billing")
 # Subscription statuses treated as failed / delinquent payments for admin views.
 FAILED_PAYMENT_STATUSES = frozenset({"past_due", "unpaid", "incomplete", "incomplete_expired"})
 
+# Canonical plan quotas (UI + enforcement). Keeps existing DBs in sync without waiting on ops.
+FREE_PLAN_QUOTAS = {
+    "ai_calls_monthly": 50,
+    "sms_monthly": 50,
+    "seats": 2,
+}
+PRO_PLAN_QUOTAS = {
+    "ai_calls_monthly": 200,
+    "sms_monthly": 200,
+    "seats": 4,
+}
+ENTERPRISE_PLAN_QUOTAS = {
+    "ai_calls_monthly": 500,
+    "sms_monthly": 500,
+    "seats": 10,
+}
+
 
 class SaasPlanModel(Base):
     __tablename__ = "saas_plans"
@@ -31,9 +48,9 @@ class SaasPlanModel(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     price_cents_monthly: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     stripe_price_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    ai_calls_monthly: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
-    sms_monthly: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
-    seats: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    ai_calls_monthly: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
+    sms_monthly: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    seats: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
     is_public: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
@@ -88,6 +105,33 @@ def _plan(m: SaasPlanModel) -> PlanInfo:
     )
 
 
+async def _sync_plan_quotas(session, plan_id: str, quotas: dict[str, int]) -> None:
+    """Ensure a plan row matches the given quotas (idempotent)."""
+    plan = await session.get(SaasPlanModel, plan_id)
+    if plan is None:
+        return
+    dirty = False
+    for field, value in quotas.items():
+        if getattr(plan, field) != value:
+            setattr(plan, field, value)
+            dirty = True
+    if dirty:
+        await session.commit()
+        logger.info(
+            "synced %s plan quotas: AI=%s SMS=%s seats=%s",
+            plan_id,
+            quotas["ai_calls_monthly"],
+            quotas["sms_monthly"],
+            quotas["seats"],
+        )
+
+
+async def _sync_canonical_plan_quotas(session) -> None:
+    await _sync_plan_quotas(session, "free", FREE_PLAN_QUOTAS)
+    await _sync_plan_quotas(session, "pro", PRO_PLAN_QUOTAS)
+    await _sync_plan_quotas(session, "enterprise", ENTERPRISE_PLAN_QUOTAS)
+
+
 class BillingServicePort(Protocol):
     """Abstraction for SaaS billing operations (customer + admin)."""
 
@@ -136,6 +180,7 @@ class BillingServicePort(Protocol):
 class BillingService:
     async def list_plans(self) -> list[PlanInfo]:
         async with SessionLocal() as session:
+            await _sync_canonical_plan_quotas(session)
             rows = (
                 await session.scalars(
                     select(SaasPlanModel)
@@ -147,6 +192,7 @@ class BillingService:
 
     async def ensure_subscription(self, shop_id: UUID, plan_id: str = "free") -> SubscriptionInfo:
         async with SessionLocal() as session:
+            await _sync_canonical_plan_quotas(session)
             existing = await session.scalar(
                 select(ShopSubscriptionModel).where(ShopSubscriptionModel.shop_id == shop_id)
             )

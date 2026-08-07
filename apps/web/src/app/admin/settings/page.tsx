@@ -22,6 +22,8 @@ const DEFAULT_EDITABLE: AdminEditableSettings = {
   maintenance_mode: false,
 };
 
+const POLL_MS = 3000;
+
 export default function AdminSettingsPage() {
   return (
     <AdminShell>
@@ -57,46 +59,76 @@ function SettingsBody({
   const [savingPassword, setSavingPassword] = useState(false);
   const formDirtyRef = useRef(false);
 
-  const load = useCallback(async () => {
-    setBusy(true);
+  const applySettings = useCallback((next: AdminSettingsResponse) => {
+    setData(next);
+    setLive(true);
     setError(null);
-    try {
-      const [next, profile] = await Promise.all([
-        getAdminSettings(accessToken),
-        getAdminProfile(accessToken),
-      ]);
-      setData(next);
+    if (!formDirtyRef.current) {
       setForm({ ...DEFAULT_EDITABLE, ...next.editable });
-      formDirtyRef.current = false;
-      setFullName(profile.full_name);
-      updateSession({ fullName: profile.full_name });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load settings");
-      setData(null);
-    } finally {
-      setBusy(false);
     }
-  }, [accessToken, updateSession]);
+  }, []);
 
+  const load = useCallback(
+    async (quiet = false) => {
+      if (!quiet) {
+        setBusy(true);
+        setError(null);
+      }
+      try {
+        if (quiet) {
+          // Quiet poll: platform settings only — do not clobber form / password fields.
+          applySettings(await getAdminSettings(accessToken));
+        } else {
+          const [next, profile] = await Promise.all([
+            getAdminSettings(accessToken),
+            getAdminProfile(accessToken),
+          ]);
+          applySettings(next);
+          formDirtyRef.current = false;
+          setFullName(profile.full_name);
+          updateSession({ fullName: profile.full_name });
+        }
+      } catch (err) {
+        if (!quiet) {
+          setLive(false);
+          setError(err instanceof Error ? err.message : "Failed to load settings");
+          setData(null);
+        }
+      } finally {
+        if (!quiet) setBusy(false);
+      }
+    },
+    [accessToken, updateSession, applySettings],
+  );
+
+  // REST polling is the reliable live path while this page stays mounted.
   useEffect(() => {
-    void load();
+    void load(false);
+    const id = window.setInterval(() => void load(true), POLL_MS);
+    const onVis = () => {
+      if (document.visibilityState === "visible") void load(true);
+    };
+    const onRefresh = () => void load(true);
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onRefresh);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onRefresh);
+    };
   }, [load]);
 
+  // SSE is best-effort; polls keep settings in sync if the stream stalls.
   useEffect(() => {
-    setLive(false);
     const stop = streamAdminSettings(
       accessToken,
-      (next) => {
-        setData(next);
-        setLive(true);
-        if (!formDirtyRef.current) {
-          setForm({ ...DEFAULT_EDITABLE, ...next.editable });
-        }
+      (next) => applySettings(next),
+      () => {
+        /* polling keeps data fresh */
       },
-      () => setLive(false),
     );
     return stop;
-  }, [accessToken]);
+  }, [accessToken, applySettings]);
 
   async function onSave(e: FormEvent) {
     e.preventDefault();
@@ -110,8 +142,7 @@ function SettingsBody({
         toast_enabled: form.toast_enabled,
         maintenance_mode: form.maintenance_mode,
       });
-      setData(next);
-      setForm({ ...DEFAULT_EDITABLE, ...next.editable });
+      applySettings(next);
       formDirtyRef.current = false;
       setSuccess("Settings saved.");
     } catch (err) {
@@ -178,12 +209,15 @@ function SettingsBody({
 
   return (
     <>
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="font-display text-lg font-semibold tracking-tight">Settings</h1>
           <p className="mt-1 text-xs text-[var(--muted)]">
             Account security and runtime platform knobs. Login username stays in environment
             allowlist.
+            {data.updated_at
+              ? ` · updated ${new Date(data.updated_at).toLocaleString()}`
+              : null}
           </p>
         </div>
         <span

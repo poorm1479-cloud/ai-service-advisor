@@ -72,6 +72,24 @@ class InMemorySchedulingStore:
                 cursor = slot_end
         return [s for s in slots if s.available]
 
+    async def probe_slot_at(
+        self,
+        shop_id: UUID,
+        *,
+        preferred_start: datetime,
+        duration_minutes: int | None = None,
+        repair_type: str | None = None,
+        required_bay: str | None = None,
+    ) -> TimeSlot | None:
+        """Exact-start probe for clock preferences (in-memory grid)."""
+        del repair_type, required_bay
+        openings = await self.list_available_slots(
+            shop_id,
+            days_ahead=14,
+            duration_minutes=duration_minutes,
+        )
+        return SchedulingAgent._find_exact_slot(openings, preferred_start)
+
     async def book(
         self,
         shop_id: UUID,
@@ -83,10 +101,15 @@ class InMemorySchedulingStore:
         notes: str | None = None,
         service_id: UUID | None = None,
         service_name: str | None = None,
+        duration_minutes: int | None = None,
+        repair_type: str | None = None,
+        required_bay: str | None = None,
     ) -> AppointmentRecord:
         from uuid import uuid4
 
         from app.agents.base.errors import AgentValidationError
+
+        del duration_minutes, repair_type, required_bay  # in-memory has no skill matrix
 
         for a in self._appointments.values():
             if (
@@ -111,7 +134,17 @@ class InMemorySchedulingStore:
         return record
 
     async def reschedule(
-        self, shop_id: UUID, appointment_id: UUID, start: datetime, end: datetime
+        self,
+        shop_id: UUID,
+        appointment_id: UUID,
+        start: datetime,
+        end: datetime,
+        *,
+        service_id: UUID | None = None,
+        service_name: str | None = None,
+        duration_minutes: int | None = None,
+        repair_type: str | None = None,
+        required_bay: str | None = None,
     ) -> AppointmentRecord:
         from app.agents.base.errors import AgentValidationError
 
@@ -119,6 +152,7 @@ class InMemorySchedulingStore:
         if existing is None:
             raise AgentValidationError("Appointment not found", agent="scheduling")
         existing.status = "rescheduled"
+        # Prefer newly requested catalog service on move (voice/SMS change).
         return await self.book(
             shop_id,
             start=start,
@@ -126,8 +160,11 @@ class InMemorySchedulingStore:
             customer_id=existing.customer_id,
             vehicle_id=existing.vehicle_id,
             notes=f"Rescheduled from {existing.id}",
-            service_id=existing.service_id,
-            service_name=existing.service_name,
+            service_id=service_id if service_id is not None else existing.service_id,
+            service_name=service_name if service_name is not None else existing.service_name,
+            duration_minutes=duration_minutes,
+            repair_type=repair_type,
+            required_bay=required_bay,
         )
 
     async def cancel(
@@ -226,6 +263,23 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
             and not request.confirm_booking
         ):
             action = SchedulingAction.LIST_SLOTS
+        # Reschedule needs a target visit up front — never demote to ask-time
+        # (which would loop forever with no appointment_id).
+        if action == SchedulingAction.RESCHEDULE and not request.appointment_id:
+            return AgentResult.ok(
+                SchedulingResult(
+                    action=SchedulingAction.RESCHEDULE.value,
+                    success=False,
+                    available_slots=[],
+                    message="no_appointment_to_reschedule",
+                    metadata={"action": "reschedule", "no_appointment": True},
+                    decision=AppointmentDecision(
+                        action="noop",
+                        rationale="No appointment found to reschedule",
+                        confidence=0.0,
+                    ),
+                )
+            )
         if (
             action == SchedulingAction.RESCHEDULE
             and inferred_from_intent
@@ -246,6 +300,8 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
             # Booking path (not an availability ask): ask when they want to come —
             # do not volunteer openings. Soft day/part-of-day still needs a clock
             # unless they asked for the first/last available opening.
+            # Closed / fully booked day → reject immediately (no time question).
+            # time_only = clock already known — only need an explicit day.
             if (
                 not asking_availability
                 and request.time_precision != "clock"
@@ -253,6 +309,31 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                 and not request.prefer_latest
             ):
                 pending_action = self._pending_action_label(request)
+                if (
+                    request.preferred_start is not None
+                    and request.time_precision in {"day", "part_of_day"}
+                ):
+                    openings = await self._store.list_available_slots(
+                        context.shop_id,
+                        days_ahead=request.days_ahead,
+                        duration_minutes=duration,
+                        repair_type=repair_type,
+                    )
+                    closed = self._closed_day_result(
+                        preferred_start=request.preferred_start,
+                        slots=openings,
+                        action=pending_action,
+                        request=request,
+                        context=context,
+                        match=match,
+                        duration=duration,
+                    )
+                    if closed is not None:
+                        return closed
+                clock_known = (
+                    request.time_precision == "time_only"
+                    and request.preferred_start is not None
+                )
                 decision = AppointmentDecision(
                     action="list_slots",
                     days_ahead=request.days_ahead,
@@ -267,7 +348,11 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                     duration_minutes=duration,
                     required_skill=match.skill if match else None,
                     required_bay=match.bay if match else None,
-                    rationale="Ask preferred time — do not volunteer openings"
+                    rationale=(
+                        "Ask preferred day — clock already known"
+                        if clock_known
+                        else "Ask preferred time — do not volunteer openings"
+                    )
                     + (f" for {match.name}" if match else ""),
                     confidence=match.confidence if match else 1.0,
                     offer_policy="ask_time",
@@ -282,6 +367,16 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                         metadata={
                             "ask_preferred_time": True,
                             "action": pending_action,
+                            # Preserve spoken clock; reply asks day only.
+                            **(
+                                {
+                                    "needs_date": True,
+                                    "time_precision": "time_only",
+                                    "preferred_start": request.preferred_start.isoformat(),
+                                }
+                                if clock_known
+                                else {}
+                            ),
                         },
                         decision=decision,
                     )
@@ -329,7 +424,16 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                 request.preferred_start is not None
                 and request.time_precision == "clock"
             ):
-                chosen = self._find_exact_slot(slots, request.preferred_start)
+                chosen = await self._resolve_clock_slot(
+                    slots,
+                    preferred_start=request.preferred_start,
+                    context=context,
+                    duration=duration,
+                    repair_type=repair_type,
+                    required_bay=match.bay if match else None,
+                    days_ahead=request.days_ahead,
+                    exclude_appointment_id=request.appointment_id,
+                )
                 if chosen is None:
                     decision = AppointmentDecision(
                         action="list_slots",
@@ -355,11 +459,11 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                             success=False,
                             available_slots=[],
                             message="preferred_time_unavailable",
-                            metadata={
-                                "preferred_time_unavailable": True,
-                                "action": "book",
-                                "preferred_start": request.preferred_start.isoformat(),
-                            },
+                            metadata=self._unavailable_meta(
+                                preferred_start=request.preferred_start,
+                                slots=slots,
+                                action="book",
+                            ),
                             decision=decision,
                         )
                     )
@@ -498,6 +602,17 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                 request.prefer_earliest or request.prefer_latest
             ):
                 pending_action = self._pending_action_label(request)
+                closed = self._closed_day_result(
+                    preferred_start=request.preferred_start,
+                    slots=slots,
+                    action=pending_action,
+                    request=request,
+                    context=context,
+                    match=match,
+                    duration=duration,
+                )
+                if closed is not None:
+                    return closed
                 return AgentResult.ok(
                     SchedulingResult(
                         action=SchedulingAction.LIST_SLOTS.value,
@@ -543,7 +658,16 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                 else:
                     slot = None
             else:
-                slot = self._find_exact_slot(slots, request.preferred_start)
+                slot = await self._resolve_clock_slot(
+                    slots,
+                    preferred_start=request.preferred_start,
+                    context=context,
+                    duration=duration,
+                    repair_type=repair_type,
+                    required_bay=match.bay if match else None,
+                    days_ahead=request.days_ahead,
+                    exclude_appointment_id=request.appointment_id,
+                )
             if slot is None:
                 return AgentResult.ok(
                     SchedulingResult(
@@ -551,11 +675,11 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                         success=False,
                         available_slots=[],
                         message="preferred_time_unavailable",
-                        metadata={
-                            "preferred_time_unavailable": True,
-                            "action": "book",
-                            "preferred_start": request.preferred_start.isoformat(),
-                        },
+                        metadata=self._unavailable_meta(
+                            preferred_start=request.preferred_start,
+                            slots=slots,
+                            action="book",
+                        ),
                         decision=AppointmentDecision(
                             action="list_slots",
                             days_ahead=request.days_ahead,
@@ -652,17 +776,20 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                 repair_type=repair_type,
             )
             if not request.appointment_id:
+                # Soft fail — do not emit a mutative decision without a visit.
                 return AgentResult.ok(
                     SchedulingResult(
                         action=action.value,
                         success=False,
-                        available_slots=slots,
-                        message="appointment_id required to reschedule; slots provided",
+                        available_slots=[],
+                        message="no_appointment_to_reschedule",
+                        metadata={"action": "reschedule", "no_appointment": True},
                         decision=AppointmentDecision(
-                            action="reschedule",
-                            rationale="Missing appointment_id",
+                            action="noop",
+                            rationale="No appointment found to reschedule",
                             confidence=0.0,
                             service_id=match.service_id if match else None,
+                            service_name=match.name if match else None,
                             duration_minutes=duration,
                         ),
                     )
@@ -673,6 +800,24 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
             # Day / part-of-day: offer openings instead of inventing a clock time.
             if inferred_from_intent and not request.confirm_booking:
                 if request.time_precision in {"day", "part_of_day"}:
+                    same_day = self._same_day_openings(
+                        slots, request.preferred_start
+                    )
+                    if request.preferred_start is not None and not same_day:
+                        pending_action = self._pending_action_label(request)
+                        closed = self._closed_day_result(
+                            preferred_start=request.preferred_start,
+                            slots=slots,
+                            action=pending_action
+                            if pending_action == "reschedule"
+                            else "reschedule",
+                            request=request,
+                            context=context,
+                            match=match,
+                            duration=duration,
+                        )
+                        if closed is not None:
+                            return closed
                     soft_slots = self._filter_slots_for_preference(
                         slots,
                         preferred_start=request.preferred_start,
@@ -698,11 +843,17 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                     )
                 # Clock preference must match an opening exactly — never snap to
                 # the next available (that is not the time the customer said).
-                if (
-                    request.preferred_start is not None
-                    and request.time_precision == "clock"
-                ):
-                    slot = self._find_exact_slot(slots, request.preferred_start)
+                if request.preferred_start is not None:
+                    slot = await self._resolve_clock_slot(
+                        slots,
+                        preferred_start=request.preferred_start,
+                        context=context,
+                        duration=duration,
+                        repair_type=repair_type,
+                        required_bay=match.bay if match else None,
+                        days_ahead=request.days_ahead,
+                        exclude_appointment_id=request.appointment_id,
+                    )
                     if slot is None:
                         return AgentResult.ok(
                             SchedulingResult(
@@ -710,11 +861,11 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                                 success=False,
                                 available_slots=[],
                                 message="preferred_time_unavailable",
-                                metadata={
-                                    "preferred_time_unavailable": True,
-                                    "action": "reschedule",
-                                    "preferred_start": request.preferred_start.isoformat(),
-                                },
+                                metadata=self._unavailable_meta(
+                                    preferred_start=request.preferred_start,
+                                    slots=slots,
+                                    action="reschedule",
+                                ),
                                 decision=AppointmentDecision(
                                     action="list_slots",
                                     appointment_id=request.appointment_id,
@@ -725,11 +876,40 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                                     rationale="Preferred clock time unavailable to reschedule",
                                     confidence=match.confidence if match else 0.7,
                                     offer_policy="unavailable",
+                                    hold_action="reschedule",
                                 ),
                             )
                         )
+                elif not inferred_from_intent:
+                    # Explicit RESCHEDULE API/action with no preferred time —
+                    # use next free opening (conversation path never reaches here
+                    # without a time preference).
+                    slot = slots[0]
                 else:
-                    slot = self._select_slot(slots, request.preferred_start)
+                    # No preferred time yet — ask, do not invent slots[0].
+                    return AgentResult.ok(
+                        SchedulingResult(
+                            action=SchedulingAction.LIST_SLOTS.value,
+                            success=True,
+                            available_slots=[],
+                            message="ask_preferred_time",
+                            metadata={
+                                "ask_preferred_time": True,
+                                "action": "reschedule",
+                            },
+                            decision=AppointmentDecision(
+                                action="list_slots",
+                                appointment_id=request.appointment_id,
+                                service_id=match.service_id if match else None,
+                                service_name=match.name if match else None,
+                                duration_minutes=duration,
+                                rationale="No preferred time for reschedule",
+                                confidence=match.confidence if match else 0.7,
+                                offer_policy="ask_time",
+                                hold_action="reschedule",
+                            ),
+                        )
+                    )
                 end = slot.end
                 if duration:
                     end = slot.start + timedelta(minutes=duration)
@@ -759,17 +939,80 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                         ),
                     )
                 )
-            if (
-                request.preferred_start is not None
-                and request.time_precision == "clock"
-            ):
-                slot = self._find_exact_slot(slots, request.preferred_start)
+            # Confirmed execute path — exact preferred only (never nearest opening).
+            if request.prefer_earliest or request.prefer_latest:
+                filtered = self._filter_slots_for_preference(
+                    slots,
+                    preferred_start=request.preferred_start,
+                    preferred_end=request.preferred_end,
+                    time_precision=request.time_precision or "day",
+                )
+                pool = filtered or slots
+                slot = pool[-1] if request.prefer_latest else pool[0]
+            elif request.preferred_start is not None:
+                slot = await self._resolve_clock_slot(
+                    slots,
+                    preferred_start=request.preferred_start,
+                    context=context,
+                    duration=duration,
+                    repair_type=repair_type,
+                    required_bay=match.bay if match else None,
+                    days_ahead=request.days_ahead,
+                    exclude_appointment_id=request.appointment_id,
+                )
                 if slot is None:
-                    return AgentResult.fail(
-                        "No available slots matching preferred start"
+                    return AgentResult.ok(
+                        SchedulingResult(
+                            action=SchedulingAction.LIST_SLOTS.value,
+                            success=False,
+                            available_slots=[],
+                            message="preferred_time_unavailable",
+                            metadata=self._unavailable_meta(
+                                preferred_start=request.preferred_start,
+                                slots=slots,
+                                action="reschedule",
+                            ),
+                            decision=AppointmentDecision(
+                                action="list_slots",
+                                appointment_id=request.appointment_id,
+                                preferred_start=request.preferred_start,
+                                service_id=match.service_id if match else None,
+                                service_name=match.name if match else None,
+                                duration_minutes=duration,
+                                rationale="Preferred clock time unavailable to reschedule",
+                                confidence=match.confidence if match else 0.7,
+                                offer_policy="unavailable",
+                                hold_action="reschedule",
+                            ),
+                        )
                     )
+            elif not inferred_from_intent:
+                # Dashboard-style RESCHEDULE without a preferred clock.
+                slot = slots[0]
             else:
-                slot = self._select_slot(slots, request.preferred_start)
+                return AgentResult.ok(
+                    SchedulingResult(
+                        action=SchedulingAction.LIST_SLOTS.value,
+                        success=True,
+                        available_slots=[],
+                        message="ask_preferred_time",
+                        metadata={
+                            "ask_preferred_time": True,
+                            "action": "reschedule",
+                        },
+                        decision=AppointmentDecision(
+                            action="list_slots",
+                            appointment_id=request.appointment_id,
+                            service_id=match.service_id if match else None,
+                            service_name=match.name if match else None,
+                            duration_minutes=duration,
+                            rationale="Confirmed reschedule without preferred time",
+                            confidence=match.confidence if match else 0.7,
+                            offer_policy="ask_time",
+                            hold_action="reschedule",
+                        ),
+                    )
+                )
             end = slot.end
             if duration:
                 end = slot.start + timedelta(minutes=duration)
@@ -778,12 +1021,13 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                 appointment_id=request.appointment_id,
                 recommended_slot_start=slot.start,
                 recommended_slot_end=end,
+                preferred_start=request.preferred_start,
                 service_id=match.service_id if match else None,
                 service_name=match.name if match else None,
                 duration_minutes=duration,
                 required_skill=match.skill if match else None,
                 required_bay=match.bay if match else None,
-                rationale="Recommend reschedule to next available slot",
+                rationale="Recommend reschedule to exact preferred slot",
             )
             return AgentResult.ok(
                 SchedulingResult(
@@ -797,7 +1041,20 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
 
         if action == SchedulingAction.CANCEL:
             if not request.appointment_id:
-                return AgentResult.fail("appointment_id required to cancel")
+                # Soft fail — never escalate the whole call for a missing visit.
+                return AgentResult.ok(
+                    SchedulingResult(
+                        action=action.value,
+                        success=False,
+                        message="no_appointment_to_cancel",
+                        metadata={"action": "cancel", "no_appointment": True},
+                        decision=AppointmentDecision(
+                            action="noop",
+                            rationale="No appointment found to cancel",
+                            confidence=0.0,
+                        ),
+                    )
+                )
             # Chat path: ask for explicit cancel confirmation before mutating.
             if inferred_from_intent and not request.confirm_booking:
                 return AgentResult.ok(
@@ -915,6 +1172,112 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
         return when.astimezone(DEFAULT_SHOP_TZ).date()
 
     @staticmethod
+    def _same_day_openings(
+        slots: list[TimeSlot],
+        preferred_start: datetime | None,
+    ) -> list[TimeSlot]:
+        """Openings on the preferred calendar day only (no multi-day fallback)."""
+        if preferred_start is None:
+            return []
+        day = SchedulingAgent._shop_local_date(preferred_start)
+        return [
+            s for s in slots if SchedulingAgent._shop_local_date(s.start) == day
+        ]
+
+    def _closed_day_result(
+        self,
+        *,
+        preferred_start: datetime | None,
+        slots: list[TimeSlot],
+        action: str,
+        request: SchedulingRequest,
+        context: AgentContext,
+        match: CatalogServiceMatch | None,
+        duration: int | None,
+    ) -> AgentResult | None:
+        """If preferred day has zero openings, reject immediately (do not ask time)."""
+        if preferred_start is None:
+            return None
+        if self._same_day_openings(slots, preferred_start):
+            return None
+        hold = action if action in {"book", "reschedule"} else "book"
+        meta = self._unavailable_meta(
+            preferred_start=preferred_start,
+            slots=slots,
+            action=hold,
+        )
+        # Soft day preference on a closed day — re-ask date only (no clock).
+        meta["unavailable_aspect"] = "date"
+        meta["closed_day"] = True
+        return AgentResult.ok(
+            SchedulingResult(
+                action=SchedulingAction.LIST_SLOTS.value,
+                success=False,
+                available_slots=[],
+                message="preferred_time_unavailable",
+                metadata=meta,
+                decision=AppointmentDecision(
+                    action="list_slots",
+                    days_ahead=request.days_ahead,
+                    customer_id=request.customer_id or context.customer_id,
+                    vehicle_id=request.vehicle_id or context.vehicle_id,
+                    appointment_id=request.appointment_id,
+                    preferred_start=preferred_start,
+                    preferred_end=request.preferred_end,
+                    requested_service=request.requested_service,
+                    service_id=match.service_id if match else None,
+                    service_name=match.name if match else None,
+                    duration_minutes=duration,
+                    required_skill=match.skill if match else None,
+                    required_bay=match.bay if match else None,
+                    rationale="Preferred day has no openings (closed or full)",
+                    confidence=match.confidence if match else 0.7,
+                    offer_policy="unavailable",
+                    hold_action=hold,  # type: ignore[arg-type]
+                ),
+            )
+        )
+
+    @staticmethod
+    def classify_unavailable_aspect(
+        slots: list[TimeSlot],
+        preferred_start: datetime | None,
+    ) -> str:
+        """Which half of preferred date/time failed: ``date``, ``time``, or ``both``.
+
+        - Same-day openings exist → only the clock is wrong → re-ask time.
+        - No openings that day (but slots elsewhere) → day is wrong → re-ask date.
+        - No openings at all, or unknown preferred start → re-ask either.
+        """
+        if preferred_start is None or not slots:
+            return "both"
+        day = SchedulingAgent._shop_local_date(preferred_start)
+        same_day = any(
+            SchedulingAgent._shop_local_date(s.start) == day for s in slots
+        )
+        if same_day:
+            return "time"
+        return "date"
+
+    @staticmethod
+    def _unavailable_meta(
+        *,
+        preferred_start: datetime | None,
+        slots: list[TimeSlot],
+        action: str = "book",
+    ) -> dict:
+        meta: dict = {
+            "preferred_time_unavailable": True,
+            "unavailable_aspect": SchedulingAgent.classify_unavailable_aspect(
+                slots, preferred_start
+            ),
+            "action": action,
+        }
+        if preferred_start is not None:
+            meta["preferred_start"] = preferred_start.isoformat()
+        return meta
+
+    @staticmethod
     def _filter_slots_for_preference(
         slots: list[TimeSlot],
         *,
@@ -958,6 +1321,62 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
 
         pref = _local(preferred)
         return next((s for s in slots if _local(s.start) == pref), None)
+
+    async def _resolve_clock_slot(
+        self,
+        slots: list[TimeSlot],
+        *,
+        preferred_start: datetime | None,
+        context: AgentContext,
+        duration: int | None,
+        repair_type: str | None,
+        required_bay: str | None = None,
+        days_ahead: int = 14,
+        exclude_appointment_id: UUID | None = None,
+    ) -> TimeSlot | None:
+        """Match preferred clock in ranked openings, else capacity-probe exact start.
+
+        Rank lists are a short subset of free windows; free staff at the requested
+        minute must still win via store.probe_slot_at when available.
+        When moving an existing visit, exclude it so same-time reschedule works.
+        """
+        del days_ahead  # reserved for store implementations that scan a day range
+        exact = self._find_exact_slot(slots, preferred_start)
+        if exact is not None:
+            return exact
+        if preferred_start is None:
+            return None
+        probe = getattr(self._store, "probe_slot_at", None)
+        if not callable(probe):
+            return None
+        try:
+            return await probe(
+                context.shop_id,
+                preferred_start=preferred_start,
+                duration_minutes=duration,
+                repair_type=repair_type,
+                required_bay=required_bay,
+                exclude_appointment_id=exclude_appointment_id,
+            )
+        except TypeError:
+            # Older / partial doubles: omit exclude, then omit optional kwargs.
+            try:
+                return await probe(
+                    context.shop_id,
+                    preferred_start=preferred_start,
+                    duration_minutes=duration,
+                    repair_type=repair_type,
+                    required_bay=required_bay,
+                )
+            except TypeError:
+                try:
+                    return await probe(
+                        context.shop_id, preferred_start=preferred_start
+                    )
+                except Exception:  # noqa: BLE001
+                    return None
+        except Exception:  # noqa: BLE001 — treat probe failure as unavailable
+            return None
 
     @staticmethod
     def _select_slot(slots: list[TimeSlot], preferred: datetime | None) -> TimeSlot:

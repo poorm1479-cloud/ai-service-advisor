@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
 from app.marketing.ai_chooser import MarketingAiChooser
 from app.marketing.channels import ChannelRouter
-from app.marketing.enums import CampaignStatus, MessageStatus, QueueItemState
+from app.marketing.enums import CampaignStatus, Channel, MessageStatus, QueueItemState
 from app.marketing.models import Campaign, CampaignMessage, MarketingLog
 from app.marketing.queue import MessageQueue
 from app.marketing.store import MarketingStorePort
@@ -39,8 +39,24 @@ class CampaignScheduler:
             campaign.scheduled_start = plan_default.send_at
         await self._store.save_campaign(campaign)
 
+        # Skip customers already messaged via SMS/email within the campaign frequency window.
+        frequency_days = (
+            campaign.ai_defaults.frequency_days
+            if campaign.ai_defaults and campaign.ai_defaults.frequency_days > 0
+            else campaign.max_sends_per_customer_days
+        )
+        since = now - timedelta(days=max(frequency_days, 1))
+        suppressed = await self._store.recently_contacted_customer_ids(
+            campaign.shop_id,
+            campaign_type=campaign.campaign_type.value,
+            channels=[Channel.SMS, Channel.EMAIL],
+            since=since,
+        )
+
         messages: list[CampaignMessage] = []
         for member in campaign.audience:
+            if member.customer_id in suppressed:
+                continue
             plan = self._chooser.plan_for_member(campaign, member, now=now)
             msg = CampaignMessage(
                 id=uuid4(),
@@ -73,9 +89,18 @@ class CampaignScheduler:
         )
         return messages
 
-    async def process_due(self, *, now: datetime | None = None, limit: int = 100) -> list[CampaignMessage]:
+    async def process_due(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = 100,
+        shop_id: UUID | None = None,
+        campaign_id: UUID | None = None,
+    ) -> list[CampaignMessage]:
         now = now or datetime.now(timezone.utc)
-        due = await self._store.list_due_queue(now=now, limit=limit)
+        due = await self._store.list_due_queue(
+            now=now, limit=limit, shop_id=shop_id, campaign_id=campaign_id
+        )
         processed: list[CampaignMessage] = []
 
         # Mark parent campaigns running
@@ -132,11 +157,10 @@ class CampaignScheduler:
                 )
 
         for cid in campaign_ids:
-            # Pick any shop from processed/due
-            shop_id = due[0].shop_id if due else None
-            if shop_id is None:
+            item_shop = next((d.shop_id for d in due if d.campaign_id == cid), None)
+            if item_shop is None:
                 continue
-            campaign = await self._store.get_campaign(shop_id, cid)
+            campaign = await self._store.get_campaign(item_shop, cid)
             if campaign and campaign.status == CampaignStatus.SCHEDULED:
                 campaign.status = CampaignStatus.RUNNING
                 await self._store.save_campaign(campaign)

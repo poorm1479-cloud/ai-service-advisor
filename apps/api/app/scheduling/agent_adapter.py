@@ -52,7 +52,7 @@ class IntelligenceSchedulingStore:
                     estimated_duration_min=duration_minutes,
                 ),
                 days_ahead=days_ahead,
-                limit=40,
+                limit=80,
             )
             if slots:
                 break
@@ -60,6 +60,56 @@ class IntelligenceSchedulingStore:
             TimeSlot(start=s.start, end=s.end, available=True)
             for s in slots
         ]
+
+    async def probe_slot_at(
+        self,
+        shop_id: UUID,
+        *,
+        preferred_start: datetime,
+        duration_minutes: int | None = None,
+        repair_type: str | None = None,
+        required_bay: str | None = None,
+        exclude_appointment_id: UUID | None = None,
+    ) -> TimeSlot | None:
+        """True capacity check at an exact preferred start (ignores top-N rank list).
+
+        Ranking only surfaces a subset of free windows. Voice/SMS clock times must
+        probe the same builder the UI / book path uses so free staff is honored.
+        ``exclude_appointment_id`` frees capacity held by the visit being moved
+        (reschedule / same-time service swap must not fail on itself).
+        """
+        await self._ensure_synced(shop_id)
+        skill = (repair_type or "").strip().lower() or "general"
+        start = preferred_start
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=self._intel._availability._shop_tz)  # noqa: SLF001
+        start = start.replace(second=0, microsecond=0)
+        duration = (
+            int(duration_minutes)
+            if duration_minutes and int(duration_minutes) > 0
+            else None
+        )
+        attempts = [skill]
+        if skill and skill != "general":
+            attempts = [skill, "general", ""]
+        elif skill == "general":
+            attempts = ["general", ""]
+        for attempt in attempts:
+            exact, _reason = await self._intel._build_slot_at(  # noqa: SLF001
+                BookingRequest(
+                    shop_id=shop_id,
+                    preferred_start=start,
+                    repair_type=attempt or "general",
+                    priority="normal",
+                    estimated_duration_min=duration,
+                    required_bay=(required_bay or "").strip().lower() or None,
+                ),
+                start,
+                ignore_appointment_id=exclude_appointment_id,
+            )
+            if exact is not None:
+                return TimeSlot(start=exact.start, end=exact.end, available=True)
+        return None
 
     async def book(
         self,
@@ -72,9 +122,18 @@ class IntelligenceSchedulingStore:
         notes: str | None = None,
         service_id: UUID | None = None,
         service_name: str | None = None,
+        duration_minutes: int | None = None,
+        repair_type: str | None = None,
+        required_bay: str | None = None,
     ) -> AppointmentRecord:
         await self._ensure_synced(shop_id)
-        duration = max(30, int((end - start).total_seconds() / 60))
+        span = max(1, int((end - start).total_seconds() / 60))
+        duration = (
+            int(duration_minutes)
+            if duration_minutes and int(duration_minutes) > 0
+            else max(30, span)
+        )
+        skill = (repair_type or "").strip().lower() or "general"
         result = await self._intel.book(
             BookingRequest(
                 shop_id=shop_id,
@@ -83,6 +142,8 @@ class IntelligenceSchedulingStore:
                 customer_id=customer_id,
                 vehicle_id=vehicle_id,
                 estimated_duration_min=duration,
+                repair_type=skill,
+                required_bay=(required_bay or "").strip().lower() or None,
                 source="agent",
                 notes=notes,
                 service_id=service_id,
@@ -100,12 +161,28 @@ class IntelligenceSchedulingStore:
         return _to_record(result.appointment)
 
     async def reschedule(
-        self, shop_id: UUID, appointment_id: UUID, start: datetime, end: datetime
+        self,
+        shop_id: UUID,
+        appointment_id: UUID,
+        start: datetime,
+        end: datetime,
+        *,
+        service_id: UUID | None = None,
+        service_name: str | None = None,
+        duration_minutes: int | None = None,
+        repair_type: str | None = None,
+        required_bay: str | None = None,
     ) -> AppointmentRecord:
+        del end  # intelligence path derives end from duration + preferred_start
         result = await self._intel.reschedule(
             shop_id=shop_id,
             appointment_id=appointment_id,
             preferred_start=start,
+            service_id=service_id,
+            service_name=service_name,
+            estimated_duration_min=duration_minutes,
+            repair_type=repair_type,
+            required_bay=required_bay,
         )
         if not result.success or result.appointment is None:
             raise AgentValidationError(

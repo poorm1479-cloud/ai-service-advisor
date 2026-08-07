@@ -32,6 +32,9 @@ class AppointmentPluginService:
         notes: str | None = None,
         service_id: UUID | None = None,
         service_name: str | None = None,
+        duration_minutes: int | None = None,
+        repair_type: str | None = None,
+        required_bay: str | None = None,
     ) -> AppointmentRecord:
         return await self._store.book(
             shop_id,
@@ -42,12 +45,35 @@ class AppointmentPluginService:
             notes=notes,
             service_id=service_id,
             service_name=service_name,
+            duration_minutes=duration_minutes,
+            repair_type=repair_type,
+            required_bay=required_bay,
         )
 
     async def reschedule(
-        self, shop_id: UUID, appointment_id: UUID, start: datetime, end: datetime
+        self,
+        shop_id: UUID,
+        appointment_id: UUID,
+        start: datetime,
+        end: datetime,
+        *,
+        service_id: UUID | None = None,
+        service_name: str | None = None,
+        duration_minutes: int | None = None,
+        repair_type: str | None = None,
+        required_bay: str | None = None,
     ) -> AppointmentRecord:
-        return await self._store.reschedule(shop_id, appointment_id, start, end)
+        return await self._store.reschedule(
+            shop_id,
+            appointment_id,
+            start,
+            end,
+            service_id=service_id,
+            service_name=service_name,
+            duration_minutes=duration_minutes,
+            repair_type=repair_type,
+            required_bay=required_bay,
+        )
 
     async def cancel(
         self, shop_id: UUID, appointment_id: UUID, reason: str | None = None

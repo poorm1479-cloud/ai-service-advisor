@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AdminShell, Panel, Stat } from "@/components/admin/AdminShell";
 import { getAdminUsage, statusTone, streamAdminUsage, UsageResponse } from "@/lib/admin";
+
+const POLL_MS = 3000;
 
 export default function AdminAiUsagePage() {
   return (
@@ -18,43 +20,69 @@ function AiUsageBody({ accessToken }: { accessToken: string }) {
   const [busy, setBusy] = useState(true);
   const [live, setLive] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    setBusy(true);
-    setError(null);
-    void getAdminUsage(accessToken)
-      .then((next) => {
-        if (!cancelled) {
-          setData(next);
-          setError(null);
+  const applyData = useCallback((next: UsageResponse) => {
+    setData((prev) => {
+      if (prev?.generated_at && next.generated_at) {
+        const prevTs = Date.parse(prev.generated_at);
+        const nextTs = Date.parse(next.generated_at);
+        if (Number.isFinite(prevTs) && Number.isFinite(nextTs) && nextTs < prevTs) {
+          return prev;
         }
-      })
-      .catch((err) => {
-        if (!cancelled) {
+      }
+      return next;
+    });
+    setLive(true);
+    setError(null);
+  }, []);
+
+  const load = useCallback(
+    async (quiet = false) => {
+      if (!quiet) {
+        setBusy(true);
+        setError(null);
+      }
+      try {
+        applyData(await getAdminUsage(accessToken));
+      } catch (err) {
+        if (!quiet) {
+          setLive(false);
           setError(err instanceof Error ? err.message : "Failed to load AI usage");
         }
-      })
-      .finally(() => {
-        if (!cancelled) setBusy(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [accessToken]);
+      } finally {
+        if (!quiet) setBusy(false);
+      }
+    },
+    [accessToken, applyData],
+  );
 
+  // REST polling is the reliable live path while this page stays mounted.
   useEffect(() => {
-    setLive(false);
+    void load(false);
+    const id = window.setInterval(() => void load(true), POLL_MS);
+    const onVis = () => {
+      if (document.visibilityState === "visible") void load(true);
+    };
+    const onRefresh = () => void load(true);
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onRefresh);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onRefresh);
+    };
+  }, [load]);
+
+  // SSE is best-effort; polls keep usage accurate if the stream stalls.
+  useEffect(() => {
     const stop = streamAdminUsage(
       accessToken,
-      (next) => {
-        setData(next);
-        setLive(true);
-        setError(null);
+      (next) => applyData(next),
+      () => {
+        /* polling keeps data fresh */
       },
-      () => setLive(false),
     );
     return stop;
-  }, [accessToken]);
+  }, [accessToken, applyData]);
 
   if (error && !data) return <p className="text-sm text-red-700">{error}</p>;
   if (!data) return <p className="text-sm text-[var(--muted)]">{busy ? "Loading…" : "No data"}</p>;
@@ -64,8 +92,11 @@ function AiUsageBody({ accessToken }: { accessToken: string }) {
   const totals = data.totals;
 
   return (
-    <>
-      <div className="flex items-center justify-end">
+    <div className="flex h-[calc(100dvh-7.25rem)] flex-col gap-4 overflow-hidden sm:h-[calc(100dvh-7.75rem)] md:h-[calc(100dvh-9.25rem)] md:gap-5">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-[var(--muted)]">
+          Updated {data.generated_at ? new Date(data.generated_at).toLocaleString() : "—"}
+        </p>
         <span
           className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium ${
             live
@@ -80,7 +111,7 @@ function AiUsageBody({ accessToken }: { accessToken: string }) {
         </span>
       </div>
 
-      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <section className="grid shrink-0 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Period" value={data.period} />
         <Stat label="AI requests" value={String(totals.ai_requests ?? totals.ai_calls)} />
         <Stat
@@ -94,17 +125,17 @@ function AiUsageBody({ accessToken }: { accessToken: string }) {
         />
       </section>
 
-      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <section className="grid shrink-0 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="SMS inbound" value={String(sms.inbound_received ?? 0)} hint="From database" />
         <Stat label="SMS outbound" value={String(sms.outbound_sent ?? 0)} />
         <Stat label="Voice started" value={String(voice.calls_started ?? 0)} hint="From database" />
         <Stat label="Voice completed" value={String(voice.calls_completed ?? 0)} />
       </section>
 
-      <Panel title="Per-shop AI & SMS usage">
-        <div className="overflow-x-auto">
+      <Panel className="flex min-h-0 flex-1 flex-col" title="Per-shop AI & SMS usage">
+        <div className="asa-scroll min-h-0 flex-1 overflow-auto overscroll-contain">
           <table className="min-w-full text-left text-sm">
-            <thead className="border-b border-[var(--line)] bg-[var(--background)] text-[var(--muted)]">
+            <thead className="sticky top-0 z-10 border-b border-[var(--line)] bg-[var(--background)] text-[var(--muted)]">
               <tr>
                 <th className="px-5 py-2 font-medium">Shop</th>
                 <th className="px-5 py-2 font-medium">Plan</th>
@@ -143,6 +174,6 @@ function AiUsageBody({ accessToken }: { accessToken: string }) {
           </table>
         </div>
       </Panel>
-    </>
+    </div>
   );
 }

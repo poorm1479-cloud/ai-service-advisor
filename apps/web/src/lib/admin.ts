@@ -331,6 +331,10 @@ export type SystemStatus = {
   readiness: AdminDashboard["system"];
   sms: Record<string, number | string | null>;
   voice: Record<string, number | string | null>;
+  providers?: {
+    sms?: { enabled?: boolean; provider?: string; queue_depth?: number | null };
+    voice?: { enabled?: boolean; provider?: string; queue_depth?: number | null };
+  };
   incidents: {
     id: string;
     title: string;
@@ -417,7 +421,7 @@ export async function changeAdminPassword(
   });
 }
 
-/** Open a typed admin SSE stream. Returns cleanup. */
+/** Open a typed admin SSE stream with auto-reconnect. Returns cleanup. */
 function streamAdminSse<T>(
   path: string,
   accessToken: string,
@@ -428,55 +432,62 @@ function streamAdminSse<T>(
   onPing?: () => void,
 ): () => void {
   const url = `${getApiUrl()}${path}`;
-  const controller = new AbortController();
   let closed = false;
+  let controller: AbortController | null = null;
+  const reconnectMs = 2000;
 
   (async () => {
-    try {
-      const res = await fetch(url, {
-        headers: {
-          Accept: "text/event-stream",
-          Authorization: `Bearer ${accessToken}`,
-        },
-        signal: controller.signal,
-      });
-      if (!res.ok || !res.body) {
-        throw new Error(await parseError(res));
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (!closed) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const chunks = buffer.split("\n\n");
-        buffer = chunks.pop() ?? "";
-        for (const chunk of chunks) {
-          const lines = chunk.split("\n");
-          let event = "message";
-          let data = "";
-          for (const line of lines) {
-            if (line.startsWith("event:")) event = line.slice(6).trim();
-            if (line.startsWith("data:")) data += line.slice(5).trim();
-          }
-          if (event === eventName && data) {
-            onData(JSON.parse(data) as T);
-          } else if (event === "ping") {
-            onPing?.();
+    while (!closed) {
+      controller = new AbortController();
+      try {
+        const res = await fetch(url, {
+          headers: {
+            Accept: "text/event-stream",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          signal: controller.signal,
+        });
+        if (!res.ok || !res.body) {
+          throw new Error(await parseError(res));
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (!closed) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const chunks = buffer.split("\n\n");
+          buffer = chunks.pop() ?? "";
+          for (const chunk of chunks) {
+            const lines = chunk.split("\n");
+            let event = "message";
+            let data = "";
+            for (const line of lines) {
+              if (line.startsWith("event:")) event = line.slice(6).trim();
+              if (line.startsWith("data:")) data += line.slice(5).trim();
+            }
+            if (event === eventName && data) {
+              onData(JSON.parse(data) as T);
+            } else if (event === "ping") {
+              onPing?.();
+            }
           }
         }
-      }
-    } catch (err) {
-      if (!closed && !(err instanceof DOMException && err.name === "AbortError")) {
+      } catch (err) {
+        if (closed || (err instanceof DOMException && err.name === "AbortError")) {
+          break;
+        }
         onError?.(err instanceof Error ? err : new Error(errorLabel));
       }
+      if (closed) break;
+      await new Promise((r) => setTimeout(r, reconnectMs));
     }
   })();
 
   return () => {
     closed = true;
-    controller.abort();
+    controller?.abort();
   };
 }
 
@@ -502,6 +513,7 @@ export function streamAdminOrganizations(
   accessToken: string,
   onData: (data: OrganizationsResponse) => void,
   onError?: (err: Error) => void,
+  onPing?: () => void,
 ): () => void {
   return streamAdminSse(
     "/v1/admin/organizations/stream",
@@ -510,6 +522,7 @@ export function streamAdminOrganizations(
     onData,
     onError,
     "Organizations stream failed",
+    onPing,
   );
 }
 
@@ -563,6 +576,7 @@ export function streamAdminSystem(
   accessToken: string,
   onData: (data: SystemStatus) => void,
   onError?: (err: Error) => void,
+  onPing?: () => void,
 ): () => void {
   return streamAdminSse(
     "/v1/admin/system/stream",
@@ -571,6 +585,7 @@ export function streamAdminSystem(
     onData,
     onError,
     "System stream failed",
+    onPing,
   );
 }
 
@@ -722,6 +737,23 @@ export type AdminUsersResponse = {
 
 export async function getAdminUsers(accessToken: string): Promise<AdminUsersResponse> {
   return adminFetch(accessToken, "/v1/admin/users");
+}
+
+export function streamAdminUsers(
+  accessToken: string,
+  onData: (data: AdminUsersResponse) => void,
+  onError?: (err: Error) => void,
+  onPing?: () => void,
+): () => void {
+  return streamAdminSse(
+    "/v1/admin/users/stream",
+    accessToken,
+    "users",
+    onData,
+    onError,
+    "Users stream failed",
+    onPing,
+  );
 }
 
 export async function getAdminSystem(accessToken: string): Promise<SystemStatus> {

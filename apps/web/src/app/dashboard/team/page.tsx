@@ -2,7 +2,7 @@
 
 import { FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
 import { PasswordField } from "@/components/PasswordField";
-import { CAPABILITY_LABELS, StaffCapability } from "@/lib/api";
+import { CAPABILITY_LABELS, StaffCapability, getApiUrl, loadSession } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { formatPhoneInput, PHONE_PLACEHOLDER } from "@/lib/phone";
 import {
@@ -25,12 +25,33 @@ import {
 
 const HIDDEN_CAPS = new Set<StaffCapability>(HIDDEN_STAFF_CAPABILITIES);
 
+type SeatQuota = { used: number; limit: number };
+
+async function fetchSeatQuota(): Promise<SeatQuota | null> {
+  const s = loadSession();
+  if (!s) return null;
+  try {
+    const res = await fetch(`${getApiUrl()}/v1/billing/subscription`, {
+      headers: { Authorization: `Bearer ${s.accessToken}` },
+    });
+    if (!res.ok) return null;
+    const body = await res.json();
+    const used = Number(body?.usage?.usage?.seats);
+    const limit = Number(body?.usage?.limits?.seats);
+    if (!Number.isFinite(used) || !Number.isFinite(limit)) return null;
+    return { used, limit };
+  } catch {
+    return null;
+  }
+}
+
 export default function TeamPage() {
   const { session, loading: authLoading } = useAuth();
   const isOwner = session?.role === "owner";
 
   const [members, setMembers] = useState<ShopMember[]>([]);
   const [catalog, setCatalog] = useState<CapabilityCatalogItem[]>([]);
+  const [seatQuota, setSeatQuota] = useState<SeatQuota | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -73,16 +94,25 @@ export default function TeamPage() {
     [catalog],
   );
 
+  const seatsFull = seatQuota != null && seatQuota.used >= seatQuota.limit;
+
   async function load() {
     setLoading(true);
     setError(null);
     try {
-      const [memberList, caps] = await Promise.all([
+      const [memberList, caps, seats] = await Promise.all([
         listMembers(),
         listCapabilityCatalog().catch(() => [] as CapabilityCatalogItem[]),
+        isOwner ? fetchSeatQuota() : Promise.resolve(null),
       ]);
       setMembers(memberList);
       setCatalog(caps);
+      if (seats) {
+        setSeatQuota(seats);
+      } else {
+        // Fall back to roster size vs known plan limit when billing is unavailable.
+        setSeatQuota(null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load team");
     } finally {
@@ -228,16 +258,32 @@ export default function TeamPage() {
               ? "Invite shop members as Staff and set their permissions for day-to-day work."
               : "Shop team roles and permissions. Only the Owner can invite members or change access."}
           </p>
+          {isOwner && seatQuota ? (
+            <p className="mt-1 text-xs text-[var(--muted)]">
+              Seats {seatQuota.used}/{seatQuota.limit}
+              {seatsFull ? " — upgrade your plan to add more members." : ""}
+            </p>
+          ) : null}
         </div>
         {isOwner ? (
           <button
             type="button"
+            disabled={seatsFull}
+            title={
+              seatsFull
+                ? "Seat limit reached. Upgrade your plan to add more members."
+                : undefined
+            }
             onClick={() => {
+              if (seatsFull) {
+                setError("Seat limit reached. Upgrade your plan to add more members.");
+                return;
+              }
               setShowForm(true);
               setError(null);
               setSuccess(null);
             }}
-            className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white"
+            className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
             Add member
           </button>

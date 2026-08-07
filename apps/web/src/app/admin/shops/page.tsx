@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AdminShell, Panel, Stat } from "@/components/admin/AdminShell";
 import {
@@ -47,47 +47,80 @@ export default function AdminShopsPage() {
 }
 
 function ShopsBody({ accessToken }: { accessToken: string }) {
+  const router = useRouter();
   const [data, setData] = useState<OrganizationsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [live, setLive] = useState(false);
   const [actionId, setActionId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const load = useCallback(async (quiet = false) => {
-    if (!quiet) {
-      setBusy(true);
-      setError(null);
-    }
-    try {
-      setData(await getAdminOrganizations(accessToken));
-      setError(null);
-    } catch (err) {
-      if (!quiet) {
-        setError(err instanceof Error ? err.message : "Failed to load shops");
+  const applyData = useCallback((next: OrganizationsResponse) => {
+    setData((prev) => {
+      if (prev?.generated_at && next.generated_at) {
+        const prevTs = Date.parse(prev.generated_at);
+        const nextTs = Date.parse(next.generated_at);
+        if (Number.isFinite(prevTs) && Number.isFinite(nextTs) && nextTs < prevTs) {
+          return prev;
+        }
       }
-    } finally {
-      if (!quiet) setBusy(false);
-    }
-  }, [accessToken]);
+      return next;
+    });
+    setLive(true);
+    setError(null);
+  }, []);
 
+  const load = useCallback(
+    async (quiet = false) => {
+      if (!quiet) {
+        setBusy(true);
+        setError(null);
+      }
+      try {
+        applyData(await getAdminOrganizations(accessToken));
+      } catch (err) {
+        if (!quiet) {
+          setLive(false);
+          setError(err instanceof Error ? err.message : "Failed to load shops");
+        }
+      } finally {
+        if (!quiet) setBusy(false);
+      }
+    },
+    [accessToken, applyData],
+  );
+
+  // REST polling is the reliable live path while this page stays mounted.
   useEffect(() => {
     void load(false);
+    const id = window.setInterval(() => void load(true), 3000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") void load(true);
+    };
+    const onRefresh = () => void load(true);
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("admin:shops-refresh", onRefresh);
+    window.addEventListener("focus", onRefresh);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("admin:shops-refresh", onRefresh);
+      window.removeEventListener("focus", onRefresh);
+    };
   }, [load]);
 
   useEffect(() => {
-    setLive(false);
     const stop = streamAdminOrganizations(
       accessToken,
-      (next) => {
-        setData(next);
-        setLive(true);
-        setError(null);
+      (next) => applyData(next),
+      () => {
+        /* polling keeps data fresh */
       },
-      () => setLive(false),
+      () => setLive(true),
     );
     return stop;
-  }, [accessToken]);
+  }, [accessToken, applyData]);
 
   const filtered = useMemo(() => {
     const shops = data?.shops ?? [];
@@ -139,8 +172,8 @@ function ShopsBody({ accessToken }: { accessToken: string }) {
   const suspended = data.shops.filter((s) => s.status === "suspended").length;
 
   return (
-    <>
-      <div className="flex items-center justify-end">
+    <div className="flex h-[calc(100dvh-7.25rem)] flex-col gap-4 overflow-hidden sm:h-[calc(100dvh-7.75rem)] md:h-[calc(100dvh-9.25rem)] md:gap-5">
+      <div className="flex shrink-0 items-center justify-end">
         <span
           className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium ${
             live
@@ -155,7 +188,7 @@ function ShopsBody({ accessToken }: { accessToken: string }) {
         </span>
       </div>
 
-      <section className="grid gap-3 sm:grid-cols-3">
+      <section className="grid shrink-0 gap-3 sm:grid-cols-3">
         <Stat label="Shops" value={String(data.shops.length)} />
         <Stat label="Suspended" value={String(suspended)} />
         <Stat
@@ -164,9 +197,10 @@ function ShopsBody({ accessToken }: { accessToken: string }) {
         />
       </section>
 
-      {error && <p className="text-sm text-red-700">{error}</p>}
+      {error && <p className="shrink-0 text-sm text-red-700">{error}</p>}
 
       <Panel
+        className="flex min-h-0 flex-1 flex-col"
         title={`Tenants (${filtered.length})`}
         action={
           <input
@@ -176,9 +210,10 @@ function ShopsBody({ accessToken }: { accessToken: string }) {
             className="w-full max-w-xs rounded-md border border-[var(--line)] px-3 py-1.5 text-sm"
           />
         }
-      >        <div className="overflow-x-auto">
+      >
+        <div className="asa-scroll min-h-0 flex-1 overflow-auto overscroll-contain">
           <table className="min-w-full text-left text-sm">
-            <thead className="border-b border-[var(--line)] bg-[var(--background)] text-[var(--muted)]">
+            <thead className="sticky top-0 z-10 border-b border-[var(--line)] bg-[var(--background)] text-[var(--muted)]">
               <tr>
                 <th className="px-5 py-2 font-medium">Shop</th>
                 <th className="px-5 py-2 font-medium">Owner</th>
@@ -193,8 +228,30 @@ function ShopsBody({ accessToken }: { accessToken: string }) {
             <tbody>
               {filtered.map((s) => {
                 const rowBusy = actionId === s.shop_id || busy;
+                const selected = selectedId === s.shop_id;
+                const openShop = () => {
+                  setSelectedId(s.shop_id);
+                  router.push(`/admin/shops/${s.shop_id}`);
+                };
                 return (
-                  <tr key={s.shop_id} className="border-b border-[var(--line)]">
+                  <tr
+                    key={s.shop_id}
+                    role="link"
+                    tabIndex={0}
+                    aria-selected={selected}
+                    onClick={openShop}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        openShop();
+                      }
+                    }}
+                    className={`cursor-pointer border-b border-[var(--line)] transition-colors ${
+                      selected
+                        ? "bg-[var(--accent)]/10 shadow-[inset_3px_0_0_0_var(--accent)]"
+                        : "hover:bg-[var(--background)] focus-visible:bg-[var(--background)]"
+                    } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]/40`}
+                  >
                     <td className="px-5 py-3">
                       <div className="font-medium">{s.shop_name}</div>
                       <div className="font-mono text-xs text-[var(--muted)]">{s.shop_slug}</div>
@@ -231,34 +288,26 @@ function ShopsBody({ accessToken }: { accessToken: string }) {
                     <td className="px-5 py-3 text-[var(--muted)]">
                       {formatDateTime(s.last_activity_at)}
                     </td>
-                    <td className="px-5 py-3">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Link
-                          href={`/admin/shops/${s.shop_id}`}
-                          className="rounded-md border border-[var(--line)] px-2 py-1 text-xs hover:bg-[var(--background)]"
+                    <td className="px-5 py-3" onClick={(e) => e.stopPropagation()}>
+                      {s.status === "suspended" ? (
+                        <button
+                          type="button"
+                          disabled={rowBusy}
+                          onClick={() => void onActivate(s.shop_id)}
+                          className="rounded-md border border-[var(--line)] px-2 py-1 text-xs disabled:opacity-50"
                         >
-                          View details
-                        </Link>
-                        {s.status === "suspended" ? (
-                          <button
-                            type="button"
-                            disabled={rowBusy}
-                            onClick={() => void onActivate(s.shop_id)}
-                            className="rounded-md border border-[var(--line)] px-2 py-1 text-xs disabled:opacity-50"
-                          >
-                            Activate
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            disabled={rowBusy || s.status === "none"}
-                            onClick={() => void onSuspend(s.shop_id)}
-                            className="rounded-md border border-[var(--line)] px-2 py-1 text-xs text-red-700 disabled:opacity-50"
-                          >
-                            Suspend
-                          </button>
-                        )}
-                      </div>
+                          Activate
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={rowBusy || s.status === "none"}
+                          onClick={() => void onSuspend(s.shop_id)}
+                          className="rounded-md border border-[var(--line)] px-2 py-1 text-xs text-red-700 disabled:opacity-50"
+                        >
+                          Suspend
+                        </button>
+                      )}
                     </td>
                   </tr>
                 );
@@ -274,25 +323,6 @@ function ShopsBody({ accessToken }: { accessToken: string }) {
           </table>
         </div>
       </Panel>
-
-      <Panel title="Enterprise organizations">
-        {data.enterprise_orgs.length === 0 ? (
-          <p className="px-5 py-6 text-sm text-[var(--muted)]">No enterprise orgs registered.</p>
-        ) : (
-          <ul className="divide-y divide-[var(--line)]">
-            {data.enterprise_orgs.map((o) => (
-              <li key={o.id} className="px-5 py-3 text-sm">
-                <p className="font-medium">{o.name}</p>
-                <p className="text-xs text-[var(--muted)]">
-                  {o.slug}
-                  {o.franchise ? " · franchise" : ""}
-                  {o.created_at ? ` · ${new Date(o.created_at).toLocaleDateString()}` : ""}
-                </p>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Panel>
-    </>
+    </div>
   );
 }

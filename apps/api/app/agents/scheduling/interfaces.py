@@ -44,10 +44,23 @@ class SchedulingStorePort(Protocol):
         notes: str | None = None,
         service_id: UUID | None = None,
         service_name: str | None = None,
+        duration_minutes: int | None = None,
+        repair_type: str | None = None,
+        required_bay: str | None = None,
     ) -> AppointmentRecord: ...
 
     async def reschedule(
-        self, shop_id: UUID, appointment_id: UUID, start: datetime, end: datetime
+        self,
+        shop_id: UUID,
+        appointment_id: UUID,
+        start: datetime,
+        end: datetime,
+        *,
+        service_id: UUID | None = None,
+        service_name: str | None = None,
+        duration_minutes: int | None = None,
+        repair_type: str | None = None,
+        required_bay: str | None = None,
     ) -> AppointmentRecord: ...
 
     async def cancel(

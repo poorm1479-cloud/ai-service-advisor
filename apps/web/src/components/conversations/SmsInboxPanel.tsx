@@ -8,7 +8,6 @@ import {
   deleteSmsConversation,
   getSmsConversation,
   listSmsConversations,
-  setSmsTakeover,
   simulateInboundSms,
   SmsConversation,
 } from "@/lib/sms";
@@ -19,6 +18,36 @@ function smsIdFromSearchParams(searchParams: { get: (key: string) => string | nu
   const tab = searchParams.get("tab");
   if (tab && tab !== "sms") return null;
   return searchParams.get("id");
+}
+
+function IconMessage({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  );
+}
+
+function SmsIconBadge({ size = "sm" }: { size?: "sm" | "md" }) {
+  const iconSize = size === "md" ? "h-4 w-4" : "h-3.5 w-3.5";
+  const box = size === "md" ? "h-8 w-8" : "h-7 w-7";
+  return (
+    <span
+      className={`inline-flex ${box} shrink-0 items-center justify-center rounded-full bg-[var(--background)] text-[var(--muted)]`}
+      aria-hidden="true"
+    >
+      <IconMessage className={iconSize} />
+    </span>
+  );
 }
 
 export function SmsInboxPanel() {
@@ -36,6 +65,7 @@ export function SmsInboxPanel() {
   const [simFrom, setSimFrom] = useState(PHONE_PLACEHOLDER);
   const [simBody, setSimBody] = useState("I need to book an appointment for an oil change");
   const [deleting, setDeleting] = useState(false);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
 
   const selectConversation = useCallback(
     (id: string | null) => {
@@ -105,25 +135,23 @@ export function SmsInboxPanel() {
     }
   }
 
-  async function onToggleTakeover() {
-    if (!selectedId || !detail) return;
-    setError(null);
-    try {
-      await setSmsTakeover(selectedId, !detail.conversation.human_takeover);
-      await loadDetail(selectedId);
-      await refreshList();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Takeover failed");
-    }
+  function openDeleteConfirm() {
+    if (!selectedId || deleting) return;
+    setConfirmDeleteOpen(true);
   }
 
-  async function onDeleteConversation() {
+  function closeDeleteConfirm() {
+    if (deleting) return;
+    setConfirmDeleteOpen(false);
+  }
+
+  async function onConfirmDeleteConversation() {
     if (!selectedId) return;
-    if (!window.confirm("Delete this conversation? Messages cannot be recovered.")) return;
     setError(null);
     setDeleting(true);
     try {
       await deleteSmsConversation(selectedId);
+      setConfirmDeleteOpen(false);
       selectConversation(null);
       setDetail(null);
       await refreshList();
@@ -176,14 +204,14 @@ export function SmsInboxPanel() {
           }`}
         >
           <header className="shrink-0 border-b border-[var(--line)] px-4 py-3 text-sm font-medium">
-            Threads
+            History
           </header>
           <ul className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             {loading && (
-              <li className="px-4 py-8 text-sm text-[var(--muted)]">Loading threads…</li>
+              <li className="px-4 py-8 text-sm text-[var(--muted)]">Loading history…</li>
             )}
             {!loading && conversations.length === 0 && (
-              <li className="px-4 py-8 text-sm text-[var(--muted)]">No SMS threads yet.</li>
+              <li className="px-4 py-8 text-sm text-[var(--muted)]">No SMS yet.</li>
             )}
             {conversations.map((c) => {
               const active = c.id === selectedId;
@@ -197,14 +225,17 @@ export function SmsInboxPanel() {
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-mono text-sm">{c.customer_phone}</span>
+                      <span className="flex min-w-0 items-center gap-2.5">
+                        <SmsIconBadge />
+                        <span className="truncate font-mono text-sm">{c.customer_phone}</span>
+                      </span>
                       {c.escalate && (
                         <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-amber-800">
                           Escalate
                         </span>
                       )}
                     </div>
-                    <p className="mt-1 truncate text-xs text-[var(--muted)]">
+                    <p className="mt-1 truncate pl-9 text-xs text-[var(--muted)]">
                       {c.reply_preview || c.last_intent || c.status}
                     </p>
                   </button>
@@ -220,38 +251,28 @@ export function SmsInboxPanel() {
           }`}
         >
           <header className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--line)] px-4 py-3">
-            <div className="min-w-0">
-              {selectedId && (
-                <button
-                  type="button"
-                  onClick={() => selectConversation(null)}
-                  className="mb-1 text-xs text-[var(--accent)] lg:hidden"
-                >
-                  ← Threads
-                </button>
-              )}
-              <p className="truncate text-sm font-medium">
-                {detail ? detail.conversation.customer_phone : "Select a conversation"}
-              </p>
-              {detail?.conversation.last_intent && (
-                <p className="truncate text-xs text-[var(--muted)]">
-                  Intent: {detail.conversation.last_intent}
-                  {detail.conversation.human_takeover ? " · Human takeover" : ""}
+            <div className="flex min-w-0 items-start gap-3">
+              {detail && <SmsIconBadge size="md" />}
+              <div className="min-w-0">
+                {selectedId && (
+                  <button
+                    type="button"
+                    onClick={() => selectConversation(null)}
+                    className="mb-1 text-xs text-[var(--accent)] lg:hidden"
+                  >
+                    ← History
+                  </button>
+                )}
+                <p className="truncate text-sm font-medium">
+                  {detail ? detail.conversation.customer_phone : "Select a conversation"}
                 </p>
-              )}
+              </div>
             </div>
             {detail && (
               <div className="flex shrink-0 items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => void onToggleTakeover()}
-                  className="rounded-md border border-[var(--line)] px-3 py-1.5 text-xs"
-                >
-                  {detail.conversation.human_takeover ? "Resume AI" : "Human takeover"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void onDeleteConversation()}
+                  onClick={openDeleteConfirm}
                   disabled={deleting}
                   className="rounded-md border border-red-200 px-3 py-1.5 text-xs text-red-600 disabled:opacity-50"
                 >
@@ -278,14 +299,55 @@ export function SmsInboxPanel() {
               >
                 <p className="break-words">{m.body}</p>
                 <p className="mt-1 text-[10px] uppercase tracking-wide opacity-70">
-                  {m.direction}
-                  {m.intent ? ` · ${m.intent}` : ""}
+                  {m.direction === "inbound" ? "customer" : "assistant"}
                 </p>
               </div>
             ))}
           </div>
         </section>
       </div>
+
+      {confirmDeleteOpen && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-sms-title"
+          onClick={closeDeleteConfirm}
+        >
+          <div
+            className="w-full max-w-md space-y-4 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div>
+              <h2 id="delete-sms-title" className="text-sm font-semibold text-red-700">
+                Delete this conversation?
+              </h2>
+              <p className="mt-2 text-sm text-[var(--muted)]">
+                Messages cannot be recovered. This action cannot be undone.
+              </p>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeDeleteConfirm}
+                disabled={deleting}
+                className="rounded-md border border-[var(--line)] px-4 py-2 text-sm disabled:opacity-60"
+              >
+                No
+              </button>
+              <button
+                type="button"
+                onClick={() => void onConfirmDeleteConversation()}
+                disabled={deleting}
+                className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-60"
+              >
+                {deleting ? "Deleting…" : "Yes"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

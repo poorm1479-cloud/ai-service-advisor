@@ -1,80 +1,112 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { useAuth } from "@/lib/auth";
 import {
   AnalyticsSummary,
-  CalendarEvent,
   Campaign,
   CampaignMessage,
-  CampaignMetrics,
   SuggestedAction,
   createCampaign,
+  deleteCampaignMessages,
   getAiPreview,
   getAnalyticsSummary,
-  getCampaignAnalytics,
-  getCampaignCalendar,
   listCampaignMessages,
   listCampaigns,
   listChannels,
   listSuggestedActions,
   processCampaign,
-  processQueue,
   scheduleCampaign,
-  trackMessage,
   updateCampaign,
+  type AiPreview,
 } from "@/lib/marketing";
 
-type Tab = "followup" | "messages" | "calendar" | "analytics";
-
-type AiPreview = {
-  customer_id?: string;
-  customer_name?: string;
-  phone?: string | null;
-  email?: string | null;
-  vehicle?: string | null;
-  service?: string | null;
-  channel?: string;
-  send_at?: string;
-  message?: string;
-  subject?: string | null;
-  frequency_days?: number;
-  confidence?: number;
-  reasons?: string[];
-};
+type Tab = "followup" | "messages" | "analytics";
 
 const STEPS = ["AI Recommendations", "Review customer", "AI message", "Send"] as const;
+/** Review customer: SMS / Email only (no voice). */
+const REVIEW_CHANNELS = ["sms", "email"] as const;
 
 export default function MarketingPage() {
   const { session, loading: authLoading } = useAuth();
   const [tab, setTab] = useState<Tab>("followup");
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [channels, setChannels] = useState<string[]>([]);
   const [suggestedActions, setSuggestedActions] = useState<SuggestedAction[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [selected, setSelected] = useState<Campaign | null>(null);
   const [activeActionId, setActiveActionId] = useState<string | null>(null);
-  const [metrics, setMetrics] = useState<CampaignMetrics | null>(null);
   const [messages, setMessages] = useState<CampaignMessage[]>([]);
+  /** Messages loaded for the Messages tab, tagged with parent campaign for type grouping. */
+  const [tabMessages, setTabMessages] = useState<
+    (CampaignMessage & { campaign_name: string; campaign_type: string })[]
+  >([]);
+  const [messagesTypeFilter, setMessagesTypeFilter] = useState<string | null>(null);
+  const [selectedMessage, setSelectedMessage] = useState<
+    (CampaignMessage & { campaign_name?: string; campaign_type?: string }) | null
+  >(null);
   const [aiPreview, setAiPreview] = useState<AiPreview | null>(null);
   const [channelOverride, setChannelOverride] = useState<string | null>(null);
+  const [messageDraft, setMessageDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [sentFlash, setSentFlash] = useState(false);
+  const [portalReady, setPortalReady] = useState(false);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(new Set());
+  const [deleteSelectedConfirm, setDeleteSelectedConfirm] = useState(false);
+  /** Campaign IDs that still have at least one message (exclude fully deleted). */
+  const [idsWithMessages, setIdsWithMessages] = useState<Set<string>>(() => new Set());
 
-  const refresh = useCallback(async () => {
-    const [c, cal, sum, actionsResult] = await Promise.all([
+  useEffect(() => {
+    setPortalReady(true);
+  }, []);
+
+  const closeFollowupDialog = useCallback(() => {
+    if (busy) return;
+    setSelected(null);
+    setActiveActionId(null);
+    setAiPreview(null);
+    setChannelOverride(null);
+    setMessageDraft("");
+    setSentFlash(false);
+    setMessages([]);
+  }, [busy]);
+
+  const refresh = useCallback(async (opts?: { light?: boolean }) => {
+    // light: campaign list only — used after opening Review customer so the dialog
+    // is not blocked by analytics / suggested-actions / N message probes.
+    if (opts?.light) {
+      const c = await listCampaigns();
+      setCampaigns(c);
+      return c;
+    }
+
+    const [c, sum, actionsResult] = await Promise.all([
       listCampaigns(),
-      getCampaignCalendar(),
       getAnalyticsSummary(),
       listSuggestedActions().catch(() => [] as SuggestedAction[]),
     ]);
     setCampaigns(c);
-    setEvents(cal);
     setSummary(sum);
     setSuggestedActions(actionsResult);
+
+    // Only list campaigns that still have message records (deleted ones drop out of Recent).
+    const candidates = c.filter(
+      (camp) => camp.status !== "draft" && camp.status !== "cancelled",
+    );
+    const present = await Promise.all(
+      candidates.map(async (camp) => {
+        try {
+          const msgs = await listCampaignMessages(camp.id);
+          return msgs.length > 0 ? camp.id : null;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    setIdsWithMessages(new Set(present.filter((id): id is string => id != null)));
+
     return c;
   }, []);
 
@@ -93,27 +125,88 @@ export default function MarketingPage() {
     })();
   }, [authLoading, session, refresh]);
 
-  const eventsByDay = useMemo(() => {
-    const map = new Map<string, CalendarEvent[]>();
-    for (const e of events) {
-      const list = map.get(e.day) ?? [];
-      list.push(e);
-      map.set(e.day, list);
-    }
-    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [events]);
+  /** Sent follow-ups that still have messages (not draft/cancelled and not fully deleted). */
+  const recentSentFollowUps = useMemo(
+    () =>
+      campaigns
+        .filter((c) => c.status !== "draft" && c.status !== "cancelled")
+        .filter((c) => idsWithMessages.has(c.id))
+        .slice(0, 6),
+    [campaigns, idsWithMessages],
+  );
 
-  const recommendedChannel =
+  const typeLabel = useCallback((campaignType: string) => {
+    const fromAction = suggestedActions.find((a) => a.campaign_type === campaignType);
+    if (fromAction) return fromAction.title;
+    return campaignType.replaceAll("_", " ");
+  }, [suggestedActions]);
+
+  /** Messages tab: group by campaign_type so the same kind appears in one place. */
+  const messagesByType = useMemo(() => {
+    const map = new Map<
+      string,
+      (CampaignMessage & { campaign_name: string; campaign_type: string })[]
+    >();
+    for (const m of tabMessages) {
+      if (messagesTypeFilter && m.campaign_type !== messagesTypeFilter) continue;
+      const list = map.get(m.campaign_type) ?? [];
+      list.push(m);
+      map.set(m.campaign_type, list);
+    }
+    return [...map.entries()]
+      .map(([type, items]) => ({
+        type,
+        label: typeLabel(type),
+        items: items.sort((a, b) => {
+          const ta = a.sent_at ?? a.scheduled_at ?? "";
+          const tb = b.sent_at ?? b.scheduled_at ?? "";
+          return tb.localeCompare(ta);
+        }),
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [tabMessages, messagesTypeFilter, typeLabel]);
+
+  const messageTypeChips = useMemo(() => {
+    const types = new Set(tabMessages.map((m) => m.campaign_type));
+    return [...types]
+      .map((type) => ({ type, label: typeLabel(type), count: tabMessages.filter((m) => m.campaign_type === type).length }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [tabMessages, typeLabel]);
+
+  const aiChannel =
     channelOverride ?? aiPreview?.channel ?? selected?.ai_defaults?.channel ?? "sms";
+  /** Voice is not offered in Review customer; map AI voice picks to SMS. */
+  const recommendedChannel = aiChannel === "voice" ? "sms" : aiChannel;
+  const reviewChannels = (channels.length ? channels : [...REVIEW_CHANNELS]).filter(
+    (ch) => ch !== "voice",
+  );
+
+  /** Contact for the active channel only (email vs phone). */
+  const reviewContact =
+    recommendedChannel === "email"
+      ? aiPreview?.email?.trim() || null
+      : aiPreview?.phone?.trim() || null;
+  const hasContact = Boolean(reviewContact);
 
   const previewMessage =
-    aiPreview?.message ?? selected?.ai_defaults?.message ?? null;
+    messageDraft ||
+    aiPreview?.message ||
+    selected?.ai_defaults?.message ||
+    null;
 
   const flowStep = !selected ? 0 : !previewMessage ? 1 : sentFlash ? 3 : 2;
 
-  async function loadPreview(campaign: Campaign, channel?: string) {
-    const preview = (await getAiPreview(campaign.id)) as AiPreview;
+  async function loadPreview(campaign: Campaign, channel?: string, prefetched?: AiPreview | null) {
+    const preview =
+      prefetched ??
+      ((await getAiPreview(campaign.id)) as AiPreview);
     setAiPreview(preview);
+    setMessageDraft(
+      preview.message ??
+        campaign.custom_message ??
+        campaign.ai_defaults?.message ??
+        "",
+    );
     if (!channel) {
       setChannelOverride(null);
     }
@@ -128,24 +221,30 @@ export default function MarketingPage() {
     setBusy(true);
     setError(null);
     setSentFlash(false);
+    setMessages([]);
+    setAiPreview(null);
     setTab("followup");
     try {
-      const allowed =
-        channels.length > 0 ? channels : ["sms", "email", "voice"];
+      const allowed = (channels.length > 0 ? channels : [...REVIEW_CHANNELS]).filter(
+        (ch) => ch !== "voice",
+      );
       const created = await createCampaign({
         name: `${action.title} follow-up`,
         campaign_type: action.campaign_type,
-        channels_allowed: allowed,
+        channels_allowed: allowed.length > 0 ? allowed : [...REVIEW_CHANNELS],
         use_demo_audience: false,
         auto_schedule: false,
         expected_revenue: "500",
         tags: ["ai-followup", action.id],
         ...(action.custom_message ? { custom_message: action.custom_message } : {}),
       });
-      setSelected(created);
+      const { ai_preview: prefetched, ...campaign } = created;
+      setSelected(campaign);
       setActiveActionId(action.id);
-      await loadPreview(created);
-      await refresh();
+      setCampaigns((prev) => [campaign, ...prev.filter((c) => c.id !== campaign.id)]);
+      await loadPreview(campaign, undefined, prefetched ?? null);
+      // Background only: full refresh was blocking Review customer (audience + metrics N+1).
+      void refresh({ light: true }).catch(() => undefined);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start follow-up");
     } finally {
@@ -153,19 +252,29 @@ export default function MarketingPage() {
     }
   }
 
-  async function onSelectExisting(campaign: Campaign) {
+  /** Recent follow-ups: open message detail for the latest message in that campaign. */
+  async function onSelectRecentFollowup(campaign: Campaign) {
     setBusy(true);
     setError(null);
-    setSentFlash(false);
-    setTab("followup");
     try {
-      setSelected(campaign);
-      setActiveActionId(
-        campaign.tags.find((t) => suggestedActions.some((a) => a.id === t)) ?? null,
-      );
-      await loadPreview(campaign);
+      const msgs = await listCampaignMessages(campaign.id);
+      if (msgs.length === 0) {
+        setError("No messages for this follow-up");
+        return;
+      }
+      const latest = [...msgs].sort((a, b) => {
+        const ta = a.sent_at ?? a.scheduled_at ?? "";
+        const tb = b.sent_at ?? b.scheduled_at ?? "";
+        return tb.localeCompare(ta);
+      })[0];
+      // Do not set `selected` — that opens the Review customer dialog.
+      setSelectedMessage({
+        ...latest,
+        campaign_name: campaign.name,
+        campaign_type: campaign.campaign_type,
+      });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load follow-up");
+      setError(err instanceof Error ? err.message : "Could not load message");
     } finally {
       setBusy(false);
     }
@@ -181,8 +290,8 @@ export default function MarketingPage() {
       });
       setSelected(updated);
       setChannelOverride(ch);
+      setCampaigns((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
       await loadPreview(updated, ch);
-      await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Channel update failed");
     } finally {
@@ -191,23 +300,31 @@ export default function MarketingPage() {
   }
 
   async function onSend() {
-    if (!selected || !canEditCampaign(selected)) return;
+    if (!selected || !canEditCampaign(selected) || !hasContact) return;
+    const body = messageDraft.trim();
+    if (!body) {
+      setError("Message cannot be empty");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      if (channelOverride) {
-        const updated = await updateCampaign(selected.id, {
-          channels_allowed: [channelOverride],
-        });
-        setSelected(updated);
+      const patch: Record<string, unknown> = { custom_message: body };
+      // Pin channel on send when user overrode it, or when AI chose voice (not offered).
+      if (channelOverride || aiChannel === "voice") {
+        patch.channels_allowed = [recommendedChannel];
       }
+      const updated = await updateCampaign(selected.id, patch);
+      setSelected(updated);
+      setAiPreview((prev) => (prev ? { ...prev, message: body } : prev));
       await scheduleCampaign(selected.id);
       await processCampaign(selected.id);
       setSentFlash(true);
       const list = await refresh();
       const latest = list.find((x) => x.id === selected.id);
       if (latest) setSelected(latest);
-      setMessages(await listCampaignMessages(selected.id));
+      const msgs = await listCampaignMessages(selected.id);
+      setMessages(msgs);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Send failed");
     } finally {
@@ -215,12 +332,38 @@ export default function MarketingPage() {
     }
   }
 
+  /** Load campaign messages for the Messages tab (sent follow-ups grouped by type). */
   async function onLoadMessages() {
-    if (!selected) return;
+    // Messages tab: load all sent follow-ups and group by type
+    const targets = campaigns.filter(
+      (c) => c.status !== "draft" && c.status !== "cancelled",
+    );
+    if (targets.length === 0) {
+      setTabMessages([]);
+      setSelectedMessage(null);
+      setSelectedMessageIds(new Set());
+      setMessagesTypeFilter(null);
+      setTab("messages");
+      return;
+    }
+
     setBusy(true);
     setError(null);
     try {
-      setMessages(await listCampaignMessages(selected.id));
+      const nested = await Promise.all(
+        targets.map(async (c) => {
+          const msgs = await listCampaignMessages(c.id);
+          return msgs.map((m) => ({
+            ...m,
+            campaign_name: c.name,
+            campaign_type: c.campaign_type,
+          }));
+        }),
+      );
+      const flat = nested.flat();
+      setTabMessages(flat);
+      setSelectedMessage(null);
+      setSelectedMessageIds(new Set());
       setTab("messages");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Load messages failed");
@@ -229,39 +372,66 @@ export default function MarketingPage() {
     }
   }
 
-  async function onProcessQueue() {
+  const visibleMessageIds = useMemo(
+    () => messagesByType.flatMap((g) => g.items.map((m) => m.id)),
+    [messagesByType],
+  );
+
+  const allVisibleSelected =
+    visibleMessageIds.length > 0 &&
+    visibleMessageIds.every((id) => selectedMessageIds.has(id));
+
+  function toggleMessageSelected(id: string) {
+    setSelectedMessageIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAllVisible() {
+    setSelectedMessageIds((prev) => {
+      if (allVisibleSelected) {
+        const next = new Set(prev);
+        for (const id of visibleMessageIds) next.delete(id);
+        return next;
+      }
+      const next = new Set(prev);
+      for (const id of visibleMessageIds) next.add(id);
+      return next;
+    });
+  }
+
+  async function onDeleteSelectedMessages() {
+    const ids = [...selectedMessageIds];
+    if (ids.length === 0) return;
     setBusy(true);
     setError(null);
     try {
-      await processQueue();
+      await deleteCampaignMessages(ids);
+      const removed = new Set(ids);
+      setTabMessages((prev) => prev.filter((m) => !removed.has(m.id)));
+      setMessages((prev) => prev.filter((m) => !removed.has(m.id)));
+      setSelectedMessage((prev) => (prev && removed.has(prev.id) ? null : prev));
+      setSelectedMessageIds(new Set());
+      setDeleteSelectedConfirm(false);
+      // Recompute campaigns that still have messages so Recent follow-ups stays in sync.
       await refresh();
-      if (selected) setMessages(await listCampaignMessages(selected.id));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Process queue failed");
+      setError(err instanceof Error ? err.message : "Delete messages failed");
     } finally {
       setBusy(false);
     }
   }
 
-  const activeAction = suggestedActions.find((a) => a.id === activeActionId) ?? null;
-
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:h-full">
-      <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="page-title">AI Customer Follow-up</h1>
-          <p className="mt-1 text-sm text-[var(--muted)]">
-            SMS · Email · Voice — AI suggests who to contact and drafts the message
-          </p>
-        </div>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => void onProcessQueue()}
-          className="rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
-        >
-          Process queue
-        </button>
+      <div className="shrink-0">
+        <h1 className="page-title">AI Customer Follow-up</h1>
+        <p className="mt-1 text-sm text-[var(--muted)]">
+          SMS · Email · Voice — AI suggests who to contact and drafts the message
+        </p>
       </div>
 
       <div className="flex shrink-0 flex-wrap items-center gap-2">
@@ -278,10 +448,7 @@ export default function MarketingPage() {
         </button>
         <button
           type="button"
-          onClick={() => {
-            setTab("messages");
-            if (selected) void onLoadMessages();
-          }}
+          onClick={() => void onLoadMessages()}
           className={`rounded-md px-3 py-1.5 text-sm ${
             tab === "messages"
               ? "bg-[var(--accent-soft)] font-medium text-[var(--accent)]"
@@ -292,37 +459,15 @@ export default function MarketingPage() {
         </button>
         <button
           type="button"
-          onClick={() => setAdvancedOpen((v) => !v)}
-          className="rounded-md px-3 py-1.5 text-sm text-[var(--muted)] hover:bg-[var(--accent-soft)]"
+          onClick={() => setTab("analytics")}
+          className={`rounded-md px-3 py-1.5 text-sm ${
+            tab === "analytics"
+              ? "bg-[var(--accent-soft)] font-medium text-[var(--accent)]"
+              : "text-[var(--muted)] hover:bg-[var(--accent-soft)]"
+          }`}
         >
-          Advanced {advancedOpen ? "▾" : "▸"}
+          Analytics
         </button>
-        {advancedOpen && (
-          <>
-            <button
-              type="button"
-              onClick={() => setTab("calendar")}
-              className={`rounded-md px-3 py-1.5 text-sm ${
-                tab === "calendar"
-                  ? "bg-[var(--accent-soft)] font-medium text-[var(--accent)]"
-                  : "text-[var(--muted)] hover:bg-[var(--accent-soft)]"
-              }`}
-            >
-              Campaign Calendar
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab("analytics")}
-              className={`rounded-md px-3 py-1.5 text-sm ${
-                tab === "analytics"
-                  ? "bg-[var(--accent-soft)] font-medium text-[var(--accent)]"
-                  : "text-[var(--muted)] hover:bg-[var(--accent-soft)]"
-              }`}
-            >
-              Campaign Analytics
-            </button>
-          </>
-        )}
       </div>
 
       {error && (
@@ -331,7 +476,13 @@ export default function MarketingPage() {
         </p>
       )}
 
-      <div className="asa-scroll min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain">
+      <div
+        className={
+          tab === "messages"
+            ? "flex min-h-0 flex-1 flex-col overflow-hidden"
+            : "asa-scroll min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain"
+        }
+      >
       {tab === "followup" && (
         <div className="space-y-6">
           <ol className="flex flex-wrap gap-2 text-xs">
@@ -349,259 +500,253 @@ export default function MarketingPage() {
             ))}
           </ol>
 
-          <div className="grid gap-6 lg:grid-cols-2">
-            <section className="space-y-3">
-              <div>
-                <h2 className="text-sm font-medium">AI Recommendations</h2>
-                <p className="mt-0.5 text-xs text-[var(--muted)]">
-                  Pick a suggested action — AI prepares the customer list and message
-                </p>
-              </div>
-              <div className="space-y-2">
-                {suggestedActions.map((action) => {
-                  const active = activeActionId === action.id;
-                  const empty = action.count <= 0;
-                  return (
-                    <button
-                      key={action.id}
-                      type="button"
-                      disabled={busy || empty}
-                      onClick={() => void onSelectAction(action)}
-                      className={`w-full rounded-md border px-4 py-3 text-left transition-colors disabled:opacity-60 ${
-                        active
-                          ? "border-[var(--accent)] bg-[var(--accent-soft)]"
-                          : "border-[var(--line)] bg-[var(--panel)] hover:border-[var(--accent)]"
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <p className="text-sm font-medium">{action.title}</p>
-                        <span className="shrink-0 text-[11px] text-[var(--muted)]">
-                          {action.hint}
+          <section className="mx-auto w-full max-w-2xl space-y-3">
+            <div>
+              <h2 className="text-sm font-medium">AI Recommendations</h2>
+              <p className="mt-0.5 text-xs text-[var(--muted)]">
+                Pick a suggested action — AI prepares the customer list and message
+              </p>
+            </div>
+            <div className="space-y-2">
+              {suggestedActions.map((action) => {
+                const active = activeActionId === action.id;
+                const empty = action.count <= 0;
+                return (
+                  <button
+                    key={action.id}
+                    type="button"
+                    disabled={busy || empty}
+                    onClick={() => void onSelectAction(action)}
+                    className={`w-full rounded-md border px-4 py-3 text-left transition-colors disabled:opacity-60 ${
+                      active
+                        ? "border-[var(--accent)] bg-[var(--accent-soft)]"
+                        : "border-[var(--line)] bg-[var(--panel)] hover:border-[var(--accent)]"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-sm font-medium">{action.title}</p>
+                      <span className="shrink-0 text-[11px] text-[var(--muted)]">
+                        {action.hint}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-[var(--muted)]">{action.description}</p>
+                  </button>
+                );
+              })}
+            </div>
+
+            {recentSentFollowUps.length > 0 && (
+              <div className="pt-2">
+                <h3 className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
+                  Recent follow-ups
+                </h3>
+                <ul className="asa-scroll mt-2 max-h-40 space-y-1 overflow-y-auto overscroll-contain">
+                  {recentSentFollowUps.map((c) => (
+                    <li key={c.id}>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void onSelectRecentFollowup(c)}
+                        className={`w-full rounded-md px-3 py-2 text-left text-sm disabled:opacity-60 ${
+                          selectedMessage?.campaign_id === c.id
+                            ? "bg-[var(--accent-soft)] text-[var(--accent)]"
+                            : "hover:bg-[var(--accent-soft)]"
+                        }`}
+                      >
+                        <span className="font-medium">{c.name}</span>
+                        <span className="ml-2 text-xs text-[var(--muted)]">
+                          {c.status} · {c.audience_count} customers
                         </span>
-                      </div>
-                      <p className="mt-1 text-xs text-[var(--muted)]">{action.description}</p>
-                    </button>
-                  );
-                })}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </section>
+
+        </div>
+      )}
+
+      {/* Portaled so dim covers header + chrome (escapes overflow-hidden shell) */}
+      {portalReady &&
+        selected &&
+        tab === "followup" &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="followup-dialog-title"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) closeFollowupDialog();
+            }}
+          >
+            <section
+              className="asa-scroll max-h-[min(90vh,720px)] w-full max-w-lg space-y-4 overflow-y-auto rounded-md border border-[var(--line)] bg-[var(--panel)] p-5 shadow-lg"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div>
+                <h2 id="followup-dialog-title" className="text-sm font-medium">
+                  Review customer
+                </h2>
               </div>
 
-              {campaigns.length > 0 && (
-                <div className="pt-2">
-                  <h3 className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
-                    Recent follow-ups
-                  </h3>
-                  <ul className="mt-2 space-y-1">
-                    {campaigns.slice(0, 6).map((c) => (
-                      <li key={c.id}>
+              <div className="space-y-2 text-sm">
+                <p>
+                  <span className="text-[var(--muted)]">Customer:</span>{" "}
+                  {aiPreview?.customer_name
+                    ? aiPreview.customer_name
+                    : busy
+                      ? "Loading…"
+                      : "—"}
+                </p>
+                <p>
+                  <span className="text-[var(--muted)]">Contact:</span>{" "}
+                  {reviewContact ||
+                    (recommendedChannel === "email" ? "No email" : "No phone")}
+                </p>
+                <p>
+                  <span className="text-[var(--muted)]">Best send time:</span>{" "}
+                  {aiPreview?.send_at
+                    ? new Date(aiPreview.send_at).toLocaleString()
+                    : selected.ai_defaults?.send_at
+                      ? new Date(selected.ai_defaults.send_at).toLocaleString()
+                      : "—"}
+                </p>
+                {(aiPreview?.confidence ?? selected.ai_defaults?.confidence) != null && (
+                  <p>
+                    <span className="text-[var(--muted)]">Confidence:</span>{" "}
+                    {(
+                      (aiPreview?.confidence ?? selected.ai_defaults?.confidence ?? 0) * 100
+                    ).toFixed(0)}
+                    %
+                  </p>
+                )}
+                {(() => {
+                  const reasons = (
+                    aiPreview?.reasons ??
+                    selected.ai_defaults?.reasons ??
+                    []
+                  ).filter(
+                    (r) =>
+                      !r.startsWith("channel=") &&
+                      !r.startsWith("send_window=") &&
+                      !r.startsWith("frequency="),
+                  );
+                  return reasons.length ? (
+                    <p className="text-xs text-[var(--muted)]">{reasons.join(" · ")}</p>
+                  ) : null;
+                })()}
+              </div>
+
+              <div className="border-t border-[var(--line)] pt-4">
+                <h2 className="text-sm font-medium">AI Message Preview</h2>
+
+                <div className="mt-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-xs text-[var(--muted)]">Channel</p>
+                    <span className="rounded-md bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--accent)]">
+                      AI recommends {recommendedChannel.toUpperCase()}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {reviewChannels.map((ch) => {
+                      const backendAi =
+                        aiPreview?.channel ?? selected.ai_defaults?.channel ?? "sms";
+                      const isAi =
+                        ch === (backendAi === "voice" ? "sms" : backendAi);
+                      const isSelected = ch === recommendedChannel;
+                      const editable = canEditCampaign(selected);
+                      return (
                         <button
+                          key={ch}
                           type="button"
-                          disabled={busy}
-                          onClick={() => void onSelectExisting(c)}
-                          className={`w-full rounded-md px-3 py-2 text-left text-sm disabled:opacity-60 ${
-                            selected?.id === c.id
-                              ? "bg-[var(--accent-soft)] text-[var(--accent)]"
-                              : "hover:bg-[var(--accent-soft)]"
+                          disabled={busy || !editable}
+                          onClick={() => void onChannelOverride(ch)}
+                          className={`rounded-md px-3 py-1 text-xs uppercase disabled:opacity-60 ${
+                            isSelected
+                              ? "bg-[var(--accent)] font-medium text-white"
+                              : "border border-[var(--line)] text-[var(--muted)] hover:border-[var(--accent)]"
                           }`}
                         >
-                          <span className="font-medium">{c.name}</span>
-                          <span className="ml-2 text-xs text-[var(--muted)]">
-                            {c.status} · {c.audience_count} customers
-                          </span>
+                          {ch}
+                          {isAi && !channelOverride ? " · AI" : ""}
                         </button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </section>
-
-            <section className="space-y-4 rounded-md border border-[var(--line)] bg-[var(--panel)] p-5">
-              {!selected ? (
-                <div className="flex min-h-[280px] flex-col items-center justify-center text-center">
-                  <p className="text-sm font-medium">Select a recommendation</p>
-                  <p className="mt-1 max-w-xs text-xs text-[var(--muted)]">
-                    AI will pull the matching customers, recommend a channel, and draft the message.
-                  </p>
-                </div>
-              ) : (
-                <>
-                  <div>
-                    <h2 className="text-sm font-medium">Review customer</h2>
-                    <p className="mt-0.5 text-xs text-[var(--muted)]">
-                      {activeAction?.title ?? selected.campaign_type.replaceAll("_", " ")} ·{" "}
-                      {selected.audience_count} in audience
-                    </p>
-                    <div className="mt-3 space-y-2 text-sm">
-                      <p>
-                        <span className="text-[var(--muted)]">Customer:</span>{" "}
-                        {aiPreview?.customer_name
-                          ? aiPreview.customer_name
-                          : busy
-                            ? "Loading…"
-                            : "—"}
-                      </p>
-                      {(aiPreview?.phone || aiPreview?.email) && (
-                        <p>
-                          <span className="text-[var(--muted)]">Contact:</span>{" "}
-                          {aiPreview.phone || aiPreview.email}
-                        </p>
-                      )}
-                      {(aiPreview?.vehicle || aiPreview?.service) && (
-                        <p>
-                          <span className="text-[var(--muted)]">Context:</span>{" "}
-                          {[aiPreview.vehicle, aiPreview.service].filter(Boolean).join(" · ")}
-                        </p>
-                      )}
-                      <p>
-                        <span className="text-[var(--muted)]">Best send time:</span>{" "}
-                        {aiPreview?.send_at
-                          ? new Date(aiPreview.send_at).toLocaleString()
-                          : selected.ai_defaults?.send_at
-                            ? new Date(selected.ai_defaults.send_at).toLocaleString()
-                            : "—"}
-                      </p>
-                      {(aiPreview?.confidence ?? selected.ai_defaults?.confidence) != null && (
-                        <p>
-                          <span className="text-[var(--muted)]">Confidence:</span>{" "}
-                          {(
-                            (aiPreview?.confidence ?? selected.ai_defaults?.confidence ?? 0) * 100
-                          ).toFixed(0)}
-                          %
-                        </p>
-                      )}
-                      {(aiPreview?.reasons ?? selected.ai_defaults?.reasons)?.length ? (
-                        <p className="text-xs text-[var(--muted)]">
-                          {(aiPreview?.reasons ?? selected.ai_defaults?.reasons ?? []).join(" · ")}
-                        </p>
-                      ) : null}
-                    </div>
+                      );
+                    })}
                   </div>
+                  {!canEditCampaign(selected) && (
+                    <p className="mt-1.5 text-[11px] text-[var(--muted)]">Channel is locked after send.</p>
+                  )}
+                </div>
 
-                  <div className="border-t border-[var(--line)] pt-4">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <h2 className="text-sm font-medium">AI Message Preview</h2>
-                      {aiPreview?.subject && (
-                        <span className="text-xs text-[var(--muted)]">
-                          Subject: {aiPreview.subject}
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="mt-3">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-xs text-[var(--muted)]">Channel</p>
-                        <span className="rounded-md bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--accent)]">
-                          AI recommends {(aiPreview?.channel ?? selected.ai_defaults?.channel ?? "sms").toUpperCase()}
-                        </span>
-                      </div>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {(channels.length ? channels : ["sms", "email", "voice"]).map((ch) => {
-                          const isAi =
-                            ch === (aiPreview?.channel ?? selected.ai_defaults?.channel);
-                          const isSelected = ch === recommendedChannel;
-                          const editable = canEditCampaign(selected);
-                          return (
-                            <button
-                              key={ch}
-                              type="button"
-                              disabled={busy || !editable}
-                              onClick={() => void onChannelOverride(ch)}
-                              className={`rounded-md px-3 py-1 text-xs uppercase disabled:opacity-60 ${
-                                isSelected
-                                  ? "bg-[var(--accent)] font-medium text-white"
-                                  : "border border-[var(--line)] text-[var(--muted)] hover:border-[var(--accent)]"
-                              }`}
-                            >
-                              {ch}
-                              {isAi && !channelOverride ? " · AI" : ""}
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <p className="mt-1.5 text-[11px] text-[var(--muted)]">
-                        {canEditCampaign(selected)
-                          ? "Override SMS, Email, or Voice anytime — AI regenerates the message for that channel."
-                          : "Channel is locked after send."}
-                      </p>
-                    </div>
-
-                    <div className="mt-3 whitespace-pre-wrap rounded-md border border-[var(--line)] p-3 text-sm">
-                      {previewMessage ?? (busy ? "Generating…" : "No preview yet")}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2 border-t border-[var(--line)] pt-4">
-                    <button
-                      type="button"
-                      disabled={busy || !previewMessage || !canEditCampaign(selected)}
-                      onClick={() => void onSend()}
-                      className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
-                    >
-                      {busy
-                        ? "Working…"
-                        : canEditCampaign(selected)
-                          ? "Send"
-                          : "Already sent"}
-                    </button>
-                    <button
-                      type="button"
+                <div className="mt-3">
+                  <label className="text-xs text-[var(--muted)]" htmlFor="ai-message-draft">
+                    Message
+                  </label>
+                  {canEditCampaign(selected) ? (
+                    <textarea
+                      id="ai-message-draft"
+                      value={messageDraft}
+                      onChange={(e) => setMessageDraft(e.target.value)}
                       disabled={busy}
-                      onClick={() => void onLoadMessages()}
-                      className="rounded-md border border-[var(--line)] px-3 py-2 text-sm disabled:opacity-60"
-                    >
-                      View messages
-                    </button>
-                    {sentFlash && (
-                      <span className="text-xs font-medium text-[var(--accent)]">
-                        Follow-up queued and processed
-                      </span>
-                    )}
-                  </div>
-                </>
-              )}
-            </section>
-          </div>
-        </div>
-      )}
+                      rows={5}
+                      placeholder={busy ? "Generating…" : "AI message will appear here"}
+                      className="mt-1.5 w-full resize-y whitespace-pre-wrap rounded-md border border-[var(--line)] bg-transparent p-3 text-sm outline-none focus:border-[var(--accent)] disabled:opacity-60"
+                    />
+                  ) : (
+                    <div className="mt-1.5 whitespace-pre-wrap rounded-md border border-[var(--line)] p-3 text-sm text-[var(--muted)]">
+                      {previewMessage ?? "No preview yet"}
+                    </div>
+                  )}
+                  {canEditCampaign(selected) && (
+                    <p className="mt-1.5 text-[11px] text-[var(--muted)]">
+                      Edit the AI draft before send.
+                    </p>
+                  )}
+                </div>
+              </div>
 
-      {tab === "calendar" && (
-        <div className="space-y-3">
-          <p className="text-xs text-[var(--muted)]">Advanced · Campaign Calendar</p>
-          {eventsByDay.length === 0 && (
-            <p className="text-sm text-[var(--muted)]">No scheduled sends in range</p>
-          )}
-          {eventsByDay.map(([day, items]) => (
-            <div key={day} className="rounded-md border border-[var(--line)] bg-[var(--panel)] p-4">
-              <p className="text-xs uppercase tracking-wide text-[var(--muted)]">{day}</p>
-              <ul className="mt-2 space-y-2">
-                {items.map((e) => (
-                  <li key={`${e.campaign_id}-${e.day}-${e.channel}`} className="text-sm">
-                    <span className="font-medium">{e.name}</span>
-                    <span className="text-[var(--muted)]">
-                      {" "}
-                      · {e.campaign_type.replaceAll("_", " ")} · {e.channel ?? "multi"} ·{" "}
-                      {e.message_count} msgs · {e.status}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-      )}
+              <div className="flex flex-wrap items-center gap-2 border-t border-[var(--line)] pt-4">
+                <button
+                  type="button"
+                  disabled={
+                    busy || !previewMessage || !canEditCampaign(selected) || !hasContact
+                  }
+                  onClick={() => void onSend()}
+                  className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+                >
+                  {busy
+                    ? "Working…"
+                    : canEditCampaign(selected)
+                      ? "Send"
+                      : "Already sent"}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => closeFollowupDialog()}
+                  className="rounded-md border border-[var(--line)] px-3 py-2 text-sm disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+                {sentFlash && (
+                  <span className="text-xs font-medium text-[var(--accent)]">
+                    Follow-up queued and processed
+                  </span>
+                )}
+              </div>
+            </section>
+          </div>,
+          document.body,
+        )}
 
       {tab === "analytics" && summary && (
         <div className="space-y-6">
-          <p className="text-xs text-[var(--muted)]">Advanced · Campaign Analytics</p>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <Metric label="Follow-ups" value={String(summary.campaigns)} />
             <Metric label="Sent" value={String(summary.sent)} />
-            <Metric label="Open rate" value={`${(summary.open_rate * 100).toFixed(1)}%`} />
-            <Metric label="ROI" value={`${summary.roi.toFixed(1)}x`} />
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Metric label="Click rate" value={`${(summary.click_rate * 100).toFixed(1)}%`} />
-            <Metric label="Reply rate" value={`${(summary.reply_rate * 100).toFixed(1)}%`} />
             <Metric
               label="Appointment rate"
               value={`${(summary.appointment_rate * 100).toFixed(1)}%`}
@@ -609,12 +754,18 @@ export default function MarketingPage() {
             <Metric label="Revenue" value={`$${Number(summary.revenue).toLocaleString()}`} />
           </div>
 
-          <div className="grid gap-6 lg:grid-cols-2">
-            <section className="rounded-md border border-[var(--line)] bg-[var(--panel)] p-5">
-              <h2 className="text-sm font-medium">By channel</h2>
-              <div className="mt-3 space-y-2">
-                {Object.entries(summary.by_channel).map(([ch, n]) => {
-                  const max = Math.max(...Object.values(summary.by_channel), 1);
+          <section className="rounded-md border border-[var(--line)] bg-[var(--panel)] p-5">
+            <h2 className="text-sm font-medium">By channel</h2>
+            <div className="mt-3 space-y-2">
+              {Object.entries(summary.by_channel)
+                .filter(([ch]) => ch !== "voice")
+                .map(([ch, n]) => {
+                  const max = Math.max(
+                    ...Object.entries(summary.by_channel)
+                      .filter(([k]) => k !== "voice")
+                      .map(([, v]) => v),
+                    1,
+                  );
                   return (
                     <div key={ch}>
                       <div className="flex justify-between text-xs text-[var(--muted)]">
@@ -630,103 +781,262 @@ export default function MarketingPage() {
                     </div>
                   );
                 })}
-              </div>
-            </section>
-            <section className="rounded-md border border-[var(--line)] bg-[var(--panel)] p-5">
-              <h2 className="text-sm font-medium">Follow-up performance</h2>
-              <div className="mt-3 space-y-2 text-sm">
-                {summary.campaigns_detail.map((c) => (
-                  <button
-                    key={c.campaign_id}
-                    type="button"
-                    className="block w-full rounded-md border border-[var(--line)] px-3 py-2 text-left hover:border-[var(--accent)]"
-                    onClick={() =>
-                      void getCampaignAnalytics(c.campaign_id)
-                        .then(setMetrics)
-                        .catch((err) => setError(String(err)))
-                    }
-                  >
-                    <p className="font-medium">{c.name}</p>
-                    <p className="text-xs text-[var(--muted)]">
-                      open {(c.open_rate * 100).toFixed(0)}% · reply {(c.reply_rate * 100).toFixed(0)}% ·
-                      ROI {c.roi.toFixed(1)}x · ${Number(c.revenue).toLocaleString()}
-                    </p>
-                  </button>
-                ))}
-              </div>
-            </section>
-          </div>
-
-          {metrics && (
-            <section className="rounded-md border border-[var(--line)] bg-[var(--panel)] p-5 text-sm">
-              <h2 className="text-sm font-medium">Selected follow-up metrics</h2>
-              <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                <p>Sent: {metrics.sent}</p>
-                <p>Opened: {metrics.opened}</p>
-                <p>Clicked: {metrics.clicked}</p>
-                <p>Replied: {metrics.replied}</p>
-                <p>Appointments: {metrics.appointments}</p>
-                <p>Revenue: ${Number(metrics.revenue).toLocaleString()}</p>
-              </div>
-            </section>
-          )}
+            </div>
+          </section>
         </div>
       )}
 
       {tab === "messages" && (
-        <section className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-sm font-medium">
-              Messages {selected ? `· ${selected.name}` : ""}
-            </h2>
-            <button
-              type="button"
-              disabled={busy || !selected}
-              onClick={() => void onLoadMessages()}
-              className="rounded-md border border-[var(--line)] px-3 py-1.5 text-xs disabled:opacity-60"
-            >
-              Refresh
-            </button>
-          </div>
-          {!selected && (
-            <p className="text-sm text-[var(--muted)]">
-              Start a follow-up from the Follow-up tab to see messages
-            </p>
-          )}
-          <div className="space-y-2">
-            {messages.map((m) => (
-              <div
-                key={m.id}
-                className="flex flex-wrap items-start justify-between gap-2 rounded-md border border-[var(--line)] bg-[var(--panel)] px-3 py-2 text-sm"
-              >
-                <div className="min-w-0">
-                  <p className="font-medium">
-                    {m.channel} · {m.status}
-                  </p>
-                  <p className="mt-1 text-xs text-[var(--muted)] line-clamp-2">{m.body}</p>
-                </div>
+        <section className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+          {(messageTypeChips.length > 0 || tabMessages.length > 0) && (
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
                   disabled={busy}
-                  className="rounded-md border border-[var(--line)] px-2 py-1 text-xs disabled:opacity-60"
-                  onClick={() =>
-                    void trackMessage(m.id, "opened")
-                      .then(async () => {
-                        if (selected) setMessages(await listCampaignMessages(selected.id));
-                      })
-                      .catch((err) => setError(String(err)))
-                  }
+                  onClick={() => {
+                    setSelectedMessage(null);
+                    setMessagesTypeFilter(null);
+                  }}
+                  className={`rounded-md border px-2.5 py-1 text-xs disabled:opacity-60 ${
+                    messagesTypeFilter === null
+                      ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
+                      : "border-[var(--line)] text-[var(--muted)] hover:bg-[var(--accent-soft)]"
+                  }`}
                 >
-                  Track opened
+                  All ({tabMessages.length})
                 </button>
+                {messageTypeChips.map((chip) => (
+                  <button
+                    key={chip.type}
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      setSelectedMessage(null);
+                      setMessagesTypeFilter(chip.type);
+                    }}
+                    className={`rounded-md border px-2.5 py-1 text-xs capitalize disabled:opacity-60 ${
+                      messagesTypeFilter === chip.type
+                        ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
+                        : "border-[var(--line)] text-[var(--muted)] hover:bg-[var(--accent-soft)]"
+                    }`}
+                  >
+                    {chip.label} ({chip.count})
+                  </button>
+                ))}
               </div>
-            ))}
-            {selected && messages.length === 0 && (
-              <p className="text-sm text-[var(--muted)]">No messages for this follow-up yet</p>
+              {tabMessages.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={busy || visibleMessageIds.length === 0}
+                    onClick={toggleSelectAllVisible}
+                    className="rounded-md border border-[var(--line)] px-2.5 py-1 text-xs text-[var(--muted)] hover:bg-[var(--accent-soft)] disabled:opacity-60"
+                  >
+                    {allVisibleSelected ? "Deselect all" : "Select all"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || selectedMessageIds.size === 0}
+                    onClick={() => setDeleteSelectedConfirm(true)}
+                    className="rounded-md border border-red-300 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-60"
+                  >
+                    Delete{selectedMessageIds.size > 0 ? ` (${selectedMessageIds.size})` : ""}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          {tabMessages.length === 0 && !busy && (
+            <p className="shrink-0 text-sm text-[var(--muted)]">
+              {recentSentFollowUps.length === 0
+                ? "Start a follow-up from the Follow-up tab to see messages"
+                : "No messages yet — send a follow-up to queue messages"}
+            </p>
+          )}
+          <div className="asa-scroll min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain">
+            {messagesByType.flatMap((group) =>
+              group.items.map((m) => {
+                const checked = selectedMessageIds.has(m.id);
+                return (
+                  <div
+                    key={m.id}
+                    className={`flex w-full items-start gap-2 rounded-md border bg-[var(--panel)] px-3 py-2 text-sm transition-colors ${
+                      checked || selectedMessage?.id === m.id
+                        ? "border-[var(--accent)] bg-[var(--accent-soft)]"
+                        : "border-[var(--line)] hover:border-[var(--accent)]"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={busy}
+                      onChange={() => toggleMessageSelected(m.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      aria-label={`Select message ${m.channel} ${m.status}`}
+                      className="mt-1 h-4 w-4 shrink-0 cursor-pointer accent-[var(--accent)] disabled:opacity-60"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setSelectedMessage(m)}
+                      className="min-w-0 flex-1 text-left"
+                    >
+                      <p className="font-medium uppercase tracking-wide">
+                        {m.channel} · {m.status}
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-[var(--muted)]">{m.campaign_name}</p>
+                      <p className="mt-1 text-xs text-[var(--muted)] line-clamp-2">{m.body}</p>
+                    </button>
+                    {(m.sent_at || m.scheduled_at) && (
+                      <span className="shrink-0 text-[11px] text-[var(--muted)]">
+                        {m.sent_at
+                          ? new Date(m.sent_at).toLocaleString()
+                          : `scheduled ${new Date(m.scheduled_at!).toLocaleString()}`}
+                      </span>
+                    )}
+                  </div>
+                );
+              }),
             )}
           </div>
         </section>
       )}
+
+      {portalReady &&
+        selectedMessage &&
+        (tab === "messages" || tab === "followup") &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="message-detail-title"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setSelectedMessage(null);
+            }}
+          >
+            <section
+              className="asa-scroll max-h-[min(90vh,720px)] w-full max-w-lg space-y-4 overflow-y-auto rounded-md border border-[var(--line)] bg-[var(--panel)] p-5 shadow-lg"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 id="message-detail-title" className="text-sm font-medium">
+                    {selectedMessage.channel === "voice"
+                      ? "Voice call detail"
+                      : selectedMessage.channel === "email"
+                        ? "Email detail"
+                        : selectedMessage.channel === "sms"
+                          ? "SMS detail"
+                          : "Message detail"}
+                  </h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedMessage(null)}
+                  className="rounded-md border border-[var(--line)] px-2.5 py-1 text-xs text-[var(--muted)] hover:bg-[var(--accent-soft)]"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="space-y-2 text-sm">
+                {selectedMessage.sent_at && (
+                  <p>
+                    <span className="text-[var(--muted)]">
+                      {selectedMessage.channel === "voice" ? "Called:" : "Sent:"}
+                    </span>{" "}
+                    {new Date(selectedMessage.sent_at).toLocaleString()}
+                  </p>
+                )}
+                {!selectedMessage.sent_at && selectedMessage.scheduled_at && (
+                  <p>
+                    <span className="text-[var(--muted)]">Scheduled:</span>{" "}
+                    {new Date(selectedMessage.scheduled_at).toLocaleString()}
+                  </p>
+                )}
+                {(selectedMessage.customer_name || selectedMessage.customer_id) && (
+                  <p>
+                    <span className="text-[var(--muted)]">Customer:</span>{" "}
+                    {selectedMessage.customer_name || selectedMessage.customer_id}
+                  </p>
+                )}
+              </div>
+
+              <div className="border-t border-[var(--line)] pt-4">
+                <p className="text-xs text-[var(--muted)]">
+                  {selectedMessage.channel === "voice"
+                    ? "Call script"
+                    : selectedMessage.channel === "email"
+                      ? "Text"
+                      : "Message"}
+                </p>
+                <div className="mt-1.5 whitespace-pre-wrap rounded-md border border-[var(--line)] p-3 text-sm">
+                  {selectedMessage.body ||
+                    (selectedMessage.channel === "voice"
+                      ? "(empty script)"
+                      : selectedMessage.channel === "email"
+                        ? "(empty text)"
+                        : "(empty message)")}
+                </div>
+              </div>
+
+              {selectedMessage.error && (
+                <p className="text-xs text-red-600">{selectedMessage.error}</p>
+              )}
+            </section>
+          </div>,
+          document.body,
+        )}
+
+      {portalReady &&
+        deleteSelectedConfirm &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 p-4"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-selected-messages-title"
+            aria-describedby="delete-selected-messages-desc"
+            onClick={(e) => {
+              if (e.target === e.currentTarget && !busy) setDeleteSelectedConfirm(false);
+            }}
+          >
+            <section
+              className="w-full max-w-sm space-y-4 rounded-md border border-[var(--line)] bg-[var(--panel)] p-5 shadow-lg"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div>
+                <h2 id="delete-selected-messages-title" className="text-sm font-medium">
+                  Delete selected messages?
+                </h2>
+                <p id="delete-selected-messages-desc" className="mt-1.5 text-sm text-[var(--muted)]">
+                  This cannot be undone. {selectedMessageIds.size} selected message
+                  {selectedMessageIds.size === 1 ? "" : "s"} will be permanently removed.
+                </p>
+              </div>
+              <div className="flex flex-wrap justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setDeleteSelectedConfirm(false)}
+                  className="rounded-md border border-[var(--line)] px-3 py-1.5 text-sm text-[var(--muted)] hover:bg-[var(--accent-soft)] disabled:opacity-60"
+                >
+                  No
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void onDeleteSelectedMessages()}
+                  className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-60"
+                >
+                  {busy ? "Deleting…" : "Yes"}
+                </button>
+              </div>
+            </section>
+          </div>,
+          document.body,
+        )}
       </div>
     </div>
   );

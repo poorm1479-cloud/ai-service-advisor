@@ -204,16 +204,27 @@ class VoiceAiService:
 
         text = (speech.speech_result or "").strip()
         if not text:
-            draft = VoiceReplyDraft(
-                text="Sorry, I missed that  -  could you say it one more time?",
-                follow_up_question="Could you repeat that?",
-            )
-            spoken = await self._speech.speak(text=draft.text)
-            assistant_turn = await self._persist_turn(
-                call, role=VoiceTurnRole.ASSISTANT.value, text=spoken.text
-            )
+            # Silence timeout — keep listening without hanging up or cluttering the line.
+            empties = int((call.metadata or {}).get("empty_gathers") or 0) + 1
+            call.metadata = {**(call.metadata or {}), "empty_gathers": empties}
+            await self._store.update_call(call)
+            if empties >= 2:
+                draft = VoiceReplyDraft(
+                    text="I'm still here whenever you're ready.",
+                    follow_up_question="Go ahead when you're ready.",
+                )
+                spoken = await self._speech.speak(text=draft.text)
+                assistant_turn = await self._persist_turn(
+                    call, role=VoiceTurnRole.ASSISTANT.value, text=spoken.text
+                )
+                say = spoken.text
+            else:
+                draft = VoiceReplyDraft(text="", follow_up_question=None)
+                assistant_turn = None
+                spoken = None
+                say = ""
             twiml = self._provider.build_gather_twiml(
-                say_text=spoken.text,
+                say_text=say,
                 action_url=self._action_url(self._gather_action_path),
                 barge_in=True,
             )
@@ -222,7 +233,7 @@ class VoiceAiService:
                 caller_turn=None,
                 assistant_turn=assistant_turn,
                 reply=draft,
-                spoken_text=spoken.text,
+                spoken_text=(spoken.text if spoken else ""),
                 pipeline=None,
                 twiml=twiml,
             )
@@ -255,8 +266,28 @@ class VoiceAiService:
                 twiml=twiml,
             )
 
-        # End-call cues
-        if text.lower().strip() in {"goodbye", "bye", "that's all", "thats all", "hang up"}:
+        # Reset silence counter on any real speech so mid-call pauses stay quiet.
+        if (call.metadata or {}).get("empty_gathers"):
+            call.metadata = {**(call.metadata or {}), "empty_gathers": 0}
+            await self._store.update_call(call)
+
+        from app.agents.counselor import persona as counselor
+
+        # End when the caller wraps up — or declines the open "anything else?" offer.
+        last_assistant = next(
+            (
+                t.text
+                for t in reversed(memory.turns)
+                if t.role in {"assistant", "ai", "bot"}
+            ),
+            None,
+        )
+        wants_out = counselor.wants_to_end_after_offer(
+            text,
+            pending_question=memory.pending_question,
+            last_assistant_text=last_assistant,
+        )
+        if wants_out:
             draft = self._reply.farewell()
             spoken = await self._speech.speak(text=draft.text)
             assistant_turn = await self._persist_turn(
@@ -277,6 +308,8 @@ class VoiceAiService:
         booking_meta: dict = {}
         if memory.appointment_id:
             booking_meta["appointment_id"] = memory.appointment_id
+        if memory.active_visit_start:
+            booking_meta["active_visit_start"] = memory.active_visit_start
         if memory.slots_offered:
             booking_meta["slots_offered"] = list(memory.slots_offered)
         if memory.pending_service:
@@ -291,6 +324,16 @@ class VoiceAiService:
             booking_meta["pending_action"] = memory.pending_action
         if memory.pending_question:
             booking_meta["pending_question"] = memory.pending_question
+        if memory.pending_preferred_start:
+            booking_meta["pending_preferred_start"] = memory.pending_preferred_start
+        if memory.pending_preferred_end:
+            booking_meta["pending_preferred_end"] = memory.pending_preferred_end
+        if memory.pending_time_precision:
+            booking_meta["pending_time_precision"] = memory.pending_time_precision
+        if memory.pending_needs_date:
+            booking_meta["pending_needs_date"] = True
+        if memory.pending_needs_time:
+            booking_meta["pending_needs_time"] = True
 
         pipeline = await self._agents.orchestrator.handle_incoming(
             shop_id=shop_id,
@@ -390,19 +433,38 @@ class VoiceAiService:
         sched = pipeline.stages.get("scheduling")
         if sched and sched.data:
             if sched.data.success and sched.data.appointment:
+                appt = sched.data.appointment
+                visit_start = ""
+                if getattr(appt, "start", None) is not None:
+                    try:
+                        visit_start = appt.start.isoformat()
+                    except Exception:  # noqa: BLE001
+                        visit_start = str(appt.start)
                 await self._memory.update_state(
                     shop_id=shop_id,
                     call_id=call.id,
-                    appointment_id=str(sched.data.appointment.id),
+                    appointment_id=str(appt.id),
+                    active_visit_start=visit_start,
                     clear_pending_booking=True,
                 )
-            elif (
-                sched.data.message == "awaiting_cancel_confirmation"
-                or (getattr(sched.data, "metadata", None) or {}).get("action") == "cancel"
+            elif sched.data.message == "awaiting_cancel_confirmation" or (
+                (getattr(sched.data, "metadata", None) or {}).get("action") == "cancel"
+                and not (getattr(sched.data, "metadata", None) or {}).get(
+                    "no_appointment"
+                )
+                and not sched.data.success
             ):
+                # Pin the appointment being cancelled so YES confirms the right visit.
+                hold_cancel_id: str | None = None
+                decision = getattr(sched.data, "decision", None)
+                if decision is not None and getattr(decision, "appointment_id", None):
+                    hold_cancel_id = str(decision.appointment_id)
+                if not hold_cancel_id:
+                    hold_cancel_id = memory.appointment_id
                 await self._memory.update_state(
                     shop_id=shop_id,
                     call_id=call.id,
+                    appointment_id=hold_cancel_id,
                     pending_cancel=True,
                     pending_action="cancel",
                 )
@@ -465,7 +527,19 @@ class VoiceAiService:
                     offered = []
                 pending_action = str(sched_meta.get("action") or "")
                 # Live reschedule intent must not inherit a stale "book" hold.
+                # Keep an in-progress reschedule through availability Q&A too.
                 if intent_val == "reschedule":
+                    pending_action = "reschedule"
+                elif (
+                    memory.pending_action == "reschedule"
+                    and intent_val
+                    in {
+                        "check_availability",
+                        "book_appointment",
+                        "other",
+                        "maintenance_question",
+                    }
+                ):
                     pending_action = "reschedule"
                 elif pending_action not in {"book", "reschedule"}:
                     pending_action = "book"
@@ -474,6 +548,77 @@ class VoiceAiService:
                 memory_appointment_id = (
                     hold_appointment_id if pending_action == "reschedule" else None
                 )
+                if pending_action == "reschedule" and not memory_appointment_id:
+                    memory_appointment_id = memory.appointment_id
+                pref_start = intent_entities.get("preferred_start")
+                pref_end = intent_entities.get("preferred_end")
+                pref_precision = intent_entities.get("time_precision")
+                needs_date = bool(intent_entities.get("needs_date"))
+                needs_time = bool(intent_entities.get("needs_time"))
+                # Incomplete: day-only / time-only still collecting the other half.
+                incomplete = needs_date or needs_time or pref_precision in {
+                    "day",
+                    "part_of_day",
+                    "time_only",
+                }
+                # After a full clock pick, stash the still-usable half so the
+                # customer only re-answers what failed (date vs time).
+                keep_clock = (
+                    not incomplete
+                    and pref_precision == "clock"
+                    and bool(pref_start)
+                )
+                unavailable = bool(
+                    sched_meta.get("preferred_time_unavailable")
+                    or sched.data.message == "preferred_time_unavailable"
+                )
+                aspect = str(sched_meta.get("unavailable_aspect") or "both")
+                if aspect not in {"date", "time", "both"}:
+                    aspect = "both"
+                closed_day = bool(sched_meta.get("closed_day"))
+                if (
+                    unavailable
+                    and aspect == "date"
+                    and not keep_clock
+                    and (
+                        closed_day
+                        or pref_precision in {"day", "part_of_day"}
+                    )
+                ):
+                    # Soft day on a closed/full day — do not keep asking for a clock.
+                    stash_start = ""
+                    stash_end = ""
+                    stash_prec = ""
+                    stash_needs_date = False
+                    stash_needs_time = False
+                elif incomplete and pref_start:
+                    stash_start = str(pref_start)
+                    stash_end = str(pref_end) if pref_end else ""
+                    stash_prec = str(pref_precision) if pref_precision else ""
+                    stash_needs_date = needs_date
+                    stash_needs_time = needs_time
+                elif keep_clock and unavailable and aspect == "time":
+                    # Day still open — keep day, re-ask clock only.
+                    stash_start = str(pref_start)
+                    stash_end = str(pref_end) if pref_end else ""
+                    stash_prec = "day"
+                    stash_needs_date = False
+                    stash_needs_time = True
+                elif keep_clock and unavailable:
+                    # Date closed/full — keep hour only; must re-ask day (not day+time).
+                    stash_start = str(pref_start)
+                    stash_end = str(pref_end) if pref_end else ""
+                    stash_prec = "time_only"
+                    stash_needs_date = True
+                    stash_needs_time = False
+                else:
+                    # Held slot / clear path — do not demote a confirmed clock to
+                    # time_only or the next turn re-asks day and time.
+                    stash_start = ""
+                    stash_end = ""
+                    stash_prec = ""
+                    stash_needs_date = False
+                    stash_needs_time = False
                 await self._memory.update_state(
                     shop_id=shop_id,
                     call_id=call.id,
@@ -484,6 +629,11 @@ class VoiceAiService:
                     pending_duration_minutes=int(duration) if duration else 0,
                     pending_cancel=False,
                     pending_action=pending_action,
+                    pending_preferred_start=stash_start,
+                    pending_preferred_end=stash_end,
+                    pending_time_precision=stash_prec,
+                    pending_needs_date=stash_needs_date,
+                    pending_needs_time=stash_needs_time,
                 )
 
         # Soft book offer ("Want me to book a visit?") — persist the offered

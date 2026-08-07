@@ -170,7 +170,7 @@ async def test_validate_conflict_history_capabilities():
         shop_id=shop_id,
         repair_type="oil_change",
     )
-    assert duration == 45
+    assert duration == 30
     avail = await plugin.invoke(
         Capability.CHECK_AVAILABILITY.value,
         shop_id=shop_id,

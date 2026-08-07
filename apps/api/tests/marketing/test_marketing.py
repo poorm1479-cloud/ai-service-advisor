@@ -113,10 +113,8 @@ async def test_retry_on_channel_failure(runtime, shop_id):
     assert messages
     # Force retries due
     now = datetime.now(timezone.utc) + timedelta(hours=1)
-    for item in runtime.store.queue.values():
-        if item.state.value in {"pending"}:
-            item.run_at = now - timedelta(seconds=1)
-    second = await runtime.service.process_queue(now=now)
+    await runtime.store.force_campaign_queue_due(shop_id, campaign.id, now=now - timedelta(seconds=1))
+    second = await runtime.service.process_queue(now=now, shop_id=shop_id)
     final = await runtime.store.list_messages(shop_id, campaign.id)
     assert any(m.status == MessageStatus.SENT for m in final) or second or first
 
@@ -140,6 +138,77 @@ async def test_calendar_and_analytics(runtime, shop_id):
 
 
 @pytest.mark.asyncio
+async def test_delete_message_removes_record_and_queue(runtime, shop_id):
+    campaign = await runtime.service.create_campaign(
+        shop_id=shop_id,
+        name="Delete me",
+        campaign_type=CampaignType.THANK_YOU,
+        channels_allowed=["sms"],
+        use_demo_audience=True,
+    )
+    messages = await runtime.service.schedule_campaign(shop_id, campaign.id)
+    assert messages
+    target = messages[0]
+    assert await runtime.store.get_message(shop_id, target.id) is not None
+
+    await runtime.service.delete_message(shop_id, target.id)
+
+    assert await runtime.store.get_message(shop_id, target.id) is None
+    remaining = await runtime.store.list_messages(shop_id, campaign.id)
+    assert all(m.id != target.id for m in remaining)
+    assert all(q.message_id != target.id for q in runtime.store.queue.values())
+    with pytest.raises(LookupError):
+        await runtime.service.delete_message(shop_id, target.id)
+
+
+@pytest.mark.asyncio
+async def test_delete_all_messages(runtime, shop_id):
+    campaign = await runtime.service.create_campaign(
+        shop_id=shop_id,
+        name="Delete all",
+        campaign_type=CampaignType.THANK_YOU,
+        channels_allowed=["sms"],
+        use_demo_audience=True,
+    )
+    messages = await runtime.service.schedule_campaign(shop_id, campaign.id)
+    assert len(messages) >= 1
+
+    deleted = await runtime.service.delete_all_messages(shop_id)
+    assert deleted >= 1
+    remaining = await runtime.store.list_messages(shop_id, campaign.id)
+    assert remaining == []
+    assert all(q.shop_id != shop_id or q.message_id not in {m.id for m in messages}
+               for q in runtime.store.queue.values())
+    assert await runtime.service.delete_all_messages(shop_id) == 0
+
+
+@pytest.mark.asyncio
+async def test_delete_messages_bulk(runtime, shop_id):
+    campaign = await runtime.service.create_campaign(
+        shop_id=shop_id,
+        name="Bulk delete",
+        campaign_type=CampaignType.THANK_YOU,
+        channels_allowed=["sms"],
+        use_demo_audience=True,
+    )
+    messages = await runtime.service.schedule_campaign(shop_id, campaign.id)
+    assert len(messages) >= 1
+    keep = messages[-1]
+    targets = [m.id for m in messages[:-1]] if len(messages) > 1 else [messages[0].id]
+
+    deleted = await runtime.service.delete_messages(shop_id, targets)
+    assert deleted == len(targets)
+
+    remaining = await runtime.store.list_messages(shop_id, campaign.id)
+    if len(messages) > 1:
+        assert any(m.id == keep.id for m in remaining)
+        assert all(m.id not in set(targets) for m in remaining)
+    else:
+        assert remaining == []
+    assert await runtime.service.delete_messages(shop_id, targets) == 0
+
+
+@pytest.mark.asyncio
 async def test_create_without_demo_keeps_empty_audience(runtime, shop_id):
     campaign = await runtime.service.create_campaign(
         shop_id=shop_id,
@@ -148,6 +217,41 @@ async def test_create_without_demo_keeps_empty_audience(runtime, shop_id):
         use_demo_audience=False,
     )
     assert campaign.audience == []
+
+
+@pytest.mark.asyncio
+async def test_preview_ai_works_with_sample_looking_crm_audience(runtime, shop_id):
+    """CRM customers may reuse demo-like phones/emails; preview must still work."""
+    campaign = await runtime.service.create_campaign(
+        shop_id=shop_id,
+        name="Declined follow-up",
+        campaign_type=CampaignType.DECLINED_ESTIMATE,
+        use_demo_audience=False,
+        audience=[
+            {
+                "name": "Alex Rivera",
+                "phone": "+15550100",
+                "email": "alex@example.com",
+                "metadata": {"vehicle": "2018 Civic", "service": "brakes", "shop": "Main Street"},
+            }
+        ],
+    )
+    preview = await runtime.service.preview_ai(shop_id, campaign.id)
+    assert preview["customer_name"] == "Alex Rivera"
+    assert preview["message"]
+    assert preview["channel"] in {"sms", "email", "voice"}
+
+
+@pytest.mark.asyncio
+async def test_preview_ai_empty_audience_errors(runtime, shop_id):
+    campaign = await runtime.service.create_campaign(
+        shop_id=shop_id,
+        name="Empty",
+        campaign_type=CampaignType.THANK_YOU,
+        use_demo_audience=False,
+    )
+    with pytest.raises(LookupError, match="no audience"):
+        await runtime.service.preview_ai(shop_id, campaign.id)
 
 
 @pytest.mark.asyncio
@@ -206,3 +310,95 @@ async def test_sms_send_mirrors_into_conversations():
     assert messages[0].intent == "marketing"
     assert messages[0].body == sent[0].body
     assert messages[0].twilio_sid == sent[0].provider_id
+
+
+@pytest.mark.asyncio
+async def test_recommendation_cooldown_after_sms_send(runtime, shop_id):
+    """After SMS/email is sent, customer is suppressed until cooldown days elapse."""
+    from app.marketing.ai_chooser import recommendation_cooldown_days
+
+    customer_id = uuid4()
+    audience = [
+        {
+            "customer_id": str(customer_id),
+            "name": "Sam",
+            "phone": "+15558801",
+            "email": "sam@example.com",
+            "metadata": {"shop": "Apex", "vehicle": "2019 Civic", "service": "oil"},
+        }
+    ]
+    campaign = await runtime.service.create_campaign(
+        shop_id=shop_id,
+        name="Maint reminder",
+        campaign_type=CampaignType.MAINTENANCE_REMINDER,
+        channels_allowed=["sms", "email"],
+        audience=audience,
+        use_demo_audience=False,
+    )
+    await runtime.service.schedule_campaign(shop_id, campaign.id)
+    sent = await runtime.service.process_campaign_now(shop_id, campaign.id)
+    assert len(sent) == 1
+    assert sent[0].sent_at is not None
+
+    suppressed = await runtime.service.customers_in_recommendation_cooldown(
+        shop_id, CampaignType.MAINTENANCE_REMINDER
+    )
+    assert customer_id in suppressed
+
+    filtered = runtime.service.filter_audience_for_recommendations(
+        campaign.audience, suppressed
+    )
+    assert filtered == []
+
+    # Second schedule of a new same-type campaign should skip already-contacted customer
+    campaign2 = await runtime.service.create_campaign(
+        shop_id=shop_id,
+        name="Maint reminder 2",
+        campaign_type=CampaignType.MAINTENANCE_REMINDER,
+        channels_allowed=["sms"],
+        audience=audience,
+        use_demo_audience=False,
+    )
+    msgs2 = await runtime.service.schedule_campaign(shop_id, campaign2.id)
+    assert msgs2 == []
+
+    # After full cooldown window, customer is eligible again
+    days = recommendation_cooldown_days(CampaignType.MAINTENANCE_REMINDER)
+    future = datetime.now(timezone.utc) + timedelta(days=days + 1)
+    suppressed_later = await runtime.service.customers_in_recommendation_cooldown(
+        shop_id, CampaignType.MAINTENANCE_REMINDER, now=future
+    )
+    assert customer_id not in suppressed_later
+
+
+@pytest.mark.asyncio
+async def test_recommendation_cooldown_is_per_campaign_type(runtime, shop_id):
+    customer_id = uuid4()
+    audience = [
+        {
+            "customer_id": str(customer_id),
+            "name": "Jordan",
+            "phone": "+15558802",
+            "metadata": {"shop": "Apex"},
+        }
+    ]
+    declined = await runtime.service.create_campaign(
+        shop_id=shop_id,
+        name="Declined follow-up",
+        campaign_type=CampaignType.DECLINED_ESTIMATE,
+        channels_allowed=["sms"],
+        audience=audience,
+        use_demo_audience=False,
+    )
+    await runtime.service.schedule_campaign(shop_id, declined.id)
+    await runtime.service.process_campaign_now(shop_id, declined.id)
+
+    still_open = await runtime.service.customers_in_recommendation_cooldown(
+        shop_id, CampaignType.INACTIVE_CUSTOMER
+    )
+    assert customer_id not in still_open
+
+    same_type = await runtime.service.customers_in_recommendation_cooldown(
+        shop_id, CampaignType.DECLINED_ESTIMATE
+    )
+    assert customer_id in same_type

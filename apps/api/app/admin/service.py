@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 
 from app.enterprise.factory import get_enterprise_runtime
 from app.infrastructure.config import settings
@@ -31,6 +33,32 @@ from app.sms.runtime import get_sms_runtime
 from app.voice.enums import VoiceCallStatus
 from app.voice.runtime import get_voice_runtime
 
+# Absorb concurrent REST poll + SSE checks without re-hitting DB each time.
+_SYSTEM_STATUS_TTL_S = 2.0
+_system_status_cache: dict | None = None
+_system_status_cached_at = 0.0
+_system_status_lock: asyncio.Lock | None = None
+
+# Dashboard is polled by REST + SSE; short TTL collapses duplicate work.
+_DASHBOARD_TTL_S = 5.0
+_dashboard_cache: dict | None = None
+_dashboard_cached_at = 0.0
+_dashboard_lock: asyncio.Lock | None = None
+
+
+def _system_status_guard() -> asyncio.Lock:
+    global _system_status_lock
+    if _system_status_lock is None:
+        _system_status_lock = asyncio.Lock()
+    return _system_status_lock
+
+
+def _dashboard_guard() -> asyncio.Lock:
+    global _dashboard_lock
+    if _dashboard_lock is None:
+        _dashboard_lock = asyncio.Lock()
+    return _dashboard_lock
+
 
 class AdminConsoleService:
     def __init__(self, billing: BillingServicePort | None = None) -> None:
@@ -39,51 +67,79 @@ class AdminConsoleService:
         self._access = AccessReviewService()
 
     async def dashboard(self) -> dict:
-        ready = await readiness()
-        shops = await self._billing.list_shops_summary()
-        plans = await self._billing.list_plans()
-        usage = await self._usage_rollup()
-        users = await self._user_counts()
-        payments = await self._payments_summary()
-        incidents = await self._incidents.list_public(limit=20)
-        open_incidents = [i for i in incidents if i.status != "resolved"]
-        sms = await self._sms_snapshot()
-        voice = await self._voice_snapshot()
-        by_status: dict[str, int] = {}
-        for s in shops:
-            key = str(s.get("status") or "none")
-            by_status[key] = by_status.get(key, 0) + 1
-        return {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "environment": ready.get("environment"),
-            "system": ready,
-            "shops": {
-                "total": len(shops),
-                "by_status": by_status,
-                "suspended": by_status.get("suspended", 0),
-                "items": shops[:25],
-            },
-            "users": users,
-            "plans": {
-                "total": len(plans),
-                "items": [
-                    {
-                        "id": p.id,
-                        "name": p.name,
-                        "price_cents_monthly": p.price_cents_monthly,
-                        "ai_calls_monthly": p.ai_calls_monthly,
-                        "sms_monthly": p.sms_monthly,
-                        "seats": p.seats,
-                    }
-                    for p in plans
-                ],
-            },
-            "payments": payments,
-            "tokens": usage,
-            "sms": sms,
-            "voice": voice,
-            "incidents": {"open": len(open_incidents), "total": len(incidents)},
-        }
+        global _dashboard_cache, _dashboard_cached_at
+
+        now = time.monotonic()
+        cached = _dashboard_cache
+        if cached is not None and (now - _dashboard_cached_at) < _DASHBOARD_TTL_S:
+            return cached
+
+        async with _dashboard_guard():
+            now = time.monotonic()
+            cached = _dashboard_cache
+            if cached is not None and (now - _dashboard_cached_at) < _DASHBOARD_TTL_S:
+                return cached
+
+            (
+                ready,
+                shops,
+                plans,
+                usage,
+                users,
+                payments,
+                incidents,
+                sms,
+                voice,
+            ) = await asyncio.gather(
+                readiness(),
+                self._billing.list_shops_summary(),
+                self._billing.list_plans(),
+                self._usage_rollup(),
+                self._user_counts(),
+                self._payments_summary(),
+                self._incidents.list_public(limit=20),
+                self._sms_snapshot(),
+                self._voice_snapshot(),
+            )
+            open_incidents = [i for i in incidents if i.status != "resolved"]
+            by_status: dict[str, int] = {}
+            for s in shops:
+                key = str(s.get("status") or "none")
+                by_status[key] = by_status.get(key, 0) + 1
+            payload = {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "environment": ready.get("environment"),
+                "system": ready,
+                "shops": {
+                    "total": len(shops),
+                    "by_status": by_status,
+                    "suspended": by_status.get("suspended", 0),
+                    "items": shops[:25],
+                },
+                "users": users,
+                "plans": {
+                    "total": len(plans),
+                    "items": [
+                        {
+                            "id": p.id,
+                            "name": p.name,
+                            "price_cents_monthly": p.price_cents_monthly,
+                            "ai_calls_monthly": p.ai_calls_monthly,
+                            "sms_monthly": p.sms_monthly,
+                            "seats": p.seats,
+                        }
+                        for p in plans
+                    ],
+                },
+                "payments": payments,
+                "tokens": usage,
+                "sms": sms,
+                "voice": voice,
+                "incidents": {"open": len(open_incidents), "total": len(incidents)},
+            }
+            _dashboard_cache = payload
+            _dashboard_cached_at = time.monotonic()
+            return payload
 
     async def organizations(self) -> dict:
         shops = await self._billing.list_shops_summary()
@@ -442,33 +498,75 @@ class AdminConsoleService:
             )
         )
         return {
-            "generated_at": review.get("generated_at"),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "total": review.get("entry_count", 0),
             "users": entries,
         }
 
     async def system_status(self) -> dict:
-        ready = await readiness()
-        incidents = await self._incidents.list_public(limit=30)
-        return {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "readiness": ready,
-            "sms": await self._sms_snapshot(),
-            "voice": await self._voice_snapshot(),
-            "incidents": [
-                {
-                    "id": str(i.id),
-                    "title": i.title,
-                    "summary": i.summary,
-                    "severity": i.severity,
-                    "status": i.status,
-                    "affected_components": i.affected_components,
-                    "started_at": i.started_at.isoformat() if i.started_at else None,
-                    "resolved_at": i.resolved_at.isoformat() if i.resolved_at else None,
-                }
-                for i in incidents
-            ],
-        }
+        global _system_status_cache, _system_status_cached_at
+
+        now = time.monotonic()
+        cached = _system_status_cache
+        if cached is not None and (now - _system_status_cached_at) < _SYSTEM_STATUS_TTL_S:
+            return cached
+
+        async with _system_status_guard():
+            now = time.monotonic()
+            cached = _system_status_cache
+            if cached is not None and (now - _system_status_cached_at) < _SYSTEM_STATUS_TTL_S:
+                return cached
+
+            ready, incidents, sms, voice, sms_q, voice_q = await asyncio.gather(
+                readiness(),
+                self._incidents.list_public(limit=30),
+                self._sms_snapshot(),
+                self._voice_snapshot(),
+                self._queue_depth_safe(get_sms_runtime().queue),
+                self._queue_depth_safe(get_voice_runtime().queue),
+            )
+            payload = {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "readiness": ready,
+                "sms": sms,
+                "voice": voice,
+                "providers": {
+                    "sms": {
+                        "enabled": settings.sms_enabled,
+                        "provider": settings.twilio_provider,
+                        "queue_depth": sms_q,
+                    },
+                    "voice": {
+                        "enabled": settings.voice_enabled,
+                        "provider": settings.voice_provider,
+                        "queue_depth": voice_q,
+                    },
+                },
+                "incidents": [
+                    {
+                        "id": str(i.id),
+                        "title": i.title,
+                        "summary": i.summary,
+                        "severity": i.severity,
+                        "status": i.status,
+                        "affected_components": i.affected_components,
+                        "started_at": i.started_at.isoformat() if i.started_at else None,
+                        "resolved_at": i.resolved_at.isoformat() if i.resolved_at else None,
+                    }
+                    for i in incidents
+                ],
+            }
+            _system_status_cache = payload
+            _system_status_cached_at = time.monotonic()
+            return payload
+
+    @staticmethod
+    async def _queue_depth_safe(queue) -> int | None:
+        try:
+            depth = await queue.depth()
+            return int(depth) if depth is not None else None
+        except Exception:  # noqa: BLE001
+            return None
 
     async def notification_feed(
         self,
@@ -652,27 +750,64 @@ class AdminConsoleService:
         """Durable SMS counts from PostgreSQL; keep process-local ops counters from monitor."""
         monitor = get_sms_runtime().monitor.snapshot()
         async with SessionLocal() as session:
-            inbound = await session.scalar(
-                select(func.count())
-                .select_from(SmsMessageModel)
-                .where(SmsMessageModel.direction == SmsMessageDirection.INBOUND.value)
-            )
-            outbound = await session.scalar(
-                select(func.count())
-                .select_from(SmsMessageModel)
-                .where(SmsMessageModel.direction == SmsMessageDirection.OUTBOUND.value)
-            )
-            escalations = await session.scalar(
-                select(func.count())
-                .select_from(SmsConversationModel)
-                .where(SmsConversationModel.escalate.is_(True))
-            )
-            active = await session.scalar(
-                select(func.count())
-                .select_from(SmsConversationModel)
-                .where(SmsConversationModel.status == SmsConversationStatus.ACTIVE.value)
-            )
-            last_at = await session.scalar(select(func.max(SmsMessageModel.created_at)))
+            msg_row = (
+                await session.execute(
+                    select(
+                        func.coalesce(
+                            func.sum(
+                                case(
+                                    (
+                                        SmsMessageModel.direction
+                                        == SmsMessageDirection.INBOUND.value,
+                                        1,
+                                    ),
+                                    else_=0,
+                                )
+                            ),
+                            0,
+                        ),
+                        func.coalesce(
+                            func.sum(
+                                case(
+                                    (
+                                        SmsMessageModel.direction
+                                        == SmsMessageDirection.OUTBOUND.value,
+                                        1,
+                                    ),
+                                    else_=0,
+                                )
+                            ),
+                            0,
+                        ),
+                        func.max(SmsMessageModel.created_at),
+                    ).select_from(SmsMessageModel)
+                )
+            ).one()
+            conv_row = (
+                await session.execute(
+                    select(
+                        func.coalesce(
+                            func.sum(case((SmsConversationModel.escalate.is_(True), 1), else_=0)),
+                            0,
+                        ),
+                        func.coalesce(
+                            func.sum(
+                                case(
+                                    (
+                                        SmsConversationModel.status
+                                        == SmsConversationStatus.ACTIVE.value,
+                                        1,
+                                    ),
+                                    else_=0,
+                                )
+                            ),
+                            0,
+                        ),
+                    ).select_from(SmsConversationModel)
+                )
+            ).one()
+        inbound, outbound, last_at = msg_row
+        escalations, active = conv_row
         return {
             **monitor,
             "inbound_received": int(inbound or 0),
@@ -692,23 +827,31 @@ class AdminConsoleService:
             VoiceCallStatus.ESCALATED.value,
         )
         async with SessionLocal() as session:
-            started = await session.scalar(select(func.count()).select_from(VoiceCallModel))
-            completed = await session.scalar(
-                select(func.count())
-                .select_from(VoiceCallModel)
-                .where(VoiceCallModel.status == VoiceCallStatus.COMPLETED.value)
-            )
-            escalations = await session.scalar(
-                select(func.count())
-                .select_from(VoiceCallModel)
-                .where(VoiceCallModel.escalate.is_(True))
-            )
-            live = await session.scalar(
-                select(func.count())
-                .select_from(VoiceCallModel)
-                .where(VoiceCallModel.status.in_(live_statuses))
-            )
-            last_at = await session.scalar(select(func.max(VoiceCallModel.created_at)))
+            started, completed, escalations, live, last_at = (
+                await session.execute(
+                    select(
+                        func.count(),
+                        func.coalesce(
+                            func.sum(
+                                case(
+                                    (VoiceCallModel.status == VoiceCallStatus.COMPLETED.value, 1),
+                                    else_=0,
+                                )
+                            ),
+                            0,
+                        ),
+                        func.coalesce(
+                            func.sum(case((VoiceCallModel.escalate.is_(True), 1), else_=0)),
+                            0,
+                        ),
+                        func.coalesce(
+                            func.sum(case((VoiceCallModel.status.in_(live_statuses), 1), else_=0)),
+                            0,
+                        ),
+                        func.max(VoiceCallModel.created_at),
+                    ).select_from(VoiceCallModel)
+                )
+            ).one()
         return {
             **monitor,
             "calls_started": int(started or 0),
@@ -754,15 +897,25 @@ class AdminConsoleService:
 
     async def _user_counts(self) -> dict:
         async with SessionLocal() as session:
-            total_users = await session.scalar(select(func.count()).select_from(UserModel))
-            active_users = await session.scalar(
-                select(func.count()).select_from(UserModel).where(UserModel.is_active.is_(True))
+            total_users, active_users = (
+                await session.execute(
+                    select(
+                        func.count(),
+                        func.coalesce(
+                            func.sum(case((UserModel.is_active.is_(True), 1), else_=0)),
+                            0,
+                        ),
+                    ).select_from(UserModel)
+                )
+            ).one()
+            memberships = await session.scalar(
+                select(func.count()).select_from(ShopMembershipModel)
             )
-            memberships = await session.scalar(select(func.count()).select_from(ShopMembershipModel))
             by_role_rows = (
                 await session.execute(
-                    select(ShopMembershipModel.role, func.count())
-                    .group_by(ShopMembershipModel.role)
+                    select(ShopMembershipModel.role, func.count()).group_by(
+                        ShopMembershipModel.role
+                    )
                 )
             ).all()
         return {

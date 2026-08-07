@@ -172,10 +172,21 @@ async def invite_staff(
         membership = await uow.memberships.get(current.shop_id, existing.id)
         if membership is not None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Already a member")
+
+    if existing is None and email and await uow.users.get_by_email(email):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+
+    # Enforce plan seat limit before creating user/membership rows.
+    try:
+        from app.saas.quotas import QuotaService
+
+        await QuotaService().ensure_seat_available(current.shop_id)
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    if existing is not None:
         user = existing
     else:
-        if email and await uow.users.get_by_email(email):
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
         user = User(
             id=uuid4(),
             phone=phone,

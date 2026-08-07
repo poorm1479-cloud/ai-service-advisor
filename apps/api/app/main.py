@@ -3,9 +3,9 @@ import asyncio
 import logging
 import time
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.api.router import include_core_routers, include_deferred_routers
 from app.infrastructure.config import settings
@@ -15,25 +15,69 @@ from app.saas.observability import init_observability
 logger = logging.getLogger(__name__)
 
 
-class MetricsMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
+def _label_path(path: str) -> str:
+    # Avoid high-cardinality path labels for dynamic IDs
+    if path.startswith("/v1/") and path.count("/") > 3:
+        return "/".join(path.split("/")[:3]) + "/*"
+    return path
+
+
+class MetricsMiddleware:
+    """Pure ASGI metrics wrapper.
+
+    Must not use BaseHTTPMiddleware — that class buffers response bodies and
+    freezes Server-Sent Events (/stream) until the connection closes.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+        self._prod = settings.environment == "production"
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
         start = time.perf_counter()
-        response = await call_next(request)
-        path = request.url.path
-        # Avoid high-cardinality path labels for dynamic IDs
-        if path.startswith("/v1/") and path.count("/") > 3:
-            label_path = "/".join(path.split("/")[:3]) + "/*"
-        else:
-            label_path = path
-        elapsed = time.perf_counter() - start
-        REQUESTS.labels(request.method, label_path, str(response.status_code)).inc()
-        REQUEST_LATENCY.labels(request.method, label_path).observe(elapsed)
-        # Security headers for direct API exposure (nginx also sets these)
-        if settings.environment == "production":
-            response.headers.setdefault("X-Content-Type-Options", "nosniff")
-            response.headers.setdefault("X-Frame-Options", "DENY")
-            response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-        return response
+        path = scope.get("path") or ""
+        method = scope.get("method") or "GET"
+        status_code = 500
+        labels_recorded = False
+
+        async def send_wrapper(message: Message) -> None:
+            nonlocal status_code, labels_recorded
+            if message["type"] == "http.response.start":
+                status_code = int(message["status"])
+                if self._prod:
+                    # Security headers for direct API exposure (nginx also sets these)
+                    headers = list(message.get("headers") or [])
+                    existing = {h[0].lower() for h in headers}
+                    extras = [
+                        (b"x-content-type-options", b"nosniff"),
+                        (b"x-frame-options", b"DENY"),
+                        (b"referrer-policy", b"strict-origin-when-cross-origin"),
+                    ]
+                    for key, value in extras:
+                        if key not in existing:
+                            headers.append((key, value))
+                    message = {**message, "headers": headers}
+            await send(message)
+            if message["type"] == "http.response.start" and not labels_recorded:
+                # Record at first-byte so long SSE streams do not wait for disconnect.
+                labels_recorded = True
+                elapsed = time.perf_counter() - start
+                label = _label_path(path)
+                REQUESTS.labels(method, label, str(status_code)).inc()
+                REQUEST_LATENCY.labels(method, label).observe(elapsed)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        except Exception:
+            if not labels_recorded:
+                label = _label_path(path)
+                REQUESTS.labels(method, label, "500").inc()
+                REQUEST_LATENCY.labels(method, label).observe(time.perf_counter() - start)
+            raise
 
 
 async def _warm_sms_runtime() -> None:
@@ -55,6 +99,15 @@ async def lifespan(app: FastAPI):
         await ensure_platform_admin()
     except Exception as exc:  # noqa: BLE001
         logger.warning("startup bootstrap skipped: %s", exc)
+
+    try:
+        from app.infrastructure.database import SessionLocal
+        from app.saas.billing import _sync_canonical_plan_quotas
+
+        async with SessionLocal() as session:
+            await _sync_canonical_plan_quotas(session)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("plan quota sync skipped: %s", exc)
 
     # Heavy routers register here (not at import) so `import app.main` stays light.
     # Must finish before yield so endpoints never 404 during boot.

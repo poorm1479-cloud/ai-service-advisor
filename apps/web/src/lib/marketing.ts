@@ -28,6 +28,22 @@ export type Campaign = {
   updated_at: string | null;
 };
 
+export type AiPreview = {
+  customer_id?: string;
+  customer_name?: string;
+  phone?: string | null;
+  email?: string | null;
+  vehicle?: string | null;
+  service?: string | null;
+  channel?: string;
+  send_at?: string;
+  message?: string;
+  subject?: string | null;
+  frequency_days?: number;
+  confidence?: number;
+  reasons?: string[];
+};
+
 export type CampaignMetrics = {
   campaign_id: string;
   shop_id: string;
@@ -45,16 +61,6 @@ export type CampaignMetrics = {
   reply_rate: number;
   appointment_rate: number;
   roi: number;
-};
-
-export type CalendarEvent = {
-  campaign_id: string;
-  name: string;
-  campaign_type: string;
-  status: string;
-  day: string;
-  channel: string | null;
-  message_count: number;
 };
 
 export type AnalyticsSummary = {
@@ -152,7 +158,9 @@ export async function listCampaigns(): Promise<Campaign[]> {
   return res.json();
 }
 
-export async function createCampaign(body: Record<string, unknown>): Promise<Campaign> {
+export async function createCampaign(body: Record<string, unknown>): Promise<
+  Campaign & { ai_preview?: AiPreview | null }
+> {
   const res = await authFetch("/v1/marketing/campaigns", {
     method: "POST",
     body: JSON.stringify(body),
@@ -197,16 +205,6 @@ export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
   return res.json();
 }
 
-export async function getCampaignCalendar(start?: string, end?: string): Promise<CalendarEvent[]> {
-  const qs = new URLSearchParams();
-  if (start) qs.set("start", start);
-  if (end) qs.set("end", end);
-  const suffix = qs.toString() ? `?${qs}` : "";
-  const res = await authFetch(`/v1/marketing/calendar${suffix}`);
-  if (!res.ok) throw new Error(await parseError(res));
-  return res.json();
-}
-
 export async function getAiPreview(campaignId: string) {
   const res = await authFetch(`/v1/marketing/campaigns/${campaignId}/ai-preview`);
   if (!res.ok) throw new Error(await parseError(res));
@@ -217,6 +215,7 @@ export type CampaignMessage = {
   id: string;
   campaign_id: string;
   customer_id: string | null;
+  customer_name?: string | null;
   channel: string;
   status: string;
   body: string;
@@ -241,9 +240,40 @@ export async function updateCampaign(id: string, body: Record<string, unknown>):
 }
 
 export async function listCampaignMessages(id: string): Promise<CampaignMessage[]> {
-  const res = await authFetch(`/v1/marketing/campaigns/${id}/messages`);
+  const res = await authFetch(`/v1/marketing/campaigns/${id}/messages`, {
+    cache: "no-store",
+  });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
+}
+
+export async function deleteCampaignMessage(id: string): Promise<void> {
+  const res = await authFetch(`/v1/marketing/messages/${id}`, {
+    method: "DELETE",
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+}
+
+export async function deleteAllCampaignMessages(): Promise<{ deleted: number }> {
+  const res = await authFetch(`/v1/marketing/messages`, {
+    method: "DELETE",
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json() as Promise<{ deleted: number }>;
+}
+
+export async function deleteCampaignMessages(
+  messageIds: string[],
+): Promise<{ deleted: number }> {
+  const res = await authFetch(`/v1/marketing/messages/bulk-delete`, {
+    method: "POST",
+    cache: "no-store",
+    body: JSON.stringify({ message_ids: messageIds }),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json() as Promise<{ deleted: number }>;
 }
 
 export async function trackMessage(
@@ -253,8 +283,9 @@ export async function trackMessage(
 ): Promise<CampaignMessage> {
   const res = await authFetch(`/v1/marketing/messages/${id}/track`, {
     method: "POST",
+    cache: "no-store",
     body: JSON.stringify({ event, ...extras }),
   });
   if (!res.ok) throw new Error(await parseError(res));
-  return res.json();
+  return res.json() as Promise<CampaignMessage>;
 }

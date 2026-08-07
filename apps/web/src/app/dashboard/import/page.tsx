@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useAuth } from "@/lib/auth";
 import {
   createImportJob,
@@ -254,7 +255,12 @@ export default function ImportPage() {
   const [primaryGroup, setPrimaryGroup] = useState<"file" | null>(null);
   const [vinStatus, setVinStatus] = useState<string | null>(null);
   const [vinLooking, setVinLooking] = useState(false);
+  const [portalReady, setPortalReady] = useState(false);
   const vinAssistSeq = useRef(0);
+
+  useEffect(() => {
+    setPortalReady(true);
+  }, []);
 
   const selectedSource = useMemo(
     () => sources.find((s) => s.source === source) ?? null,
@@ -702,257 +708,267 @@ export default function ImportPage() {
             </div>
           </div>
 
-          {primaryGroup === "file" && (
-            <div
-              className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="file-import-dialog-title"
-              onClick={() => {
-                setPrimaryGroup(null);
-                setSource("");
-              }}
-            >
-              <div
-                className="w-full max-w-md space-y-4 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-5 shadow-lg"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div>
-                  <p id="file-import-dialog-title" className="text-sm font-medium">
-                    Select file type
-                  </p>
-                  <p className="mt-1 text-xs text-[var(--muted)]">
-                    Choose CSV or Excel, then continue to upload
-                  </p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {fileSources.map((s) => (
-                    <button
-                      key={s.source}
-                      type="button"
-                      onClick={() => setSource(s.source)}
-                      className={`rounded-md border px-3 py-2 text-sm ${
-                        source === s.source
-                          ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
-                          : "border-[var(--line)]"
-                      }`}
-                    >
-                      {s.label}
-                    </button>
-                  ))}
-                </div>
-                <div className="flex justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPrimaryGroup(null);
-                      setSource("");
-                    }}
-                    className="rounded-md border border-[var(--line)] px-4 py-2 text-sm"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!source || !FILE_SOURCES.has(source)}
-                    onClick={() => setStep("configure")}
-                    className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
-                  >
-                    Continue
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
         </section>
       )}
 
-      {step === "configure" && selectedSource && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="import-review-dialog-title"
-          onClick={() => {
-            setStep("source");
-            setPrimaryGroup(null);
-          }}
-        >
-          <form
-            onSubmit={startImport}
-            onClick={(e) => e.stopPropagation()}
-            className="max-h-[min(90vh,44rem)] w-full max-w-2xl space-y-4 overflow-y-auto rounded-lg border border-[var(--line)] bg-[var(--panel)] p-5 shadow-lg"
+      {/* Portaled overlays escape overflow-hidden shells so dim covers header + page chrome */}
+      {portalReady &&
+        primaryGroup === "file" &&
+        step === "source" &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="file-import-dialog-title"
+            onClick={() => {
+              setPrimaryGroup(null);
+              setSource("");
+            }}
           >
-            <h2 id="import-review-dialog-title" className="text-sm font-medium">
-              {source === "manual" ? "Manual Entry" : `Review · ${selectedSource.label}`}
-            </h2>
-            <p className="text-sm text-[var(--muted)]">
-              {source === "manual"
-                ? "Enter a customer and/or vehicle, then save. The form stays open for the next entry."
-                : "Confirm source settings, then start import. Validation and duplicate detection run next."}
-            </p>
-
-            {selectedSource.requires_upload && (
-              <div className="space-y-3">
-                <input
-                  type="file"
-                  accept={
-                    FILE_SOURCES.has(source)
-                      ? ".csv,.tsv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                      : source === "pdf"
-                        ? ".pdf,application/pdf"
-                        : "*/*"
-                  }
-                  onChange={(e) => {
-                    const next = e.target.files?.[0] ?? null;
-                    setFile(next);
-                    if (next && FILE_SOURCES.has(source)) {
-                      const inferred = inferFileImportSource(next.name);
-                      if (inferred) setSource(inferred);
-                    }
+            <div
+              className="w-full max-w-md space-y-4 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-5 shadow-lg"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div>
+                <p id="file-import-dialog-title" className="text-sm font-medium">
+                  Select file type
+                </p>
+                <p className="mt-1 text-xs text-[var(--muted)]">
+                  Choose CSV or Excel, then continue to upload
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {fileSources.map((s) => (
+                  <button
+                    key={s.source}
+                    type="button"
+                    onClick={() => setSource(s.source)}
+                    className={`rounded-md border px-3 py-2 text-sm ${
+                      source === s.source
+                        ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
+                        : "border-[var(--line)]"
+                    }`}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPrimaryGroup(null);
+                    setSource("");
                   }}
-                  className="block w-full text-sm"
-                />
-                {FILE_SOURCES.has(source) && (
-                  <p className="text-xs text-[var(--muted)]">
-                    Accepts CSV or Excel (.xlsx). Connector is chosen from the file type
-                    {file ? ` · using ${source.toUpperCase()}` : ""}.
-                  </p>
-                )}
-                {(source === "ocr" || source === "pdf") && (
-                  <textarea
-                    className="min-h-28 w-full rounded-md border border-[var(--line)] bg-transparent px-3 py-2 text-sm"
-                    placeholder="OCR / document text (optional for PDF; required for OCR without file)"
-                    value={ocrText}
-                    onChange={(e) => setOcrText(e.target.value)}
-                  />
-                )}
+                  className="rounded-md border border-[var(--line)] px-4 py-2 text-sm"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={!source || !FILE_SOURCES.has(source)}
+                  onClick={() => setStep("configure")}
+                  className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+                >
+                  Continue
+                </button>
               </div>
-            )}
-
-            {source === "manual" && (
-              <div className="space-y-5">
-                <div className="space-y-3">
-                  <h3 className="text-sm font-medium">Customer</h3>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <ManualField
-                      label="Name"
-                      value={manualCustomer.name}
-                      onChange={(name) => setManualCustomer((c) => ({ ...c, name }))}
-                      autoComplete="name"
-                      placeholder="Sam Chen"
-                    />
-                    <ManualField
-                      label="Phone"
-                      value={manualCustomer.phone}
-                      onChange={(phone) =>
-                        setManualCustomer((c) => ({ ...c, phone: formatPhoneInput(phone) }))
-                      }
-                      type="tel"
-                      autoComplete="tel"
-                      placeholder={PHONE_PLACEHOLDER}
-                    />
-                    <div className="sm:col-span-2">
-                      <ManualField
-                        label="Email (optional)"
-                        value={manualCustomer.email}
-                        onChange={(email) => setManualCustomer((c) => ({ ...c, email }))}
-                        type="email"
-                        autoComplete="email"
-                        placeholder="sam@example.com"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  <h3 className="text-sm font-medium">Vehicle</h3>
-                  <p className="text-xs text-[var(--muted)]">
-                    Scan or type a 17-character VIN to auto-fill year, make, and model.
-                  </p>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="sm:col-span-2">
-                      <VinInput
-                        value={manualVehicle.vin}
-                        onChange={(vin) => setManualVehicle((v) => ({ ...v, vin }))}
-                        status={vinStatus}
-                        looking={vinLooking}
-                        required={false}
-                      />
-                    </div>
-                    <ManualField
-                      label="Year"
-                      value={manualVehicle.year}
-                      onChange={(year) => setManualVehicle((v) => ({ ...v, year }))}
-                      type="number"
-                      placeholder="2018"
-                    />
-                    <ManualField
-                      label="Make"
-                      value={manualVehicle.make}
-                      onChange={(make) => setManualVehicle((v) => ({ ...v, make }))}
-                      placeholder="Honda"
-                    />
-                    <ManualField
-                      label="Model"
-                      value={manualVehicle.model}
-                      onChange={(model) => setManualVehicle((v) => ({ ...v, model }))}
-                      placeholder="Accord"
-                    />
-                    <ManualField
-                      label="Mileage"
-                      value={manualVehicle.mileage}
-                      onChange={(mileage) => setManualVehicle((v) => ({ ...v, mileage }))}
-                      type="number"
-                      placeholder="54000"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setStep("source");
-                  setPrimaryGroup(null);
-                }}
-                className="rounded-md border border-[var(--line)] px-4 py-2 text-sm"
-              >
-                {source === "manual" ? "Cancel" : "Back"}
-              </button>
-              <button
-                type="submit"
-                disabled={
-                  busy ||
-                  (selectedSource.requires_upload &&
-                    !file &&
-                    !(source === "ocr" && ocrText.trim())) ||
-                  (source === "manual" &&
-                    !manualCustomer.name.trim() &&
-                    !manualCustomer.phone.trim() &&
-                    !manualCustomer.email.trim() &&
-                    !manualVehicle.year.trim() &&
-                    !manualVehicle.make.trim() &&
-                    !manualVehicle.model.trim() &&
-                    !manualVehicle.mileage.trim() &&
-                    !manualVehicle.vin.trim())
-                }
-                className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
-              >
-                {source === "manual"
-                  ? busy
-                    ? "Saving…"
-                    : "Save"
-                  : busy
-                    ? "Starting…"
-                    : "Start import"}
-              </button>
             </div>
-          </form>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
+
+      {portalReady &&
+        step === "configure" &&
+        selectedSource &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="import-review-dialog-title"
+            onClick={() => {
+              setStep("source");
+              setPrimaryGroup(null);
+            }}
+          >
+            <form
+              onSubmit={startImport}
+              onClick={(e) => e.stopPropagation()}
+              className="max-h-[min(90vh,44rem)] w-full max-w-2xl space-y-4 overflow-y-auto rounded-lg border border-[var(--line)] bg-[var(--panel)] p-5 shadow-lg"
+            >
+              <h2 id="import-review-dialog-title" className="text-sm font-medium">
+                {source === "manual" ? "Manual Entry" : `Review · ${selectedSource.label}`}
+              </h2>
+              <p className="text-sm text-[var(--muted)]">
+                {source === "manual"
+                  ? "Enter a customer and/or vehicle, then save. The form stays open for the next entry."
+                  : "Confirm source settings, then start import. Validation and duplicate detection run next."}
+              </p>
+
+              {selectedSource.requires_upload && (
+                <div className="space-y-3">
+                  <input
+                    type="file"
+                    accept={
+                      FILE_SOURCES.has(source)
+                        ? ".csv,.tsv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        : source === "pdf"
+                          ? ".pdf,application/pdf"
+                          : "*/*"
+                    }
+                    onChange={(e) => {
+                      const next = e.target.files?.[0] ?? null;
+                      setFile(next);
+                      if (next && FILE_SOURCES.has(source)) {
+                        const inferred = inferFileImportSource(next.name);
+                        if (inferred) setSource(inferred);
+                      }
+                    }}
+                    className="block w-full text-sm"
+                  />
+                  {FILE_SOURCES.has(source) && (
+                    <p className="text-xs text-[var(--muted)]">
+                      Accepts CSV or Excel (.xlsx). Connector is chosen from the file type
+                      {file ? ` · using ${source.toUpperCase()}` : ""}.
+                    </p>
+                  )}
+                  {(source === "ocr" || source === "pdf") && (
+                    <textarea
+                      className="min-h-28 w-full rounded-md border border-[var(--line)] bg-transparent px-3 py-2 text-sm"
+                      placeholder="OCR / document text (optional for PDF; required for OCR without file)"
+                      value={ocrText}
+                      onChange={(e) => setOcrText(e.target.value)}
+                    />
+                  )}
+                </div>
+              )}
+
+              {source === "manual" && (
+                <div className="space-y-5">
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-medium">Customer</h3>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <ManualField
+                        label="Name"
+                        value={manualCustomer.name}
+                        onChange={(name) => setManualCustomer((c) => ({ ...c, name }))}
+                        autoComplete="name"
+                        placeholder="Sam Chen"
+                      />
+                      <ManualField
+                        label="Phone"
+                        value={manualCustomer.phone}
+                        onChange={(phone) =>
+                          setManualCustomer((c) => ({ ...c, phone: formatPhoneInput(phone) }))
+                        }
+                        type="tel"
+                        autoComplete="tel"
+                        placeholder={PHONE_PLACEHOLDER}
+                      />
+                      <div className="sm:col-span-2">
+                        <ManualField
+                          label="Email (optional)"
+                          value={manualCustomer.email}
+                          onChange={(email) => setManualCustomer((c) => ({ ...c, email }))}
+                          type="email"
+                          autoComplete="email"
+                          placeholder="sam@example.com"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-medium">Vehicle</h3>
+                    <p className="text-xs text-[var(--muted)]">
+                      Scan or type a 17-character VIN to auto-fill year, make, and model.
+                    </p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="sm:col-span-2">
+                        <VinInput
+                          value={manualVehicle.vin}
+                          onChange={(vin) => setManualVehicle((v) => ({ ...v, vin }))}
+                          status={vinStatus}
+                          looking={vinLooking}
+                          required={false}
+                        />
+                      </div>
+                      <ManualField
+                        label="Year"
+                        value={manualVehicle.year}
+                        onChange={(year) => setManualVehicle((v) => ({ ...v, year }))}
+                        type="number"
+                        placeholder="2018"
+                      />
+                      <ManualField
+                        label="Make"
+                        value={manualVehicle.make}
+                        onChange={(make) => setManualVehicle((v) => ({ ...v, make }))}
+                        placeholder="Honda"
+                      />
+                      <ManualField
+                        label="Model"
+                        value={manualVehicle.model}
+                        onChange={(model) => setManualVehicle((v) => ({ ...v, model }))}
+                        placeholder="Accord"
+                      />
+                      <ManualField
+                        label="Mileage"
+                        value={manualVehicle.mileage}
+                        onChange={(mileage) => setManualVehicle((v) => ({ ...v, mileage }))}
+                        type="number"
+                        placeholder="54000"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStep("source");
+                    setPrimaryGroup(null);
+                  }}
+                  className="rounded-md border border-[var(--line)] px-4 py-2 text-sm"
+                >
+                  {source === "manual" ? "Cancel" : "Back"}
+                </button>
+                <button
+                  type="submit"
+                  disabled={
+                    busy ||
+                    (selectedSource.requires_upload &&
+                      !file &&
+                      !(source === "ocr" && ocrText.trim())) ||
+                    (source === "manual" &&
+                      !manualCustomer.name.trim() &&
+                      !manualCustomer.phone.trim() &&
+                      !manualCustomer.email.trim() &&
+                      !manualVehicle.year.trim() &&
+                      !manualVehicle.make.trim() &&
+                      !manualVehicle.model.trim() &&
+                      !manualVehicle.mileage.trim() &&
+                      !manualVehicle.vin.trim())
+                  }
+                  className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+                >
+                  {source === "manual"
+                    ? busy
+                      ? "Saving…"
+                      : "Save"
+                    : busy
+                      ? "Starting…"
+                      : "Start import"}
+                </button>
+              </div>
+            </form>
+          </div>,
+          document.body,
+        )}
 
       {step === "progress" && (
         <section className="max-w-xl space-y-3 rounded-md border border-[var(--line)] bg-[var(--panel)] p-5">

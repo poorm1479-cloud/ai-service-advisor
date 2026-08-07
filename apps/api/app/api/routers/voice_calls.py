@@ -72,6 +72,19 @@ class SimulateCallRequest(BaseModel):
     to_number: str | None = None
 
 
+class StartChatRequest(BaseModel):
+    """Start an interactive caller-side chat (same pipeline as a live phone call)."""
+
+    from_number: str
+    to_number: str | None = None
+
+
+class ChatMessageRequest(BaseModel):
+    """One turn as the caller — AI replies and the call stays open until farewell."""
+
+    text: str = Field(min_length=1, max_length=2000)
+
+
 def _call_out(c) -> CallOut:
     return CallOut(
         id=c.id,
@@ -104,6 +117,28 @@ def _turn_out(t) -> TurnOut:
         interrupted=t.interrupted,
         created_at=t.created_at,
     )
+
+
+async def _detail_out(runtime: VoiceRuntime, shop_id: UUID, call_id: UUID) -> CallDetailOut:
+    call = await runtime.store.get_call(shop_id, call_id)
+    if call is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Call not found")
+    turns = await runtime.store.list_turns(shop_id, call_id)
+    return CallDetailOut(
+        call=_call_out(call),
+        turns=[_turn_out(t) for t in turns],
+        transcript=call.transcript,
+        call_summary=call.call_summary,
+        repair_notes=call.repair_notes,
+        owner_summary=call.owner_summary,
+    )
+
+
+def _ensure_dev_simulate_allowed() -> None:
+    if settings.environment == "production" and settings.voice_provider == "twilio":
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, detail="Simulate chat disabled in production"
+        )
 
 
 @router.get("/live", response_model=list[CallOut])
@@ -208,14 +243,80 @@ async def voice_metrics(
     }
 
 
+@router.post("/chat/start", response_model=CallDetailOut)
+async def start_caller_chat(
+    body: StartChatRequest,
+    user: CurrentUser = Depends(get_current_user),
+    runtime: VoiceRuntime = Depends(_runtime),
+) -> CallDetailOut:
+    """Open a continuous call-style chat as the customer (greeting only; stays live)."""
+    _ensure_dev_simulate_allowed()
+
+    to_number = body.to_number or settings.twilio_from_number or "+15550001111"
+    if isinstance(runtime.store, InMemoryVoiceStore):
+        runtime.store.register_shop_number(user.shop_id, to_number)
+
+    call_sid = f"CA{uuid4().hex[:30]}"
+    result = await runtime.service.answer_call(
+        shop_id=user.shop_id,
+        event=InboundCallEvent(
+            call_sid=call_sid,
+            from_number=body.from_number,
+            to_number=to_number,
+        ),
+    )
+    call = result.call
+    call.metadata = {
+        **(call.metadata or {}),
+        "interactive_chat": True,
+        "channel": "caller_chat",
+    }
+    await runtime.store.update_call(call)
+    return await _detail_out(runtime, user.shop_id, call.id)
+
+
+@router.post("/calls/{call_id}/message", response_model=CallDetailOut)
+async def send_caller_chat_message(
+    call_id: UUID,
+    body: ChatMessageRequest,
+    user: CurrentUser = Depends(get_current_user),
+    runtime: VoiceRuntime = Depends(_runtime),
+) -> CallDetailOut:
+    """Send one customer utterance; call ends only on farewell / hang-up path."""
+    _ensure_dev_simulate_allowed()
+
+    call = await runtime.store.get_call(user.shop_id, call_id)
+    if call is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Call not found")
+    if call.ended_at or call.status in {"completed", "failed", "no-answer", "busy"}:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail="This call has already ended — start a new conversation",
+        )
+    if not call.twilio_call_sid:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, detail="Call has no session id"
+        )
+
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Message text required")
+
+    await runtime.service.handle_speech(
+        shop_id=user.shop_id,
+        speech=SpeechInput(call_sid=call.twilio_call_sid, speech_result=text),
+    )
+    return await _detail_out(runtime, user.shop_id, call_id)
+
+
 @router.post("/simulate", response_model=CallDetailOut)
 async def simulate_call(
     body: SimulateCallRequest,
     user: CurrentUser = Depends(get_current_user),
     runtime: VoiceRuntime = Depends(_runtime),
 ) -> CallDetailOut:
-    if settings.environment == "production" and settings.voice_provider == "twilio":
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Simulate disabled in production")
+    """Batch multi-utterance simulator. Prefer /chat/start + /message for UI chat."""
+    _ensure_dev_simulate_allowed()
 
     to_number = body.to_number or settings.twilio_from_number or "+15550001111"
     if isinstance(runtime.store, InMemoryVoiceStore):
@@ -238,14 +339,12 @@ async def simulate_call(
             shop_id=user.shop_id,
             speech=SpeechInput(call_sid=call_sid, speech_result=utterance),
         )
+        # Mirror live phone: keep open after booking; only farewell completes.
+        refreshed = await runtime.store.get_call(user.shop_id, call.id)
+        if refreshed and (refreshed.ended_at or refreshed.status == "completed"):
+            break
 
-    call = await runtime.service.complete_call(shop_id=user.shop_id, call_id=call.id)
-    turns = await runtime.store.list_turns(user.shop_id, call.id)
-    return CallDetailOut(
-        call=_call_out(call),
-        turns=[_turn_out(t) for t in turns],
-        transcript=call.transcript,
-        call_summary=call.call_summary,
-        repair_notes=call.repair_notes,
-        owner_summary=call.owner_summary,
-    )
+    call = await runtime.store.get_call(user.shop_id, call.id)
+    assert call is not None
+    # If the script never said goodbye, leave the call live (same as phone).
+    return await _detail_out(runtime, user.shop_id, call.id)

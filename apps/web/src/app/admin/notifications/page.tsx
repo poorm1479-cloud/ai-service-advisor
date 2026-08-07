@@ -36,6 +36,8 @@ const FILTERS = [
   })),
 ];
 
+const POLL_MS = 3000;
+
 function severityClass(severity: string) {
   if (severity === "critical") return "border-l-red-500 bg-red-50/60";
   if (severity === "major") return "border-l-amber-500 bg-amber-50/50";
@@ -70,83 +72,84 @@ function NotificationsBody({ accessToken }: { accessToken: string }) {
   const deletedIdsRef = useRef<Set<string>>(new Set());
 
   const applyFeed = useCallback((next: NotificationsFeed) => {
-    const deleted = deletedIdsRef.current;
-    if (deleted.size === 0) {
-      setFeed(next);
-      return;
-    }
-    const notifications = next.notifications.filter((n) => !deleted.has(n.id));
-    // Drop tombstones once the server feed no longer includes them.
-    for (const id of [...deleted]) {
-      if (!next.notifications.some((n) => n.id === id)) deleted.delete(id);
-    }
-    setFeed({ ...next, notifications });
+    setFeed((prev) => {
+      if (prev?.generated_at && next.generated_at) {
+        const prevTs = Date.parse(prev.generated_at);
+        const nextTs = Date.parse(next.generated_at);
+        if (Number.isFinite(prevTs) && Number.isFinite(nextTs) && nextTs < prevTs) {
+          return prev;
+        }
+      }
+      const deleted = deletedIdsRef.current;
+      if (deleted.size === 0) return next;
+      const notifications = next.notifications.filter((n) => !deleted.has(n.id));
+      for (const id of [...deleted]) {
+        if (!next.notifications.some((n) => n.id === id)) deleted.delete(id);
+      }
+      return { ...next, notifications };
+    });
+    setLive(true);
+    setError(null);
   }, []);
 
-  const load = useCallback(async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      applyFeed(
-        await getAdminNotifications(accessToken, {
-          event_type: eventType || undefined,
-          unread_only: unreadOnly,
-          limit: 200,
-        }),
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load notifications");
-    } finally {
-      setBusy(false);
-    }
-  }, [applyFeed, accessToken, eventType, unreadOnly]);
+  const load = useCallback(
+    async (quiet = false) => {
+      if (!quiet) {
+        setBusy(true);
+        setError(null);
+      }
+      try {
+        applyFeed(
+          await getAdminNotifications(accessToken, {
+            event_type: eventType || undefined,
+            unread_only: unreadOnly,
+            limit: 200,
+          }),
+        );
+      } catch (err) {
+        if (!quiet) {
+          setLive(false);
+          setError(err instanceof Error ? err.message : "Failed to load notifications");
+        }
+      } finally {
+        if (!quiet) setBusy(false);
+      }
+    },
+    [applyFeed, accessToken, eventType, unreadOnly],
+  );
 
+  // REST polling is the reliable live path (all filter modes).
   useEffect(() => {
-    void load();
+    void load(false);
+    const id = window.setInterval(() => void load(true), POLL_MS);
+    const onVis = () => {
+      if (document.visibilityState === "visible") void load(true);
+    };
+    const onRefresh = () => void load(true);
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onRefresh);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onRefresh);
+    };
   }, [load]);
 
   useEffect(() => {
     setSelectedIds(new Set());
   }, [eventType, unreadOnly]);
 
+  // Unfiltered SSE is best-effort; filtered views rely fully on polling above.
   useEffect(() => {
-    // Unfiltered view uses SSE; filtered views poll so they stay live too.
-    if (eventType || unreadOnly) {
-      setLive(true);
-      const id = window.setInterval(() => {
-        void getAdminNotifications(accessToken, {
-          event_type: eventType || undefined,
-          unread_only: unreadOnly,
-          limit: 200,
-        })
-          .then((next) => {
-            applyFeed(next);
-            setError(null);
-          })
-          .catch(() => setLive(false));
-      }, 3000);
-      return () => {
-        window.clearInterval(id);
-        setLive(false);
-      };
-    }
-    setLive(true);
+    if (eventType || unreadOnly) return;
     const stop = streamAdminNotifications(
       accessToken,
-      (next) => {
-        applyFeed(next);
-        setLive(true);
-        setError(null);
-      },
-      (err) => {
-        setLive(false);
-        setError(err.message);
+      (next) => applyFeed(next),
+      () => {
+        /* polling keeps data fresh */
       },
     );
-    return () => {
-      stop();
-      setLive(false);
-    };
+    return stop;
   }, [applyFeed, accessToken, eventType, unreadOnly]);
 
   const counts = feed?.counts;
@@ -256,11 +259,11 @@ function NotificationsBody({ accessToken }: { accessToken: string }) {
   }
 
   return (
-    <>
-      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="flex h-[calc(100dvh-7.25rem)] flex-col gap-4 overflow-hidden sm:h-[calc(100dvh-7.75rem)] md:h-[calc(100dvh-9.25rem)] md:gap-5">
+      <section className="grid shrink-0 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Stat
-          label="Stream"
-          value={live ? "connected" : eventType || unreadOnly ? "filtered" : "idle"}
+          label="Live feed"
+          value={live ? "connected" : "connecting"}
           tone={live ? "text-emerald-700" : "text-[var(--muted)]"}
         />
         <Stat label="Unread" value={String(counts?.unread ?? 0)} />
@@ -269,6 +272,7 @@ function NotificationsBody({ accessToken }: { accessToken: string }) {
       </section>
 
       <Panel
+        className="flex min-h-0 flex-1 flex-col"
         title="Notification Center"
         action={
           <div className="flex flex-wrap items-center gap-2">
@@ -312,9 +316,9 @@ function NotificationsBody({ accessToken }: { accessToken: string }) {
           </div>
         }
       >
-        {error && <p className="mb-3 px-5 text-sm text-red-700">{error}</p>}
+        {error && <p className="shrink-0 px-5 py-2 text-sm text-red-700">{error}</p>}
         {durableIds.length > 0 ? (
-          <div className="flex items-center gap-2 border-b border-[var(--line)] px-5 py-2.5">
+          <div className="flex shrink-0 items-center gap-2 border-b border-[var(--line)] px-5 py-2.5">
             <label className="flex items-center gap-2 text-sm text-[var(--muted)]">
               <input
                 type="checkbox"
@@ -329,7 +333,7 @@ function NotificationsBody({ accessToken }: { accessToken: string }) {
             ) : null}
           </div>
         ) : null}
-        <ul className="max-h-[32rem] divide-y divide-[var(--line)] overflow-y-auto">
+        <ul className="asa-scroll min-h-0 flex-1 divide-y divide-[var(--line)] overflow-y-auto overscroll-contain">
           {(feed?.notifications ?? []).map((n) => {
             const durable = isDurableNotification(n.id);
             const unread = n.status === "unread";
@@ -418,6 +422,6 @@ function NotificationsBody({ accessToken }: { accessToken: string }) {
           )}
         </ul>
       </Panel>
-    </>
+    </div>
   );
 }

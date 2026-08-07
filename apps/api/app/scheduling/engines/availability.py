@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from app.scheduling.models import Appointment, Bay, BusinessHours, Mechanic
@@ -10,6 +11,9 @@ from app.scheduling.store import DEFAULT_DURATIONS
 
 # Platform default shop timezone (matches ShopModel / setup defaults).
 DEFAULT_SHOP_TZ = ZoneInfo("America/Los_Angeles")
+
+# Only live schedule holds block capacity (matches ConflictEngine.ACTIVE).
+_ACTIVE_STATUSES = frozenset({"booked", "confirmed", "in_progress"})
 
 
 class AvailabilityEngine:
@@ -95,18 +99,24 @@ class AvailabilityEngine:
         start: datetime,
         end: datetime,
         existing: list[Appointment],
+        ignore_id: UUID | None = None,
     ) -> bool:
         if not mechanic.active:
             return False
         local_start = self.to_shop(start)
         local_end = self.to_shop(end)
-        if local_start.weekday() not in mechanic.workdays:
+        workdays = self._workday_set(mechanic.workdays)
+        if local_start.weekday() not in workdays:
             return False
         start_t = local_start.timetz().replace(tzinfo=None)
         end_t = local_end.timetz().replace(tzinfo=None)
         if start_t < mechanic.work_start or end_t > mechanic.work_end:
             return False
         for a in existing:
+            if ignore_id is not None and a.id == ignore_id:
+                continue
+            if str(getattr(a, "status", "") or "").lower() not in _ACTIVE_STATUSES:
+                continue
             if a.mechanic_id != mechanic.id:
                 continue
             if a.start < end and start < a.end:
@@ -122,14 +132,25 @@ class AvailabilityEngine:
         vehicle_type: str,
         existing: list[Appointment],
         required_bay: str | None = None,
+        ignore_id: UUID | None = None,
     ) -> bool:
         if not bay.active:
             return False
         if required_bay and bay.bay_type != required_bay:
             return False
-        if vehicle_type and vehicle_type not in bay.supports_vehicle_types:
-            return False
+        need = (vehicle_type or "").strip().lower()
+        if need:
+            supported = {
+                (v or "").strip().lower() for v in (bay.supports_vehicle_types or [])
+            }
+            # Empty support list = no restriction (legacy / misconfigured bay).
+            if supported and need not in supported:
+                return False
         for a in existing:
+            if ignore_id is not None and a.id == ignore_id:
+                continue
+            if str(getattr(a, "status", "") or "").lower() not in _ACTIVE_STATUSES:
+                continue
             if a.bay_id != bay.id:
                 continue
             if a.start < end and start < a.end:
@@ -194,10 +215,35 @@ class AvailabilityEngine:
         return starts
 
     def skill_match(self, mechanic: Mechanic, repair_type: str) -> int:
-        need = (repair_type or "").strip().lower()
+        need = self._normalize_skill(repair_type)
         if not need:
             return 1
+        best = 0
         for skill in mechanic.skills:
-            if skill.repair_type.strip().lower() == need:
-                return skill.proficiency
-        return 0
+            tag = self._normalize_skill(skill.repair_type)
+            if not tag:
+                continue
+            if tag == need or tag in need or need in tag:
+                best = max(best, skill.proficiency)
+        return best
+
+    @staticmethod
+    def _normalize_skill(value: str | None) -> str:
+        raw = (value or "").strip().lower()
+        if not raw:
+            return ""
+        return raw.replace("-", "_").replace(" ", "_")
+
+    @staticmethod
+    def _workday_set(workdays: list[int] | list[str] | None) -> set[int]:
+        """Normalize workday tags (ints or JSON strings) to weekday 0–6 set."""
+        days: set[int] = set()
+        for raw in workdays or []:
+            try:
+                day = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= day <= 6:
+                days.add(day)
+        # Empty list would lock every day; treat as Mon–Fri shop default.
+        return days if days else {0, 1, 2, 3, 4}

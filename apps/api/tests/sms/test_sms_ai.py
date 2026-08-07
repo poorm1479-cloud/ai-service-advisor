@@ -228,6 +228,7 @@ async def test_oil_change_asks_time_then_preferred_time_books(runtime, shop_id):
     )
     assert (
         "book" in named.reply.body.lower()
+        or "shall i book" in named.reply.body.lower()
         or "should i book" in named.reply.body.lower()
     )
     assert "Alex" in named.reply.body

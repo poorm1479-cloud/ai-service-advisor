@@ -10,7 +10,8 @@ from app.marketing.monitoring import MarketingMonitor
 from app.marketing.queue import MessageQueue
 from app.marketing.scheduler import CampaignScheduler
 from app.marketing.service import MarketingAutomationService
-from app.marketing.store import InMemoryMarketingStore, MarketingStorePort
+from app.marketing.sql_store import SqlAlchemyMarketingStore
+from app.marketing.store import MarketingStorePort
 
 
 @dataclass(slots=True)
@@ -34,7 +35,7 @@ def build_marketing_runtime(
     sms_service: object | None = None,
     bridge_conversations: bool = True,
 ) -> MarketingRuntime:
-    resource_store = store or InMemoryMarketingStore()
+    resource_store = store or SqlAlchemyMarketingStore()
     channel_router = channels or build_default_channels()
     if bridge_conversations and sms_service is not None:
         channel_router = bridge_sms_to_conversations(channel_router, sms_service=sms_service)
@@ -67,6 +68,7 @@ def build_marketing_runtime(
 def get_marketing_runtime() -> MarketingRuntime:
     global _runtime
     if _runtime is None:
+        # Drop any prior cold start that used a non-durable store after process reloads.
         sms_service = None
         try:
             from app.sms.runtime import get_sms_runtime

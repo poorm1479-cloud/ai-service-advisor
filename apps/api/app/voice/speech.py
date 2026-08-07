@@ -55,4 +55,13 @@ class SpeechPipeline:
         return SpokenReply(text=text, synthesis=synthesis, barge_in=self._barge_in)
 
     async def extract_repair_notes(self, *, transcript: str) -> RepairExtractionResult:
-        return await self._extractor.extract(transcript=transcript)
+        try:
+            return await self._extractor.extract(transcript=transcript)
+        except Exception as exc:  # noqa: BLE001 — never fail call completion on AI outage
+            logger.warning(
+                "voice.repair_extraction failed: %s — using heuristic fallback",
+                exc,
+            )
+            from app.infrastructure.ai.heuristic import HeuristicRepairExtraction
+
+            return await HeuristicRepairExtraction().extract(transcript=transcript)
