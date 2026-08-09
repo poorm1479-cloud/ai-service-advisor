@@ -27,7 +27,12 @@ class VoiceTwilioSettings:
 
 class VoiceProviderPort(Protocol):
     def verify_webhook(
-        self, *, url: str, params: dict[str, str], signature: str | None
+        self,
+        *,
+        url: str,
+        params: dict[str, str],
+        signature: str | None,
+        alt_urls: list[str] | None = None,
     ) -> bool: ...
 
     def build_answer_twiml(
@@ -65,7 +70,12 @@ class FakeVoiceProvider:
         self.twimls: list[str] = []
 
     def verify_webhook(
-        self, *, url: str, params: dict[str, str], signature: str | None
+        self,
+        *,
+        url: str,
+        params: dict[str, str],
+        signature: str | None,
+        alt_urls: list[str] | None = None,
     ) -> bool:
         return True
 
@@ -124,7 +134,12 @@ class TwilioVoiceProvider:
         self.settings = settings
 
     def verify_webhook(
-        self, *, url: str, params: dict[str, str], signature: str | None
+        self,
+        *,
+        url: str,
+        params: dict[str, str],
+        signature: str | None,
+        alt_urls: list[str] | None = None,
     ) -> bool:
         if not self.settings.validate_signature:
             return True
@@ -135,6 +150,7 @@ class TwilioVoiceProvider:
             url=url,
             params=params,
             signature=signature,
+            alt_urls=alt_urls,
         )
 
     def build_answer_twiml(
@@ -199,12 +215,14 @@ def render_gather_twiml(
         if (say_text or "").strip()
         else ""
     )
+    # Prefer phone_call model; avoid enhanced=true (account/feature gated, can end Gather).
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         "<Response>"
         f'<Gather input="speech" action="{escape(action_url)}" method="POST" '
         f'timeout="{gather_timeout}" speechTimeout="{escape(speech_timeout)}" '
-        f'bargeIn="{barge}" enhanced="true" actionOnEmptyResult="true">'
+        f'speechModel="phone_call" language="en-US" '
+        f'bargeIn="{barge}" actionOnEmptyResult="true">'
         f"{say}"
         "</Gather>"
         f'<Redirect method="POST">{escape(action_url)}</Redirect>'
@@ -223,11 +241,11 @@ def render_answer_twiml(
     stream_ws_url: str | None,
     record: bool,
 ) -> str:
+    # NOTE: Do NOT emit a blocking <Record> here. Twilio docs: any verbs after
+    # <Record> are unreachable, and missing action re-requests this URL → silent loop.
+    # Enable call recording via Console / REST Call Recordings instead (see record flag).
+    _ = record  # reserved for future dual-channel / REST recording start
     parts = ['<?xml version="1.0" encoding="UTF-8"?><Response>']
-    if record:
-        parts.append(
-            '<Record playBeep="false" trim="trim-silence" recordingStatusCallbackMethod="POST" />'
-        )
     if stream_ws_url:
         parts.append(
             f'<Start><Stream url="{escape(stream_ws_url)}" track="inbound_track" /></Start>'
@@ -236,7 +254,8 @@ def render_answer_twiml(
     parts.append(
         f'<Gather input="speech" action="{escape(action_url)}" method="POST" '
         f'timeout="{gather_timeout}" speechTimeout="{escape(speech_timeout)}" '
-        f'bargeIn="{barge}" enhanced="true" actionOnEmptyResult="true">'
+        f'speechModel="phone_call" language="en-US" '
+        f'bargeIn="{barge}" actionOnEmptyResult="true">'
         f'<Say voice="{escape(voice)}">{escape(say_text)}</Say>'
         "</Gather>"
     )

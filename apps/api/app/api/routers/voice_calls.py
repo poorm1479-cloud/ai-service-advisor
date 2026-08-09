@@ -288,7 +288,15 @@ async def send_caller_chat_message(
     call = await runtime.store.get_call(user.shop_id, call_id)
     if call is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Call not found")
-    if call.ended_at or call.status in {"completed", "failed", "no-answer", "busy"}:
+    if call.ended_at or call.status in {
+        "completed",
+        "failed",
+        "no-answer",
+        "no_answer",
+        "busy",
+        "canceled",
+        "cancelled",
+    }:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             detail="This call has already ended — start a new conversation",

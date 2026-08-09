@@ -51,7 +51,7 @@ def _parse_shop_map(raw: str) -> dict[str, UUID]:
 def build_voice_provider() -> VoiceProviderPort:
     twilio_settings = VoiceTwilioSettings(
         account_sid=settings.twilio_account_sid or "ACdev",
-        auth_token=settings.twilio_auth_token or "dev",
+        auth_token=(settings.twilio_auth_token or "dev").strip(),
         from_number=settings.twilio_from_number or "+15550001111",
         validate_signature=settings.twilio_validate_signature,
         say_voice=settings.voice_tts_voice,
@@ -124,7 +124,7 @@ def build_voice_runtime(
         streams=stream_hub,
         reply_generator=VoiceReplyGenerator(),
         shop_number_map=shop_map,
-        public_base_url=settings.twilio_webhook_public_url,
+        public_base_url=settings.twilio_public_base_url,
         stream_enabled=settings.voice_stream_enabled,
         uow_factory=uow_factory,
     )

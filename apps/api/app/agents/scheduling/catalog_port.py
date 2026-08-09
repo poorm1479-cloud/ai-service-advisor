@@ -103,3 +103,34 @@ class SessionServiceCatalog:
             )
             for s in services
         ]
+
+
+class CachingServiceCatalog:
+    """TTL cache over a catalog port — phone turns hit the DB once, not every turn."""
+
+    def __init__(
+        self,
+        inner: ServiceCatalogPort,
+        *,
+        ttl_sec: float = 60.0,
+    ) -> None:
+        self._inner = inner
+        self._ttl = max(1.0, float(ttl_sec))
+        self._cache: dict[UUID, tuple[float, list[CatalogServiceView]]] = {}
+
+    def invalidate(self, shop_id: UUID | None = None) -> None:
+        if shop_id is None:
+            self._cache.clear()
+        else:
+            self._cache.pop(shop_id, None)
+
+    async def list_bookable_services(self, shop_id: UUID) -> list[CatalogServiceView]:
+        import time
+
+        now = time.monotonic()
+        hit = self._cache.get(shop_id)
+        if hit is not None and (now - hit[0]) < self._ttl:
+            return list(hit[1])
+        rows = await self._inner.list_bookable_services(shop_id)
+        self._cache[shop_id] = (now, list(rows))
+        return list(rows)

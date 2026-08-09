@@ -83,6 +83,9 @@ class AgentOrchestrator:
         "supervisor",
     )
 
+    # Real-time channels must reply ~1–2s; skip heavy/async-friendly stages.
+    _VOICE_FAST_CHANNELS = frozenset({"phone", "voice", "call"})
+
     def __init__(
         self,
         *,
@@ -110,6 +113,30 @@ class AgentOrchestrator:
         self._supervisor = supervisor
         self._memory = memory
         self._logger = get_agent_logger("orchestrator")
+
+    @classmethod
+    def _is_voice_fast(cls, channel: str | None) -> bool:
+        return (channel or "").strip().lower() in cls._VOICE_FAST_CHANNELS
+
+    @staticmethod
+    def _needs_vehicle_stage(
+        *,
+        voice_fast: bool,
+        intent_value: str | None,
+        entities: dict[str, Any],
+    ) -> bool:
+        if not voice_fast:
+            return True
+        if entities.get("vin") or entities.get("year") or entities.get("mileage"):
+            return True
+        if intent_value in {
+            "repair_status",
+            "in_shop_status",
+            "estimate",
+            "maintenance",
+        }:
+            return True
+        return False
 
     def _ports(self) -> DecisionPorts:
         return ports_from_agents(
@@ -688,82 +715,97 @@ class AgentOrchestrator:
                 **dict(message.metadata or {}),
             },
         )
+        voice_fast = self._is_voice_fast(message.channel)
+        if voice_fast:
+            context.metadata["voice_fast_path"] = True
 
-        # Every inbound message creates/updates a Conversation (Workflow uses ConversationId)
-        try:
-            from uuid import UUID as _UUID
+        # Every inbound message creates/updates a Conversation (Workflow uses ConversationId).
+        # Voice already has call.id as conversation key — skip plugin overhead on hot path.
+        if not (voice_fast and context.conversation_id):
+            try:
+                from uuid import UUID as _UUID
 
-            from app.plugins.framework.capability import Capability
-            from app.plugins.framework.context import PluginContext
-            from app.plugins.framework.factory import invoke_capability
+                from app.plugins.framework.capability import Capability
+                from app.plugins.framework.context import PluginContext
+                from app.plugins.framework.factory import invoke_capability
 
-            cid_arg = _UUID(conv_id) if conv_id else None
-            conv = await invoke_capability(
-                Capability.CREATE_CONVERSATION.value,
-                context=PluginContext.from_agent_context(context),
-                shop_id=shop_id,
-                channel=message.channel,
-                content=message.content,
-                sender_identifier=message.sender_identifier,
-                conversation_id=cid_arg,
-                customer_id=customer_id,
-                vehicle_id=vehicle_id,
-                attachments=list(message.attachments or []),
-                metadata=dict(message.metadata or {}),
-            )
-            if conv is not None and getattr(conv, "id", None):
-                context.conversation_id = str(conv.id)
-                context.metadata["conversation_id"] = str(conv.id)
-        except Exception as exc:  # noqa: BLE001 — conversation is additive
-            self._logger.warning("conversation.ingest_failed err=%s", exc)
+                cid_arg = _UUID(conv_id) if conv_id else None
+                conv = await invoke_capability(
+                    Capability.CREATE_CONVERSATION.value,
+                    context=PluginContext.from_agent_context(context),
+                    shop_id=shop_id,
+                    channel=message.channel,
+                    content=message.content,
+                    sender_identifier=message.sender_identifier,
+                    conversation_id=cid_arg,
+                    customer_id=customer_id,
+                    vehicle_id=vehicle_id,
+                    attachments=list(message.attachments or []),
+                    metadata=dict(message.metadata or {}),
+                )
+                if conv is not None and getattr(conv, "id", None):
+                    context.conversation_id = str(conv.id)
+                    context.metadata["conversation_id"] = str(conv.id)
+            except Exception as exc:  # noqa: BLE001 — conversation is additive
+                self._logger.warning("conversation.ingest_failed err=%s", exc)
 
-        self._inject_memory(context, text=message.content)
+        if not voice_fast:
+            self._inject_memory(context, text=message.content)
         stages: dict[str, AgentResult[Any]] = {}
         stage_outputs: list[AgentStageOutput] = []
         collected: list[Decision] = []
 
-        await self._publish(
-            AgentEventType.INCOMING_MESSAGE.value,
-            IncomingMessageEvent(
-                channel=message.channel,
-                raw_content=message.content,
-                sender_identifier=message.sender_identifier,
-                subject=message.subject,
-                received_at=message.received_at,
-                attachments=list(message.attachments or []),
-                metadata={
-                    **dict(message.metadata or {}),
-                    "conversation_id": context.conversation_id,
-                },
-            ),
-            context,
-            source="orchestrator",
-        )
+        if not voice_fast:
+            await self._publish(
+                AgentEventType.INCOMING_MESSAGE.value,
+                IncomingMessageEvent(
+                    channel=message.channel,
+                    raw_content=message.content,
+                    sender_identifier=message.sender_identifier,
+                    subject=message.subject,
+                    received_at=message.received_at,
+                    attachments=list(message.attachments or []),
+                    metadata={
+                        **dict(message.metadata or {}),
+                        "conversation_id": context.conversation_id,
+                    },
+                ),
+                context,
+                source="orchestrator",
+            )
 
         # 1. Communication (normalize — decide only)
         comm_result = await self._communication.run(message, context)
         stages["communication"] = comm_result
         stage_outputs.append(_stage("communication", comm_result))
         if not comm_result.success or comm_result.data is None:
-            return await self._finalize(context, stages, stage_outputs, intent=None, decisions=collected)
+            return await self._finalize(
+                context,
+                stages,
+                stage_outputs,
+                intent=None,
+                decisions=collected,
+                voice_fast=voice_fast,
+            )
 
         normalized = comm_result.data
-        await self._publish(
-            AgentEventType.COMMUNICATION_NORMALIZED.value,
-            CommunicationNormalizedEvent(
-                channel=normalized.channel,
-                direction=normalized.direction,
-                body=normalized.body,
-                sender=normalized.sender,
-                recipient=normalized.recipient,
-                subject=normalized.subject,
-                received_at=normalized.received_at,
-                language=normalized.language,
-                metadata=normalized.metadata,
-            ),
-            context,
-            source="communication",
-        )
+        if not voice_fast:
+            await self._publish(
+                AgentEventType.COMMUNICATION_NORMALIZED.value,
+                CommunicationNormalizedEvent(
+                    channel=normalized.channel,
+                    direction=normalized.direction,
+                    body=normalized.body,
+                    sender=normalized.sender,
+                    recipient=normalized.recipient,
+                    subject=normalized.subject,
+                    received_at=normalized.received_at,
+                    language=normalized.language,
+                    metadata=normalized.metadata,
+                ),
+                context,
+                source="communication",
+            )
 
         # Prefer visit anchors before intent when we already know who/which appt
         # (metadata pin or customer_id). Intent "same time" needs that clock.
@@ -774,7 +816,7 @@ class AgentOrchestrator:
         stages["intent"] = intent_result
         stage_outputs.append(_stage("intent", intent_result))
         intent_data = intent_result.data
-        if intent_data:
+        if intent_data and not voice_fast:
             await self._publish(
                 AgentEventType.INTENT_DETECTED.value,
                 IntentDetectedEvent(
@@ -820,21 +862,23 @@ class AgentOrchestrator:
                 "is_new": bool(customer_result.data.is_new),
                 "tags": list(cust.tags or []),
             }
-            await self._publish(
-                AgentEventType.CUSTOMER_RESOLVED.value,
-                CustomerResolvedEvent(
-                    customer_id=cust.id,
-                    is_new=customer_result.data.is_new,
-                    name=cust.name,
-                    phone=cust.phone,
-                    email=cust.email,
-                    merged_from=list(customer_result.data.merged_from),
-                    profile={"tags": list(cust.tags)},
-                ),
-                context,
-                source="customer",
-            )
-            self._inject_memory(context, text=message.content)
+            if not voice_fast:
+                await self._publish(
+                    AgentEventType.CUSTOMER_RESOLVED.value,
+                    CustomerResolvedEvent(
+                        customer_id=cust.id,
+                        is_new=customer_result.data.is_new,
+                        name=cust.name,
+                        phone=cust.phone,
+                        email=cust.email,
+                        merged_from=list(customer_result.data.merged_from),
+                        profile={"tags": list(cust.tags)},
+                    ),
+                    context,
+                    source="customer",
+                )
+            if not voice_fast:
+                self._inject_memory(context, text=message.content)
             await self._enrich_schedule_context(context)
             # Intent ran before customer resolve; re-bind "today same time" once
             # the visit start is known from upcoming appointments.
@@ -853,48 +897,60 @@ class AgentOrchestrator:
                 ):
                     entities = intent_data.entities
         # 4. Vehicle (decide) → Workflow apply
-        vehicle_req = VehicleResolveRequest(
-            vin=entities.get("vin"),
-            customer_id=context.customer_id,
-            year=entities.get("year"),
-            mileage=entities.get("mileage"),
-            create_if_missing=bool(entities.get("vin")),
+        intent_value_for_vehicle = intent_data.intent.value if intent_data else None
+        run_vehicle = self._needs_vehicle_stage(
+            voice_fast=voice_fast,
+            intent_value=intent_value_for_vehicle,
+            entities=entities if isinstance(entities, dict) else {},
         )
-        vehicle_result = await self._vehicle.run(vehicle_req, context)
-        veh_decision = collect_decision(vehicle_result)
-        if veh_decision is not None:
-            collected.append(veh_decision)
-            applied = await self._apply(context, [veh_decision])
-            if applied and applied.vehicle_result:
-                vehicle_result = AgentResult.ok(applied.vehicle_result)
-        stages["vehicle"] = vehicle_result
-        stage_outputs.append(_stage("vehicle", vehicle_result))
-        if vehicle_result.data and vehicle_result.data.vehicle:
-            v = vehicle_result.data.vehicle
-            context.vehicle_id = v.id
-            await self._publish(
-                AgentEventType.VEHICLE_RESOLVED.value,
-                VehicleResolvedEvent(
-                    vehicle_id=v.id,
-                    customer_id=v.customer_id,
-                    vin=v.vin,
-                    year=v.year,
-                    make=v.make,
-                    model=v.model,
-                    mileage=v.mileage,
-                    repair_history_count=len(vehicle_result.data.repair_history),
-                    maintenance_timeline=[
-                        {
-                            "service": m.service,
-                            "due_mileage": m.due_mileage,
-                            "status": m.status,
-                        }
-                        for m in vehicle_result.data.maintenance_timeline
-                    ],
-                ),
-                context,
-                source="vehicle",
+        if run_vehicle:
+            vehicle_req = VehicleResolveRequest(
+                vin=entities.get("vin"),
+                customer_id=context.customer_id,
+                year=entities.get("year"),
+                mileage=entities.get("mileage"),
+                create_if_missing=bool(entities.get("vin")),
             )
+            vehicle_result = await self._vehicle.run(vehicle_req, context)
+            veh_decision = collect_decision(vehicle_result)
+            if veh_decision is not None:
+                collected.append(veh_decision)
+                applied = await self._apply(context, [veh_decision])
+                if applied and applied.vehicle_result:
+                    vehicle_result = AgentResult.ok(applied.vehicle_result)
+            stages["vehicle"] = vehicle_result
+            stage_outputs.append(_stage("vehicle", vehicle_result))
+            if vehicle_result.data and vehicle_result.data.vehicle:
+                v = vehicle_result.data.vehicle
+                context.vehicle_id = v.id
+                if not voice_fast:
+                    await self._publish(
+                        AgentEventType.VEHICLE_RESOLVED.value,
+                        VehicleResolvedEvent(
+                            vehicle_id=v.id,
+                            customer_id=v.customer_id,
+                            vin=v.vin,
+                            year=v.year,
+                            make=v.make,
+                            model=v.model,
+                            mileage=v.mileage,
+                            repair_history_count=len(vehicle_result.data.repair_history),
+                            maintenance_timeline=[
+                                {
+                                    "service": m.service,
+                                    "due_mileage": m.due_mileage,
+                                    "status": m.status,
+                                }
+                                for m in vehicle_result.data.maintenance_timeline
+                            ],
+                        ),
+                        context,
+                        source="vehicle",
+                    )
+        else:
+            vehicle_result = AgentResult.ok(None)
+            stages["vehicle"] = vehicle_result
+
 
         # 5. Scheduling (decide) → Workflow apply
         # AI identifies requested service → matches catalog → AppointmentDecision;
@@ -991,7 +1047,7 @@ class AgentOrchestrator:
                 )
         stages["scheduling"] = scheduling_result
         stage_outputs.append(_stage("scheduling", scheduling_result))
-        if scheduling_result.data:
+        if scheduling_result.data and not voice_fast:
             s = scheduling_result.data
             await self._publish(
                 AgentEventType.SCHEDULING_RESULT.value,
@@ -1015,184 +1071,187 @@ class AgentOrchestrator:
                 source="scheduling",
             )
 
-        # 6. CRM (decide) → Workflow apply
-        crm_req = CrmUpdateRequest(
-            customer_id=context.customer_id,
-            channel=normalized.channel,
-            message=normalized.body,
-            intent=intent_value,
-            vehicle_id=context.vehicle_id,
-        )
-        crm_result = await self._crm.run(crm_req, context)
-        crm_decision = collect_decision(crm_result)
-        if crm_decision is not None:
-            collected.append(crm_decision)
-            applied = await self._apply(context, [crm_decision])
-            if applied and applied.crm_result:
-                crm_result = AgentResult.ok(applied.crm_result)
-        stages["crm"] = crm_result
-        stage_outputs.append(_stage("crm", crm_result))
-        if crm_result.data:
-            c = crm_result.data
-            await self._publish(
-                AgentEventType.CRM_UPDATED.value,
-                CrmUpdatedEvent(
-                    customer_id=c.customer_id,
-                    communication_recorded=c.communication_recorded,
-                    repair_updated=c.repair_updated,
-                    timeline_entries=len(c.timeline_entries),
-                    customer_summary=c.customer_summary,
-                ),
-                context,
-                source="crm",
+        # 6–8: CRM / revenue / advisor are off the voice critical path (voice memory logs turns).
+        if not voice_fast:
+            # 6. CRM (decide) → Workflow apply
+            crm_req = CrmUpdateRequest(
+                customer_id=context.customer_id,
+                channel=normalized.channel,
+                message=normalized.body,
+                intent=intent_value,
+                vehicle_id=context.vehicle_id,
             )
-
-        # 7. Revenue (decide only) + Marketing decisions → Workflow apply
-        vehicle_data = vehicle_result.data
-        revenue_req = RevenueAnalysisRequest(
-            customer_id=context.customer_id,
-            vehicle=vehicle_data.vehicle if vehicle_data else None,
-            repair_history=vehicle_data.repair_history if vehicle_data else [],
-            maintenance_timeline=vehicle_data.maintenance_timeline if vehicle_data else [],
-            intent=intent_value,
-        )
-        revenue_result = await self._revenue.run(revenue_req, context)
-        stages["revenue"] = revenue_result
-        stage_outputs.append(_stage("revenue", revenue_result))
-        if revenue_result.data:
-            r = revenue_result.data
-            await self._publish(
-                AgentEventType.REVENUE_INSIGHTS.value,
-                RevenueInsightsEvent(
-                    upsell_opportunities=[
-                        {
-                            "service": u.service,
-                            "reason": u.reason,
-                            "estimated_revenue": str(u.estimated_revenue),
-                            "priority": u.priority,
-                        }
-                        for u in r.upsell_opportunities
-                    ],
-                    declined_estimates=r.declined_estimates,
-                    maintenance_reminders=r.maintenance_reminders,
-                    lost_customer_risk=r.lost_customer_risk,
-                    predicted_revenue=r.predicted_revenue,
-                    notes=r.notes,
-                ),
-                context,
-                source="revenue",
-            )
-            rev_decision = collect_decision(revenue_result)
-            if rev_decision is not None:
-                collected.append(rev_decision)
-            # Compose + execute marketing via Decision Layer (AI compose, WF dispatch)
-            if r.maintenance_reminders:
-                from app.workflows.enums import DomainEventType
-                from app.workflows.factory import get_workflow_runtime
-
-                reminder = r.maintenance_reminders[0]
-                mkt_result = await self._marketing.run(
-                    MarketingRequest(
-                        action_type=MarketingActionType.MAINTENANCE_REMINDER,
-                        customer_id=context.customer_id,
-                        channel="sms",
-                        context={
-                            "service": reminder.get("service", "service"),
-                            "due_mileage": reminder.get("due_mileage", "—"),
-                        },
+            crm_result = await self._crm.run(crm_req, context)
+            crm_decision = collect_decision(crm_result)
+            if crm_decision is not None:
+                collected.append(crm_decision)
+                applied = await self._apply(context, [crm_decision])
+                if applied and applied.crm_result:
+                    crm_result = AgentResult.ok(applied.crm_result)
+            stages["crm"] = crm_result
+            stage_outputs.append(_stage("crm", crm_result))
+            if crm_result.data:
+                c = crm_result.data
+                await self._publish(
+                    AgentEventType.CRM_UPDATED.value,
+                    CrmUpdatedEvent(
+                        customer_id=c.customer_id,
+                        communication_recorded=c.communication_recorded,
+                        repair_updated=c.repair_updated,
+                        timeline_entries=len(c.timeline_entries),
+                        customer_summary=c.customer_summary,
                     ),
                     context,
+                    source="crm",
                 )
-                mkt_decision = collect_decision(mkt_result)
-                if mkt_decision is not None:
-                    collected.append(mkt_decision)
-                    await get_workflow_runtime().coordinator.publish(
-                        shop_id=context.shop_id,
-                        event_type=DomainEventType.MAINTENANCE_REMINDER_REQUESTED,
-                        payload={
-                            "customer_id": str(context.customer_id) if context.customer_id else None,
-                            "service": reminder.get("service"),
-                            "due_mileage": reminder.get("due_mileage"),
-                            "channel": "sms",
-                        },
-                        source="agents.revenue",
-                        correlation_id=context.correlation_id,
-                    )
-                    await self._apply(context, [mkt_decision])
 
-        # 8. AI Service Advisor (decide only) → Decision Objects → Workflow apply
-        try:
-            from app.plugins.framework.capability import Capability
-            from app.plugins.framework.context import PluginContext
-            from app.plugins.framework.factory import invoke_capability
-
-            vehicle_payload = None
-            repair_history: list = []
-            if vehicle_result and vehicle_result.data and vehicle_result.data.vehicle:
-                v = vehicle_result.data.vehicle
-                vehicle_payload = {
-                    "year": getattr(v, "year", None),
-                    "make": getattr(v, "make", None),
-                    "model": getattr(v, "model", None),
-                    "mileage": getattr(v, "mileage", None),
-                }
-                repair_history = [
-                    {
-                        "service_type": getattr(r, "service_type", None),
-                        "description": getattr(r, "description", None),
-                    }
-                    for r in (vehicle_result.data.repair_history or [])
-                ]
-            customer_payload = None
-            if customer_result and customer_result.data and customer_result.data.customer:
-                c = customer_result.data.customer
-                customer_payload = {
-                    "name": getattr(c, "name", None),
-                    "phone": getattr(c, "phone", None),
-                    "email": getattr(c, "email", None),
-                    "is_new": bool(customer_result.data.is_new),
-                    "tags": list(getattr(c, "tags", None) or []),
-                }
-            elif context.metadata.get("customer_snapshot"):
-                customer_payload = dict(context.metadata["customer_snapshot"])
-
-            rev_meta: dict = {}
-            if revenue_result and revenue_result.data:
-                r = revenue_result.data
-                rev_meta = {
-                    "lost_customer_risk": getattr(r, "lost_customer_risk", 0.0),
-                    "maintenance_reminders": list(getattr(r, "maintenance_reminders", None) or []),
-                }
-
-            advisor_out = await invoke_capability(
-                Capability.ANALYZE_CONVERSATION.value,
-                context=PluginContext.from_agent_context(context),
-                shop_id=context.shop_id,
-                conversation_id=context.conversation_id,
+            # 7. Revenue (decide only) + Marketing decisions → Workflow apply
+            vehicle_data = vehicle_result.data
+            revenue_req = RevenueAnalysisRequest(
                 customer_id=context.customer_id,
-                vehicle_id=context.vehicle_id,
-                channel=context.channel,
-                inbound_text=context.metadata.get("inbound_text"),
+                vehicle=vehicle_data.vehicle if vehicle_data else None,
+                repair_history=vehicle_data.repair_history if vehicle_data else [],
+                maintenance_timeline=vehicle_data.maintenance_timeline if vehicle_data else [],
                 intent=intent_value,
-                customer=customer_payload,
-                vehicle=vehicle_payload,
-                repair_history=repair_history,
-                mileage=(vehicle_payload or {}).get("mileage"),
-                appointments=list(context.metadata.get("upcoming_appointments") or []),
-                metadata=rev_meta,
             )
-            advisor_decisions = list((advisor_out or {}).get("decisions") or [])
-            collected.extend(advisor_decisions)
-            stages["advisor"] = AgentResult.ok(
-                advisor_out,
-                advisor_notes=(advisor_out or {}).get("advisor_notes"),
-                queue_priority=(advisor_out or {}).get("queue_priority"),
-            )
-            stage_outputs.append(_stage("advisor", stages["advisor"]))
-            if advisor_decisions:
-                await self._apply(context, advisor_decisions)
-        except Exception as exc:  # noqa: BLE001 — advisor is additive
-            self._logger.warning("advisor.stage_failed err=%s", exc)
+            revenue_result = await self._revenue.run(revenue_req, context)
+            stages["revenue"] = revenue_result
+            stage_outputs.append(_stage("revenue", revenue_result))
+            if revenue_result.data:
+                r = revenue_result.data
+                await self._publish(
+                    AgentEventType.REVENUE_INSIGHTS.value,
+                    RevenueInsightsEvent(
+                        upsell_opportunities=[
+                            {
+                                "service": u.service,
+                                "reason": u.reason,
+                                "estimated_revenue": str(u.estimated_revenue),
+                                "priority": u.priority,
+                            }
+                            for u in r.upsell_opportunities
+                        ],
+                        declined_estimates=r.declined_estimates,
+                        maintenance_reminders=r.maintenance_reminders,
+                        lost_customer_risk=r.lost_customer_risk,
+                        predicted_revenue=r.predicted_revenue,
+                        notes=r.notes,
+                    ),
+                    context,
+                    source="revenue",
+                )
+                rev_decision = collect_decision(revenue_result)
+                if rev_decision is not None:
+                    collected.append(rev_decision)
+                if r.maintenance_reminders:
+                    from app.workflows.enums import DomainEventType
+                    from app.workflows.factory import get_workflow_runtime
+
+                    reminder = r.maintenance_reminders[0]
+                    mkt_result = await self._marketing.run(
+                        MarketingRequest(
+                            action_type=MarketingActionType.MAINTENANCE_REMINDER,
+                            customer_id=context.customer_id,
+                            channel="sms",
+                            context={
+                                "service": reminder.get("service", "service"),
+                                "due_mileage": reminder.get("due_mileage", "—"),
+                            },
+                        ),
+                        context,
+                    )
+                    mkt_decision = collect_decision(mkt_result)
+                    if mkt_decision is not None:
+                        collected.append(mkt_decision)
+                        await get_workflow_runtime().coordinator.publish(
+                            shop_id=context.shop_id,
+                            event_type=DomainEventType.MAINTENANCE_REMINDER_REQUESTED,
+                            payload={
+                                "customer_id": str(context.customer_id) if context.customer_id else None,
+                                "service": reminder.get("service"),
+                                "due_mileage": reminder.get("due_mileage"),
+                                "channel": "sms",
+                            },
+                            source="agents.revenue",
+                            correlation_id=context.correlation_id,
+                        )
+                        await self._apply(context, [mkt_decision])
+
+            # 8. AI Service Advisor (decide only) → Decision Objects → Workflow apply
+            try:
+                from app.plugins.framework.capability import Capability
+                from app.plugins.framework.context import PluginContext
+                from app.plugins.framework.factory import invoke_capability
+
+                vehicle_payload = None
+                repair_history: list = []
+                if vehicle_result and vehicle_result.data and vehicle_result.data.vehicle:
+                    v = vehicle_result.data.vehicle
+                    vehicle_payload = {
+                        "year": getattr(v, "year", None),
+                        "make": getattr(v, "make", None),
+                        "model": getattr(v, "model", None),
+                        "mileage": getattr(v, "mileage", None),
+                    }
+                    repair_history = [
+                        {
+                            "service_type": getattr(r, "service_type", None),
+                            "description": getattr(r, "description", None),
+                        }
+                        for r in (vehicle_result.data.repair_history or [])
+                    ]
+                customer_payload = None
+                if customer_result and customer_result.data and customer_result.data.customer:
+                    c = customer_result.data.customer
+                    customer_payload = {
+                        "name": getattr(c, "name", None),
+                        "phone": getattr(c, "phone", None),
+                        "email": getattr(c, "email", None),
+                        "is_new": bool(customer_result.data.is_new),
+                        "tags": list(getattr(c, "tags", None) or []),
+                    }
+                elif context.metadata.get("customer_snapshot"):
+                    customer_payload = dict(context.metadata["customer_snapshot"])
+
+                rev_meta: dict = {}
+                if revenue_result and revenue_result.data:
+                    r = revenue_result.data
+                    rev_meta = {
+                        "lost_customer_risk": getattr(r, "lost_customer_risk", 0.0),
+                        "maintenance_reminders": list(
+                            getattr(r, "maintenance_reminders", None) or []
+                        ),
+                    }
+
+                advisor_out = await invoke_capability(
+                    Capability.ANALYZE_CONVERSATION.value,
+                    context=PluginContext.from_agent_context(context),
+                    shop_id=context.shop_id,
+                    conversation_id=context.conversation_id,
+                    customer_id=context.customer_id,
+                    vehicle_id=context.vehicle_id,
+                    channel=context.channel,
+                    inbound_text=context.metadata.get("inbound_text"),
+                    intent=intent_value,
+                    customer=customer_payload,
+                    vehicle=vehicle_payload,
+                    repair_history=repair_history,
+                    mileage=(vehicle_payload or {}).get("mileage"),
+                    appointments=list(context.metadata.get("upcoming_appointments") or []),
+                    metadata=rev_meta,
+                )
+                advisor_decisions = list((advisor_out or {}).get("decisions") or [])
+                collected.extend(advisor_decisions)
+                stages["advisor"] = AgentResult.ok(
+                    advisor_out,
+                    advisor_notes=(advisor_out or {}).get("advisor_notes"),
+                    queue_priority=(advisor_out or {}).get("queue_priority"),
+                )
+                stage_outputs.append(_stage("advisor", stages["advisor"]))
+                if advisor_decisions:
+                    await self._apply(context, advisor_decisions)
+            except Exception as exc:  # noqa: BLE001 — advisor is additive
+                self._logger.warning("advisor.stage_failed err=%s", exc)
 
         return await self._finalize(
             context,
@@ -1202,6 +1261,7 @@ class AgentOrchestrator:
             is_emergency=bool(intent_data and intent_data.is_emergency),
             is_complaint=bool(intent_data and intent_data.is_complaint),
             decisions=collected,
+            voice_fast=voice_fast,
         )
 
     async def _finalize(
@@ -1214,6 +1274,7 @@ class AgentOrchestrator:
         is_emergency: bool = False,
         is_complaint: bool = False,
         decisions: list[Decision] | None = None,
+        voice_fast: bool = False,
     ) -> PipelineResult:
         collected = list(decisions or [])
         review = SupervisorReviewRequest(
@@ -1242,42 +1303,47 @@ class AgentOrchestrator:
                 )
                 collected.append(esc)
                 await self._apply(context, [esc])
-            await self._publish(
-                AgentEventType.SUPERVISOR_DECISION.value,
-                SupervisorDecisionEvent(
-                    status=decision.status,
-                    escalate=decision.escalate,
-                    escalation_reason=decision.escalation_reason,
-                    conflicts=decision.conflicts,
-                    errors=decision.errors,
-                    owner_summary=decision.owner_summary,
-                    agent_outputs=decision.agent_outputs,
-                ),
-                context,
-                source="supervisor",
-            )
-            await self._publish(
-                AgentEventType.OWNER_SUMMARY.value,
-                OwnerSummaryEvent(
-                    summary=decision.owner_summary,
-                    highlights=[intent] if intent else [],
-                    action_items=decision.action_items,
-                ),
-                context,
-                source="supervisor",
-            )
-            if decision.escalate:
+            if not voice_fast:
                 await self._publish(
-                    AgentEventType.ESCALATION_REQUESTED.value,
-                    EscalationRequestedEvent(
-                        reason=decision.escalation_reason or "Escalation required",
-                        priority="urgent" if is_emergency else "high" if is_complaint else "normal",
-                        customer_id=context.customer_id,
-                        details={"status": decision.status},
+                    AgentEventType.SUPERVISOR_DECISION.value,
+                    SupervisorDecisionEvent(
+                        status=decision.status,
+                        escalate=decision.escalate,
+                        escalation_reason=decision.escalation_reason,
+                        conflicts=decision.conflicts,
+                        errors=decision.errors,
+                        owner_summary=decision.owner_summary,
+                        agent_outputs=decision.agent_outputs,
                     ),
                     context,
                     source="supervisor",
                 )
+                await self._publish(
+                    AgentEventType.OWNER_SUMMARY.value,
+                    OwnerSummaryEvent(
+                        summary=decision.owner_summary,
+                        highlights=[intent] if intent else [],
+                        action_items=decision.action_items,
+                    ),
+                    context,
+                    source="supervisor",
+                )
+                if decision.escalate:
+                    await self._publish(
+                        AgentEventType.ESCALATION_REQUESTED.value,
+                        EscalationRequestedEvent(
+                            reason=decision.escalation_reason or "Escalation required",
+                            priority="urgent"
+                            if is_emergency
+                            else "high"
+                            if is_complaint
+                            else "normal",
+                            customer_id=context.customer_id,
+                            details={"status": decision.status},
+                        ),
+                        context,
+                        source="supervisor",
+                    )
 
         success = all(
             s.success
@@ -1288,26 +1354,29 @@ class AgentOrchestrator:
             s.escalate for s in stages.values()
         )
 
-        await self._publish(
-            AgentEventType.PIPELINE_COMPLETED.value,
-            PipelineCompletedEvent(
-                correlation_id=context.correlation_id,
-                success=success,
-                escalate=escalate,
-                stages=list(stages.keys()),
-                summary=decision.owner_summary if decision else None,
-            ),
-            context,
-            source="orchestrator",
-        )
+        if not voice_fast:
+            await self._publish(
+                AgentEventType.PIPELINE_COMPLETED.value,
+                PipelineCompletedEvent(
+                    correlation_id=context.correlation_id,
+                    success=success,
+                    escalate=escalate,
+                    stages=list(stages.keys()),
+                    summary=decision.owner_summary if decision else None,
+                ),
+                context,
+                source="orchestrator",
+            )
 
-        self._capture_memory(context, stages, escalate=escalate)
+        if not voice_fast:
+            self._capture_memory(context, stages, escalate=escalate)
 
         self._logger.info(
-            "pipeline.completed success=%s escalate=%s decisions=%s",
+            "pipeline.completed success=%s escalate=%s decisions=%s voice_fast=%s",
             success,
             escalate,
             len(collected),
+            voice_fast,
             extra=log_extra(
                 correlation_id=context.correlation_id,
                 shop_id=str(context.shop_id),

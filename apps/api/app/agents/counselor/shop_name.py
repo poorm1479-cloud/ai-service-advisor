@@ -31,7 +31,9 @@ async def resolve_shop_name(shop_id: UUID) -> str | None:
                 await session.execute(select(ShopModel.name).where(ShopModel.id == shop_id))
             ).scalar_one_or_none()
             if row:
-                return str(row)
+                name = str(row)
+                _SHOP_NAMES[shop_id] = name
+                return name
     except Exception:  # pragma: no cover — unit tests / no DB
         return None
     return None

@@ -28,8 +28,9 @@ class Settings(BaseSettings):
     backup_dir: str = "/backups"
 
     # Modular AI — "heuristic" | "openai" (with local fallbacks) | "ollama"
-    # openai mode fallbacks:
-    #   AI: OpenAI → Ollama | STT: Whisper → Local Whisper | TTS: OpenAI → Piper
+    # openai: AI OpenAI→Ollama | STT Whisper→Local Whisper | TTS OpenAI→Piper
+    # ollama: AI Ollama | STT Local Whisper→text-only | TTS Piper→heuristic
+    # heuristic: text-only STT + rule-based extraction (tests/offline); no demo audio transcripts
     ai_provider: str = "ollama"
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
@@ -73,8 +74,9 @@ class Settings(BaseSettings):
     voice_queue_max_attempts: int = 3
     voice_tts_voice: str = "Polly.Joanna"
     voice_barge_in: bool = True
-    voice_gather_timeout_sec: int = 5
-    voice_gather_speech_timeout: str = "auto"
+    voice_gather_timeout_sec: int = 3
+    # Seconds of trailing silence before ending Gather (Twilio). "auto" is often 2–3s+.
+    voice_gather_speech_timeout: str = "1"
     voice_stream_enabled: bool = True
     # Map voice To-number → shop: "+15550001111:uuid" (falls back to twilio_shop_map)
     twilio_voice_shop_map: str = ""
@@ -115,6 +117,23 @@ class Settings(BaseSettings):
     usage_cost_tts_per_1k_chars_micros: int = 15000  # ~$15 / 1M chars
     usage_cost_sms_micros: int = 7900  # ~$0.0079 / SMS
     usage_cost_voice_per_minute_micros: int = 13000  # ~$0.013 / voice minute
+
+    @property
+    def twilio_public_base_url(self) -> str:
+        """Public origin (scheme+host) for building Twilio webhook absolute URLs.
+
+        Accepts either base (`https://abc.ngrok-free.dev`) or a full webhook path;
+        accidentally including `/v1/webhooks/...` must not double-prefix action URLs.
+        """
+        raw = (self.twilio_webhook_public_url or "").strip()
+        if not raw:
+            return ""
+        from urllib.parse import urlparse
+
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+        if not parsed.netloc:
+            return raw.rstrip("/")
+        return f"{parsed.scheme}://{parsed.netloc}"
 
     @property
     def cors_origins(self) -> list[str]:

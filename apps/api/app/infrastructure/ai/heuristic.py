@@ -9,32 +9,36 @@ from app.infrastructure.ai.ports import (
     SpeechToTextPort,
     TextToSpeechPort,
 )
+from app.infrastructure.ai.provider import AIProviderUnavailable
 
 
 class HeuristicSpeechToText(SpeechToTextPort):
-    """Dev/test STT.
+    """Text-only STT path (no demo/sample transcripts for audio).
 
     - If the uploaded file is UTF-8 text (e.g. .txt), treat contents as transcript.
-    - Otherwise return a representative sample transcript for local demos.
+    - Audio requires a real STT provider (Local Whisper / OpenAI).
     """
 
-    SAMPLE = (
-        "2019 Honda Accord oil change completed. "
-        "Brake pads are 30 percent. "
-        "Recommend replacement next visit. "
-        "Mileage 82000."
-    )
+    name = "heuristic_stt"
 
     async def transcribe(self, *, audio_bytes: bytes, filename: str, content_type: str | None) -> str:
-        lower = filename.lower()
+        lower = (filename or "").lower()
         if lower.endswith(".txt") or (content_type or "").startswith("text/"):
             try:
                 text = audio_bytes.decode("utf-8").strip()
-                if text:
-                    return text
-            except UnicodeDecodeError:
-                pass
-        return self.SAMPLE
+            except UnicodeDecodeError as exc:
+                raise AIProviderUnavailable(
+                    "Text note is not valid UTF-8; re-upload as plain text or use audio STT"
+                ) from exc
+            if text:
+                return text
+            raise AIProviderUnavailable("Text note is empty")
+
+        raise AIProviderUnavailable(
+            "Audio speech-to-text is not configured. "
+            "Run Local Whisper (LOCAL_WHISPER_URL) or set AI_PROVIDER=openai, "
+            "or upload a .txt note."
+        )
 
 
 class HeuristicTextToSpeech(TextToSpeechPort):

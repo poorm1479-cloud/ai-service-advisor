@@ -42,9 +42,12 @@ def build_ai_services() -> AIServices:
             extractor=OpenAIRepairExtraction(chat=build_chat_provider("openai")),
         )
     if provider == "ollama":
+        # Extraction/chat: Ollama
+        # STT: Local Whisper → text-only path (.txt notes; never invents audio transcript)
+        # TTS: Piper → heuristic text passthrough
         return AIServices(
-            stt=HeuristicSpeechToText(),
-            tts=HeuristicTextToSpeech(),
+            stt=FallbackSpeechToText(LocalWhisperSpeechToText(), HeuristicSpeechToText()),
+            tts=FallbackTextToSpeech(PiperTextToSpeech(), HeuristicTextToSpeech()),
             extractor=OpenAIRepairExtraction(chat=build_chat_provider("ollama")),
         )
     return AIServices(

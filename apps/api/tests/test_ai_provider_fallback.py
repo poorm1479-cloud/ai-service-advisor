@@ -215,6 +215,25 @@ def test_factory_ollama_wires_ollama_extractor(monkeypatch: pytest.MonkeyPatch) 
     assert isinstance(services.extractor._chat, OllamaChatProvider)
 
 
+def test_factory_ollama_wires_local_whisper_stt(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.infrastructure.ai.heuristic import HeuristicSpeechToText, HeuristicTextToSpeech
+    from app.infrastructure.ai.speech_providers import (
+        FallbackSpeechToText,
+        FallbackTextToSpeech,
+        LocalWhisperSpeechToText,
+        PiperTextToSpeech,
+    )
+
+    monkeypatch.setattr(config.settings, "ai_provider", "ollama")
+    services = build_ai_services()
+    assert isinstance(services.stt, FallbackSpeechToText)
+    assert isinstance(services.stt._primary, LocalWhisperSpeechToText)
+    assert isinstance(services.stt._secondary, HeuristicSpeechToText)
+    assert isinstance(services.tts, FallbackTextToSpeech)
+    assert isinstance(services.tts._primary, PiperTextToSpeech)
+    assert isinstance(services.tts._secondary, HeuristicTextToSpeech)
+
+
 @pytest.mark.asyncio
 async def test_extraction_keeps_same_prompt_and_json(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}

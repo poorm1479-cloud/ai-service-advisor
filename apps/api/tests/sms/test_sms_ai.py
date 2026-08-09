@@ -76,6 +76,18 @@ async def test_twilio_signature_validation():
     assert not validate_twilio_signature(
         auth_token=token, url=url, params=params, signature="bad"
     )
+    # Twilio Console may configure trailing slash while we verify without (or vice versa)
+    assert validate_twilio_signature(
+        auth_token=token, url=url + "/", params=params, signature=sig
+    )
+    # alt_urls covers host/path rewrites from proxies
+    assert validate_twilio_signature(
+        auth_token=token,
+        url="https://wrong.example/path",
+        params=params,
+        signature=sig,
+        alt_urls=[url],
+    )
 
 
 @pytest.mark.asyncio

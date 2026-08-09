@@ -21,7 +21,12 @@ class SmsProviderPort(Protocol):
         """Send SMS; return provider message id."""
 
     def verify_webhook(
-        self, *, url: str, params: dict[str, str], signature: str | None
+        self,
+        *,
+        url: str,
+        params: dict[str, str],
+        signature: str | None,
+        alt_urls: list[str] | None = None,
     ) -> bool: ...
 
 
@@ -49,7 +54,12 @@ class FakeSmsProvider:
         return sid
 
     def verify_webhook(
-        self, *, url: str, params: dict[str, str], signature: str | None
+        self,
+        *,
+        url: str,
+        params: dict[str, str],
+        signature: str | None,
+        alt_urls: list[str] | None = None,
     ) -> bool:
         return True
 
@@ -83,7 +93,12 @@ class TwilioSmsProvider:
             return sid
 
     def verify_webhook(
-        self, *, url: str, params: dict[str, str], signature: str | None
+        self,
+        *,
+        url: str,
+        params: dict[str, str],
+        signature: str | None,
+        alt_urls: list[str] | None = None,
     ) -> bool:
         if not self._settings.validate_signature:
             return True
@@ -94,17 +109,16 @@ class TwilioSmsProvider:
             url=url,
             params=params,
             signature=signature,
+            alt_urls=alt_urls,
         )
 
 
-def validate_twilio_signature(
+def _signature_for_url(
     *,
     auth_token: str,
     url: str,
     params: dict[str, str],
-    signature: str,
-) -> bool:
-    """Validate X-Twilio-Signature (HMAC-SHA1)."""
+) -> str:
     s = url
     for key in sorted(params.keys()):
         s += key + params[key]
@@ -113,9 +127,64 @@ def validate_twilio_signature(
         s.encode("utf-8"),
         hashlib.sha1,
     ).digest()
-    expected = base64.b64encode(digest).decode("utf-8")
-    return hmac.compare_digest(expected, signature)
+    return base64.b64encode(digest).decode("utf-8")
 
 
-def parse_twilio_form(form: dict[str, Any]) -> dict[str, str]:
-    return {str(k): str(v) for k, v in form.items()}
+def _url_signature_candidates(*urls: str) -> list[str]:
+    """Twilio signs the exact webhook URL from Console (slash/query sensitive)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in urls:
+        if not raw:
+            continue
+        base = raw.strip()
+        variants = [base]
+        if "?" in base:
+            path, _, query = base.partition("?")
+            path_alt = path.rstrip("/") if path.endswith("/") else path + "/"
+            variants.append(f"{path_alt}?{query}" if query else path_alt)
+            variants.append(path)
+            variants.append(path_alt)
+        else:
+            variants.append(base.rstrip("/") if base.endswith("/") else base + "/")
+        for u in variants:
+            if u and u not in seen:
+                seen.add(u)
+                out.append(u)
+    return out
+
+
+def validate_twilio_signature(
+    *,
+    auth_token: str,
+    url: str,
+    params: dict[str, str],
+    signature: str,
+    alt_urls: list[str] | None = None,
+) -> bool:
+    """Validate X-Twilio-Signature (HMAC-SHA1).
+
+    Tries the primary URL plus common variants (trailing slash / alts) so
+    proxy + Console URL mismatches do not false-reject valid webhooks.
+    """
+    if not signature or not auth_token:
+        return False
+    token = auth_token.strip()
+    for candidate in _url_signature_candidates(url, *(alt_urls or [])):
+        expected = _signature_for_url(auth_token=token, url=candidate, params=params)
+        if hmac.compare_digest(expected, signature):
+            return True
+    return False
+
+
+def parse_twilio_form(form: Any) -> dict[str, str]:
+    """Normalize Twilio application/x-www-form-urlencoded body to str values."""
+    items = form.multi_items() if hasattr(form, "multi_items") else form.items()
+    out: dict[str, str] = {}
+    for k, v in items:
+        # Keep last value for repeated keys (matches Twilio SDK behaviour)
+        if hasattr(v, "read"):
+            # UploadFile — voice/SMS webhooks do not use file parts
+            continue
+        out[str(k)] = v if isinstance(v, str) else str(v)
+    return out

@@ -24,7 +24,15 @@ function callIdFromSearchParams(searchParams: { get: (key: string) => string | n
 function callIsOpen(call: VoiceCall | undefined | null): boolean {
   if (!call) return false;
   if (call.ended_at) return false;
-  return !["completed", "failed", "no-answer", "busy"].includes(call.status);
+  return ![
+    "completed",
+    "failed",
+    "no-answer",
+    "no_answer",
+    "busy",
+    "canceled",
+    "cancelled",
+  ].includes(call.status);
 }
 
 /** Received / started time for history. */
@@ -210,12 +218,16 @@ export function VoiceCallsPanel() {
 
   useEffect(() => {
     if (authLoading || !session) return;
+    // Faster poll while any call is live so hang-up / new turns feel snappier.
+    const hasLive =
+      history.some((c) => callIsOpen(c)) || callIsOpen(detail?.call);
+    const intervalMs = hasLive ? 1500 : 5000;
     const id = window.setInterval(() => {
       void refresh().catch(() => undefined);
       if (selectedId) void loadDetail(selectedId).catch(() => undefined);
-    }, 4000);
+    }, intervalMs);
     return () => window.clearInterval(id);
-  }, [authLoading, session, refresh, selectedId, loadDetail]);
+  }, [authLoading, session, refresh, selectedId, loadDetail, history, detail?.call]);
 
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });

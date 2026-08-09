@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -91,6 +92,48 @@ class VoiceAiService:
             return self._shop_number_map[phone]
         return await self._store.find_shop_id_by_voice_number(phone)
 
+    async def ensure_call_for_sid(
+        self,
+        *,
+        call_sid: str,
+        from_number: str,
+        to_number: str,
+    ) -> VoiceCall | None:
+        """Return an existing call or create one if memory was lost mid-call.
+
+        In-memory store is wiped on API reload; Twilio Gather still POSTs the
+        CallSid — recover so we return TwiML instead of hanging up with 404.
+        """
+        existing = await self._store.get_call_by_sid(call_sid)
+        if existing:
+            return existing
+        if not call_sid or not from_number:
+            return None
+        shop_id = await self.resolve_shop_id(to_number)
+        if shop_id is None and len(self._shop_number_map) == 1:
+            shop_id = next(iter(self._shop_number_map.values()))
+        if shop_id is None:
+            return None
+        now = datetime.now(timezone.utc)
+        call = VoiceCall(
+            id=uuid4(),
+            shop_id=shop_id,
+            caller_phone=normalize_phone(from_number),
+            called_phone=normalize_phone(to_number) if to_number else "",
+            status=VoiceCallStatus.IN_PROGRESS.value,
+            twilio_call_sid=call_sid,
+            started_at=now,
+            created_at=now,
+        )
+        await self._store.create_call(call)
+        self._monitor.record_call_started()
+        logger.warning(
+            "voice.call.recovered sid=%s shop_id=%s (store miss before gather)",
+            call_sid,
+            shop_id,
+        )
+        return call
+
     def _action_url(self, path: str) -> str:
         if self._public_base_url:
             return f"{self._public_base_url}{path}"
@@ -145,7 +188,8 @@ class VoiceAiService:
         from app.agents.counselor.persona import sanitize_spoken_reply
 
         draft.text = sanitize_spoken_reply(draft.text)
-        spoken = await self._speech.speak(text=draft.text)
+        # Twilio <Say> uses text; skip network TTS on the critical path.
+        spoken = await self._speech.speak(text=draft.text, synthesize=False)
         assistant_turn = await self._persist_turn(
             call,
             role=VoiceTurnRole.ASSISTANT.value,
@@ -189,6 +233,9 @@ class VoiceAiService:
     async def _handle_speech_inner(
         self, *, shop_id: UUID, speech: SpeechInput
     ) -> VoiceTurnResult:
+        import time
+
+        t0 = time.perf_counter()
         call = await self._store.get_call_by_sid(speech.call_sid)
         if call is None:
             raise ValueError("Call not found for speech input")
@@ -213,7 +260,7 @@ class VoiceAiService:
                     text="I'm still here whenever you're ready.",
                     follow_up_question="Go ahead when you're ready.",
                 )
-                spoken = await self._speech.speak(text=draft.text)
+                spoken = await self._speech.speak(text=draft.text, synthesize=False)
                 assistant_turn = await self._persist_turn(
                     call, role=VoiceTurnRole.ASSISTANT.value, text=spoken.text
                 )
@@ -289,11 +336,14 @@ class VoiceAiService:
         )
         if wants_out:
             draft = self._reply.farewell()
-            spoken = await self._speech.speak(text=draft.text)
+            spoken = await self._speech.speak(text=draft.text, synthesize=False)
             assistant_turn = await self._persist_turn(
                 call, role=VoiceTurnRole.ASSISTANT.value, text=spoken.text
             )
-            await self.complete_call(shop_id=shop_id, call_id=call.id)
+            # Close immediately; summary/extraction off critical path (TwiML must return fast).
+            await self.complete_call(
+                shop_id=shop_id, call_id=call.id, finalize_in_background=True
+            )
             twiml = self._provider.build_hangup_twiml(say_text=spoken.text)
             return VoiceTurnResult(
                 call=call,
@@ -335,24 +385,33 @@ class VoiceAiService:
         if memory.pending_needs_time:
             booking_meta["pending_needs_time"] = True
 
-        pipeline = await self._agents.orchestrator.handle_incoming(
-            shop_id=shop_id,
-            message=RawInboundMessage(
-                channel="phone",
-                content=text,
-                sender_identifier=call.caller_phone,
-                metadata={
-                    "call_sid": call.twilio_call_sid,
-                    "call_id": str(call.id),
-                    "conversation_id": str(call.id),
-                    "memory_turns": len(memory.turns),
-                    "interrupted": speech.interrupted,
-                    **booking_meta,
-                },
-            ),
-            customer_id=call.customer_id,
-            conversation_id=call.id,
-        )
+        from app.agents.counselor.shop_name import resolve_shop_name
+
+        # Overlap shop lookup with the agent pipeline (turn latency).
+        shop_name_task = asyncio.create_task(resolve_shop_name(shop_id))
+        try:
+            pipeline = await self._agents.orchestrator.handle_incoming(
+                shop_id=shop_id,
+                message=RawInboundMessage(
+                    channel="phone",
+                    content=text,
+                    sender_identifier=call.caller_phone,
+                    metadata={
+                        "call_sid": call.twilio_call_sid,
+                        "call_id": str(call.id),
+                        "conversation_id": str(call.id),
+                        "memory_turns": len(memory.turns),
+                        "interrupted": speech.interrupted,
+                        **booking_meta,
+                    },
+                ),
+                customer_id=call.customer_id,
+                conversation_id=call.id,
+            )
+        except Exception:
+            shop_name_task.cancel()
+            raise
+        shop_name = await shop_name_task
 
         intent_val = None
         intent_stage = pipeline.stages.get("intent")
@@ -368,9 +427,6 @@ class VoiceAiService:
         if cust_stage and cust_stage.data and cust_stage.data.customer:
             customer_name = cust_stage.data.customer.name
 
-        from app.agents.counselor.shop_name import resolve_shop_name
-
-        shop_name = await resolve_shop_name(shop_id)
         draft = self._reply.generate(
             pipeline=pipeline,
             memory=memory,
@@ -380,7 +436,7 @@ class VoiceAiService:
         from app.agents.counselor.persona import sanitize_spoken_reply
 
         draft.text = sanitize_spoken_reply(draft.text)
-        spoken = await self._speech.speak(text=draft.text)
+        spoken = await self._speech.speak(text=draft.text, synthesize=False)
         assistant_turn = await self._persist_turn(
             call,
             role=VoiceTurnRole.ASSISTANT.value,
@@ -389,13 +445,14 @@ class VoiceAiService:
         )
         await self._memory.append(shop_id=shop_id, call_id=call.id, turn=assistant_turn)
 
-        await self._persist_crm(
+        # CRM is not on the Twilio reply critical path.
+        self._schedule_crm(
             shop_id=shop_id,
             customer_id=call.customer_id,
             message=f"[call] customer: {text}",
             direction=CommunicationDirection.INCOMING,
         )
-        await self._persist_crm(
+        self._schedule_crm(
             shop_id=shop_id,
             customer_id=call.customer_id,
             message=f"[call] assistant: {spoken.text}",
@@ -413,7 +470,9 @@ class VoiceAiService:
             owner_notified = await self._notify_owner(call, pipeline)
             twiml = self._provider.build_dial_human_twiml(say_text=spoken.text)
         elif draft.end_call:
-            await self.complete_call(shop_id=shop_id, call_id=call.id)
+            await self.complete_call(
+                shop_id=shop_id, call_id=call.id, finalize_in_background=True
+            )
             twiml = self._provider.build_hangup_twiml(say_text=spoken.text)
         else:
             call.status = VoiceCallStatus.IN_PROGRESS.value
@@ -668,10 +727,11 @@ class VoiceAiService:
         self._monitor.set_live_calls(len(live))
 
         logger.info(
-            "voice.turn call=%s intent=%s escalate=%s",
+            "voice.turn call=%s intent=%s escalate=%s latency_ms=%.0f",
             call.id,
             intent_val,
             call.escalate,
+            (time.perf_counter() - t0) * 1000,
         )
 
         return VoiceTurnResult(
@@ -685,6 +745,35 @@ class VoiceAiService:
             owner_notified=owner_notified,
         )
 
+    _TERMINAL_STATUSES = frozenset(
+        {
+            VoiceCallStatus.COMPLETED.value,
+            VoiceCallStatus.FAILED.value,
+            VoiceCallStatus.NO_ANSWER.value,
+            "no-answer",
+            "busy",
+            "canceled",
+            "cancelled",
+        }
+    )
+
+    @classmethod
+    def _map_twilio_terminal_status(cls, call_status: str | None) -> str | None:
+        """Map Twilio CallStatus → stored status. None → default completed."""
+        if not call_status:
+            return None
+        raw = call_status.strip().lower()
+        mapping = {
+            "completed": VoiceCallStatus.COMPLETED.value,
+            "busy": "busy",
+            "no-answer": "no-answer",
+            "no_answer": "no-answer",
+            "failed": VoiceCallStatus.FAILED.value,
+            "canceled": "canceled",
+            "cancelled": "canceled",
+        }
+        return mapping.get(raw)
+
     async def complete_call(
         self,
         *,
@@ -693,6 +782,91 @@ class VoiceAiService:
         recording_sid: str | None = None,
         recording_url: str | None = None,
         recording_duration_sec: int | None = None,
+        final_status: str | None = None,
+        finalize_in_background: bool = False,
+    ) -> VoiceCall:
+        """Mark a call ended and persist summary work.
+
+        Hang-ups must close the row immediately so Conversations leaves Live.
+        Heavy summary / repair extraction can run off the path that must return
+        TwiML / webhook 200 quickly (``finalize_in_background=True``).
+        """
+        from app.saas.quota_context import shop_ai_scope
+
+        with shop_ai_scope(shop_id):
+            call = await self._store.get_call(shop_id, call_id)
+            if call is None:
+                raise ValueError("Call not found")
+
+            if recording_sid:
+                call.recording_sid = recording_sid
+            if recording_url:
+                call.recording_url = recording_url
+            if recording_duration_sec is not None:
+                call.recording_duration_sec = recording_duration_sec
+
+            already_ended = bool(call.ended_at) and (
+                call.status in self._TERMINAL_STATUSES
+                or call.status == VoiceCallStatus.ESCALATED.value
+            )
+            first_close = not already_ended
+
+            if first_close:
+                call.ended_at = datetime.now(timezone.utc)
+                mapped = self._map_twilio_terminal_status(final_status)
+                if mapped:
+                    call.status = mapped
+                elif call.status not in {
+                    VoiceCallStatus.ESCALATED.value,
+                    VoiceCallStatus.FAILED.value,
+                }:
+                    call.status = VoiceCallStatus.COMPLETED.value
+                await self._store.update_call(call)
+                live = await self._store.list_live_calls(shop_id)
+                self._monitor.set_live_calls(len(live))
+                self._monitor.record_call_completed()
+            elif not (recording_sid or recording_url or recording_duration_sec is not None):
+                return call
+            else:
+                await self._store.update_call(call)
+
+            if finalize_in_background and first_close:
+                self._schedule_finalize(shop_id=shop_id, call_id=call_id, first_close=True)
+                return call
+
+            return await self._finalize_completed_call(
+                shop_id=shop_id,
+                call_id=call_id,
+                first_close=first_close,
+            )
+
+    def _schedule_finalize(
+        self, *, shop_id: UUID, call_id: UUID, first_close: bool
+    ) -> None:
+        async def _run() -> None:
+            try:
+                await self._finalize_completed_call(
+                    shop_id=shop_id, call_id=call_id, first_close=first_close
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "voice.complete_call.background_finalize_failed call=%s", call_id
+                )
+
+        try:
+            asyncio.get_running_loop().create_task(_run())
+        except RuntimeError:
+            logger.warning(
+                "voice.complete_call.no_loop call=%s — skipping background finalize",
+                call_id,
+            )
+
+    async def _finalize_completed_call(
+        self,
+        *,
+        shop_id: UUID,
+        call_id: UUID,
+        first_close: bool,
     ) -> VoiceCall:
         from app.saas.quota_context import shop_ai_scope
         from app.saas.usage_tracking import (
@@ -710,27 +884,23 @@ class VoiceAiService:
             )
             transcript = memory.as_transcript()
             call.transcript = transcript
-            call.recording_sid = recording_sid or call.recording_sid
-            call.recording_url = recording_url or call.recording_url
-            call.recording_duration_sec = recording_duration_sec or call.recording_duration_sec
-            call.ended_at = datetime.now(timezone.utc)
-            if call.status not in {
-                VoiceCallStatus.ESCALATED.value,
-                VoiceCallStatus.FAILED.value,
-            }:
-                call.status = VoiceCallStatus.COMPLETED.value
 
-            # Structured repair notes from full transcript
-            if transcript.strip():
-                notes = await self._speech.extract_repair_notes(transcript=transcript)
-                call.repair_notes = {
-                    "service": notes.service,
-                    "condition": notes.condition,
-                    "recommendation": notes.recommendation,
-                    "mileage": notes.mileage,
-                }
+            if transcript.strip() and not call.repair_notes:
+                try:
+                    notes = await self._speech.extract_repair_notes(transcript=transcript)
+                    call.repair_notes = {
+                        "service": notes.service,
+                        "condition": notes.condition,
+                        "recommendation": notes.recommendation,
+                        "mileage": notes.mileage,
+                    }
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "voice.complete_call.repair_notes_failed call=%s", call.id
+                    )
 
-            call.call_summary = self._build_call_summary(call, transcript)
+            if not call.call_summary:
+                call.call_summary = self._build_call_summary(call, transcript)
             if not call.owner_summary:
                 call.owner_summary = call.call_summary
 
@@ -742,25 +912,81 @@ class VoiceAiService:
             already = int((call.metadata or {}).get("usage_voice_recorded_sec") or 0)
             delta = duration_sec - already
             if delta > 0:
-                await record_voice_usage(shop_id, delta)
-                call.metadata = {
-                    **(call.metadata or {}),
-                    "usage_voice_recorded_sec": duration_sec,
-                }
+                try:
+                    await record_voice_usage(shop_id, delta)
+                    call.metadata = {
+                        **(call.metadata or {}),
+                        "usage_voice_recorded_sec": duration_sec,
+                    }
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "voice.complete_call.usage_failed call=%s", call.id
+                    )
 
             await self._store.update_call(call)
-            self._monitor.record_call_completed()
 
-            await self._persist_crm(
-                shop_id=shop_id,
-                customer_id=call.customer_id,
-                message=f"[call summary] {call.call_summary}",
-                direction=CommunicationDirection.OUTGOING,
-            )
+            if first_close:
+                try:
+                    await self._persist_crm(
+                        shop_id=shop_id,
+                        customer_id=call.customer_id,
+                        message=f"[call summary] {call.call_summary}",
+                        direction=CommunicationDirection.OUTGOING,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "voice.complete_call.crm_failed call=%s", call.id
+                    )
 
             live = await self._store.list_live_calls(shop_id)
             self._monitor.set_live_calls(len(live))
             return call
+
+    async def complete_call_by_sid(
+        self,
+        *,
+        call_sid: str,
+        final_status: str | None = None,
+    ) -> VoiceCall | None:
+        """Close a live call from Twilio hang-up signals (status / media stream stop)."""
+        if not call_sid:
+            return None
+        call = await self._store.get_call_by_sid(call_sid)
+        if call is None:
+            logger.warning("voice.complete_by_sid.miss sid=%s", call_sid)
+            return None
+        if call.ended_at and call.status in self._TERMINAL_STATUSES:
+            return call
+        return await self.complete_call(
+            shop_id=call.shop_id,
+            call_id=call.id,
+            final_status=final_status,
+            finalize_in_background=True,
+        )
+
+    def _schedule_crm(
+        self,
+        *,
+        shop_id: UUID,
+        customer_id: UUID | None,
+        message: str,
+        direction: CommunicationDirection,
+    ) -> None:
+        if customer_id is None or self._uow_factory is None:
+            return
+
+        async def _run() -> None:
+            await self._persist_crm(
+                shop_id=shop_id,
+                customer_id=customer_id,
+                message=message,
+                direction=direction,
+            )
+
+        try:
+            asyncio.get_running_loop().create_task(_run())
+        except RuntimeError:
+            pass
 
     async def set_human_takeover(
         self, *, shop_id: UUID, call_id: UUID, enabled: bool

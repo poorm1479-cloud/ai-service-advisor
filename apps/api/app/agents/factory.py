@@ -59,8 +59,10 @@ def _default_service_catalog() -> ServiceCatalogPort:
         if settings.environment.lower() in {"test", "testing"}:
             return InMemoryServiceCatalog()
         from app.infrastructure.database import SessionLocal
+        from app.agents.scheduling.catalog_port import CachingServiceCatalog
 
-        return SessionServiceCatalog(SessionLocal)
+        # Cache ~60s — cuts multi-DB hits per voice turn (intent + scheduling).
+        return CachingServiceCatalog(SessionServiceCatalog(SessionLocal), ttl_sec=60.0)
     except Exception:  # pragma: no cover
         return InMemoryServiceCatalog()
 

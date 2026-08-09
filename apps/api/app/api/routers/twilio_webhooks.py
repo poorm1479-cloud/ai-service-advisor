@@ -32,16 +32,28 @@ async def twilio_inbound_sms(
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="SMS disabled")
 
     form = await request.form()
-    params = parse_twilio_form(dict(form))
+    params = parse_twilio_form(form)
     signature = request.headers.get("X-Twilio-Signature")
     # Reconstruct public URL Twilio signed (prefer configured base if behind proxy)
+    path = "/v1/webhooks/twilio/sms"
     url = str(request.url)
-    if settings.twilio_webhook_public_url:
-        url = settings.twilio_webhook_public_url.rstrip("/") + "/v1/webhooks/twilio/sms"
+    alt_urls = [url]
+    base = settings.twilio_public_base_url
+    if base:
+        url = base + path
+        alt_urls.append(base + (request.url.path or path))
+        if request.url.query:
+            alt_urls.append(f"{url}?{request.url.query}")
+        raw = (settings.twilio_webhook_public_url or "").rstrip("/")
+        if raw and raw != base:
+            alt_urls.append(raw)
+            alt_urls.append(raw if raw.endswith(path) else raw + path)
 
-    if not runtime.provider.verify_webhook(url=url, params=params, signature=signature):
+    if not runtime.provider.verify_webhook(
+        url=url, params=params, signature=signature, alt_urls=alt_urls
+    ):
         runtime.monitor.record_webhook_rejected()
-        logger.warning("sms.webhook.rejected signature")
+        logger.warning("sms.webhook.rejected signature url=%s has_sig=%s", url, bool(signature))
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Invalid Twilio signature")
 
     inbound = InboundSms(

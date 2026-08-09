@@ -50,9 +50,33 @@ class SpeechPipeline:
         logger.info("voice.stt chars=%s", len(text))
         return text.strip()
 
-    async def speak(self, *, text: str, voice: str | None = None) -> SpokenReply:
-        synthesis = await self._tts.synthesize(text=text, voice=voice or self._default_voice)
-        return SpokenReply(text=text, synthesis=synthesis, barge_in=self._barge_in)
+    async def speak(
+        self,
+        *,
+        text: str,
+        voice: str | None = None,
+        synthesize: bool = True,
+    ) -> SpokenReply:
+        """Prepare spoken reply text.
+
+        Twilio Voice replies use ``<Say>`` with plain text — skip real TTS/network
+        unless a media file is needed (``synthesize=True``).
+        """
+        spoken = (text or "").strip()
+        selected = voice or self._default_voice
+        if not synthesize:
+            return SpokenReply(
+                text=spoken,
+                synthesis=SpeechSynthesisResult(
+                    audio_bytes=b"",
+                    content_type="text/plain",
+                    voice=selected,
+                    text=spoken,
+                ),
+                barge_in=self._barge_in,
+            )
+        synthesis = await self._tts.synthesize(text=spoken, voice=selected)
+        return SpokenReply(text=spoken, synthesis=synthesis, barge_in=self._barge_in)
 
     async def extract_repair_notes(self, *, transcript: str) -> RepairExtractionResult:
         try:
