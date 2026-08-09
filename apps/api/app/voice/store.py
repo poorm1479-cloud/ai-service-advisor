@@ -17,7 +17,9 @@ class VoiceStorePort(Protocol):
 
     async def get_call(self, shop_id: UUID, call_id: UUID) -> VoiceCall | None: ...
 
-    async def get_call_by_sid(self, call_sid: str) -> VoiceCall | None: ...
+    async def get_call_by_sid(
+        self, call_sid: str, shop_id: UUID | None = None
+    ) -> VoiceCall | None: ...
 
     async def list_calls(
         self, shop_id: UUID, *, status: str | None = None, limit: int = 50
@@ -35,6 +37,8 @@ class VoiceStorePort(Protocol):
 
     async def find_shop_id_by_voice_number(self, phone_e164: str) -> UUID | None: ...
 
+    async def is_shop_ai_paused(self, shop_id: UUID) -> bool: ...
+
 
 class InMemoryVoiceStore:
     def __init__(self) -> None:
@@ -42,12 +46,16 @@ class InMemoryVoiceStore:
         self.by_sid: dict[str, UUID] = {}
         self.turns: dict[UUID, list[VoiceTurn]] = defaultdict(list)
         self.shop_numbers: dict[str, UUID] = {}
+        self.ai_paused_shops: set[UUID] = set()
 
     def register_shop_number(self, shop_id: UUID, phone_e164: str) -> None:
         self.shop_numbers[normalize_phone(phone_e164)] = shop_id
 
     async def find_shop_id_by_voice_number(self, phone_e164: str) -> UUID | None:
         return self.shop_numbers.get(normalize_phone(phone_e164))
+
+    async def is_shop_ai_paused(self, shop_id: UUID) -> bool:
+        return shop_id in self.ai_paused_shops
 
     async def create_call(self, call: VoiceCall) -> VoiceCall:
         self.calls[call.id] = call
@@ -61,11 +69,18 @@ class InMemoryVoiceStore:
             return call
         return None
 
-    async def get_call_by_sid(self, call_sid: str) -> VoiceCall | None:
+    async def get_call_by_sid(
+        self, call_sid: str, shop_id: UUID | None = None
+    ) -> VoiceCall | None:
         call_id = self.by_sid.get(call_sid)
         if not call_id:
             return None
-        return self.calls.get(call_id)
+        call = self.calls.get(call_id)
+        if call is None:
+            return None
+        if shop_id is not None and call.shop_id != shop_id:
+            return None
+        return call
 
     async def list_calls(
         self, shop_id: UUID, *, status: str | None = None, limit: int = 50

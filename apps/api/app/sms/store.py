@@ -42,7 +42,9 @@ class SmsStorePort(Protocol):
 
     async def add_message(self, message: SmsMessage) -> SmsMessage: ...
 
-    async def find_message_by_twilio_sid(self, twilio_sid: str) -> SmsMessage | None: ...
+    async def find_message_by_twilio_sid(
+        self, twilio_sid: str, shop_id: UUID | None = None
+    ) -> SmsMessage | None: ...
 
     async def list_messages(
         self, shop_id: UUID, conversation_id: UUID, *, limit: int = 200
@@ -52,6 +54,8 @@ class SmsStorePort(Protocol):
 
     async def find_shop_id_by_sms_number(self, phone_e164: str) -> UUID | None: ...
 
+    async def is_shop_ai_paused(self, shop_id: UUID) -> bool: ...
+
 
 class InMemorySmsStore:
     """Concurrent-safe enough for unit tests; production uses SQL adapter."""
@@ -60,6 +64,7 @@ class InMemorySmsStore:
         self.conversations: dict[UUID, SmsConversation] = {}
         self.messages: dict[UUID, list[SmsMessage]] = defaultdict(list)
         self.shop_numbers: dict[str, UUID] = {}
+        self.ai_paused_shops: set[UUID] = set()
         self._by_phone: dict[tuple[UUID, str], UUID] = {}
 
     def register_shop_number(self, shop_id: UUID, phone_e164: str) -> None:
@@ -67,6 +72,9 @@ class InMemorySmsStore:
 
     async def find_shop_id_by_sms_number(self, phone_e164: str) -> UUID | None:
         return self.shop_numbers.get(normalize_phone(phone_e164))
+
+    async def is_shop_ai_paused(self, shop_id: UUID) -> bool:
+        return shop_id in self.ai_paused_shops
 
     async def get_or_create_conversation(
         self, *, shop_id: UUID, customer_phone: str, customer_id: UUID | None = None
@@ -120,12 +128,16 @@ class InMemorySmsStore:
             conv.last_message_at = message.created_at or datetime.now(timezone.utc)
         return message
 
-    async def find_message_by_twilio_sid(self, twilio_sid: str) -> SmsMessage | None:
+    async def find_message_by_twilio_sid(
+        self, twilio_sid: str, shop_id: UUID | None = None
+    ) -> SmsMessage | None:
         if not twilio_sid:
             return None
         for msgs in self.messages.values():
             for m in msgs:
                 if m.twilio_sid == twilio_sid:
+                    if shop_id is not None and m.shop_id != shop_id:
+                        continue
                     return m
         return None
 

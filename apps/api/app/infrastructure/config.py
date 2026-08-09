@@ -63,15 +63,27 @@ class Settings(BaseSettings):
     twilio_webhook_public_url: str = ""
     # Map shop Twilio numbers → shop UUID: "+15551111:uuid,+15552222:uuid"
     twilio_shop_map: str = ""
+    # Auto-buy/assign a Twilio number on shop register (fake provider invents one locally)
+    twilio_auto_provision_numbers: bool = True
+    # DANGEROUS: when True, release_shop_number may DELETE IncomingPhoneNumber from Twilio.
+    # Default False — admin Remove must never destroy purchased numbers.
+    twilio_allow_number_release: bool = False
+    twilio_number_country: str = "US"
+    twilio_number_area_code: str = ""  # optional e.g. 206
     sms_queue_backend: str = "memory"  # memory | redis
     sms_queue_max_attempts: int = 3
     sms_enabled: bool = True
+    # Conversation inbox persistence: db survives API restarts; memory is process-local
+    sms_store_backend: str = "db"  # db | memory
+    # Import history persistence: db survives API restarts; memory is process-local
+    import_store_backend: str = "db"  # db | memory
 
     # Phase 7 — Twilio Voice AI
     voice_enabled: bool = True
     voice_provider: str = "fake"  # fake | twilio
     voice_queue_backend: str = "memory"  # memory | redis
     voice_queue_max_attempts: int = 3
+    voice_store_backend: str = "db"  # db | memory
     voice_tts_voice: str = "Polly.Joanna"
     voice_barge_in: bool = True
     voice_gather_timeout_sec: int = 3

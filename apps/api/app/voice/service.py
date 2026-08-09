@@ -103,17 +103,25 @@ class VoiceAiService:
 
         In-memory store is wiped on API reload; Twilio Gather still POSTs the
         CallSid — recover so we return TwiML instead of hanging up with 404.
+
+        Always resolve shop from the To-number and bind FORCE RLS before SID
+        lookup (non-superuser role cannot bypass row security).
         """
-        existing = await self._store.get_call_by_sid(call_sid)
-        if existing:
-            return existing
-        if not call_sid or not from_number:
+        if not call_sid:
             return None
         shop_id = await self.resolve_shop_id(to_number)
         if shop_id is None and len(self._shop_number_map) == 1:
             shop_id = next(iter(self._shop_number_map.values()))
         if shop_id is None:
             return None
+
+        existing = await self._store.get_call_by_sid(call_sid, shop_id=shop_id)
+        if existing:
+            return existing
+
+        if not from_number:
+            return None
+
         now = datetime.now(timezone.utc)
         call = VoiceCall(
             id=uuid4(),
@@ -125,7 +133,16 @@ class VoiceAiService:
             started_at=now,
             created_at=now,
         )
-        await self._store.create_call(call)
+        try:
+            await self._store.create_call(call)
+        except Exception:  # noqa: BLE001 — unique SID race: re-read
+            logger.exception(
+                "voice.call.recover_create_failed sid=%s — retrying get", call_sid
+            )
+            recovered = await self._store.get_call_by_sid(call_sid, shop_id=shop_id)
+            if recovered is not None:
+                return recovered
+            raise
         self._monitor.record_call_started()
         logger.warning(
             "voice.call.recovered sid=%s shop_id=%s (store miss before gather)",
@@ -161,7 +178,8 @@ class VoiceAiService:
         self, *, shop_id: UUID, event: InboundCallEvent
     ) -> VoiceTurnResult:
         now = datetime.now(timezone.utc)
-        existing = await self._store.get_call_by_sid(event.call_sid)
+        # Always shop-scoped — unscoped SID reads fail under FORCE RLS (not superuser).
+        existing = await self._store.get_call_by_sid(event.call_sid, shop_id=shop_id)
         if existing:
             call = existing
         else:
@@ -181,6 +199,27 @@ class VoiceAiService:
         await self._memory.load(
             shop_id=shop_id, call_id=call.id, caller_phone=call.caller_phone
         )
+
+        if await self._store.is_shop_ai_paused(shop_id):
+            # Stop Voice AI processing only — no agent/TTS pipeline.
+            notice = (
+                "Thanks for calling. Our phone assistant is paused right now. "
+                "Please try again later."
+            )
+            twiml = self._provider.build_hangup_twiml(say_text=notice)
+            live = await self._store.list_live_calls(shop_id)
+            self._monitor.set_live_calls(len(live))
+            draft = VoiceReplyDraft(text=notice, end_call=True, reason="ai_paused")
+            return VoiceTurnResult(
+                call=call,
+                caller_turn=None,
+                assistant_turn=None,
+                reply=draft,
+                spoken_text=notice,
+                pipeline=None,
+                twiml=twiml,
+            )
+
         from app.agents.counselor.shop_name import resolve_shop_name
 
         shop_name = await resolve_shop_name(shop_id)
@@ -208,6 +247,11 @@ class VoiceAiService:
             action_url=self._action_url(self._gather_action_path),
             stream_ws_url=self._stream_url(),
             record=True,
+            stream_parameters={
+                "shop_id": str(shop_id),
+                "to_number": call.called_phone or "",
+                "call_id": str(call.id),
+            },
         )
         live = await self._store.list_live_calls(shop_id)
         self._monitor.set_live_calls(len(live))
@@ -236,7 +280,7 @@ class VoiceAiService:
         import time
 
         t0 = time.perf_counter()
-        call = await self._store.get_call_by_sid(speech.call_sid)
+        call = await self._store.get_call_by_sid(speech.call_sid, shop_id=shop_id)
         if call is None:
             raise ValueError("Call not found for speech input")
         if call.shop_id != shop_id:
@@ -309,6 +353,24 @@ class VoiceAiService:
                 assistant_turn=None,
                 reply=draft,
                 spoken_text=draft.text,
+                pipeline=None,
+                twiml=twiml,
+            )
+
+        if await self._store.is_shop_ai_paused(shop_id):
+            # Caller speech may be recorded above; skip agent/TTS reply.
+            notice = (
+                "Our phone assistant is paused right now. "
+                "Please try again later. Goodbye."
+            )
+            twiml = self._provider.build_hangup_twiml(say_text=notice)
+            draft = VoiceReplyDraft(text=notice, end_call=True, reason="ai_paused")
+            return VoiceTurnResult(
+                call=call,
+                caller_turn=caller_turn,
+                assistant_turn=None,
+                reply=draft,
+                spoken_text=notice,
                 pipeline=None,
                 twiml=twiml,
             )
@@ -883,6 +945,16 @@ class VoiceAiService:
                 shop_id=shop_id, call_id=call.id, caller_phone=call.caller_phone
             )
             transcript = memory.as_transcript()
+            # Persist path may outlive process-local memory (API reload) — rehydrate from DB turns.
+            if not (transcript or "").strip():
+                turns = await self._store.list_turns(shop_id, call.id)
+                if turns:
+                    lines = [
+                        f"{'Caller' if t.role == 'caller' else 'Assistant'}: {t.text}"
+                        for t in turns
+                        if (t.text or "").strip()
+                    ]
+                    transcript = "\n".join(lines)
             call.transcript = transcript
 
             if transcript.strip() and not call.repair_notes:
@@ -947,11 +1019,21 @@ class VoiceAiService:
         *,
         call_sid: str,
         final_status: str | None = None,
+        to_number: str | None = None,
+        shop_id: UUID | None = None,
     ) -> VoiceCall | None:
         """Close a live call from Twilio hang-up signals (status / media stream stop)."""
         if not call_sid:
             return None
-        call = await self._store.get_call_by_sid(call_sid)
+        resolved_shop = shop_id
+        if resolved_shop is None and to_number:
+            resolved_shop = await self.resolve_shop_id(to_number)
+        call = None
+        if resolved_shop is not None:
+            call = await self._store.get_call_by_sid(call_sid, shop_id=resolved_shop)
+        if call is None:
+            # Stream-stop / misconfigured status may omit To — non-fatal miss.
+            call = await self._store.get_call_by_sid(call_sid)
         if call is None:
             logger.warning("voice.complete_by_sid.miss sid=%s", call_sid)
             return None

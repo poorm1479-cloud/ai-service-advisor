@@ -36,7 +36,14 @@ from app.infrastructure.models import (
 
 
 def _shop(m: ShopModel) -> Shop:
-    return Shop(id=m.id, name=m.name, slug=m.slug, timezone=m.timezone, created_at=m.created_at)
+    return Shop(
+        id=m.id,
+        name=m.name,
+        slug=m.slug,
+        timezone=m.timezone,
+        ai_paused=bool(m.ai_paused),
+        created_at=m.created_at,
+    )
 
 
 def _user(m: UserModel) -> User:
@@ -194,7 +201,13 @@ class SqlAlchemyShopRepository:
         return _shop(row) if row else None
 
     async def add(self, shop: Shop) -> Shop:
-        model = ShopModel(id=shop.id, name=shop.name, slug=shop.slug, timezone=shop.timezone)
+        model = ShopModel(
+            id=shop.id,
+            name=shop.name,
+            slug=shop.slug,
+            timezone=shop.timezone,
+            ai_paused=bool(shop.ai_paused),
+        )
         self._session.add(model)
         await self._session.flush()
         return _shop(model)
@@ -206,8 +219,29 @@ class SqlAlchemyShopRepository:
         row.name = shop.name
         row.slug = shop.slug
         row.timezone = shop.timezone
+        row.ai_paused = bool(shop.ai_paused)
         await self._session.flush()
         return _shop(row)
+
+    async def set_channel_phones(
+        self,
+        shop_id: UUID,
+        *,
+        sms_phone_e164: str | None,
+        voice_phone_e164: str | None,
+    ) -> None:
+        row = await self._session.get(ShopModel, shop_id)
+        if row is None:
+            raise ValueError("Shop not found")
+        row.sms_phone_e164 = sms_phone_e164
+        row.voice_phone_e164 = voice_phone_e164
+        await self._session.flush()
+
+    async def get_channel_phones(self, shop_id: UUID) -> tuple[str | None, str | None]:
+        row = await self._session.get(ShopModel, shop_id)
+        if row is None:
+            return None, None
+        return row.sms_phone_e164, row.voice_phone_e164
 
 
 class SqlAlchemyUserRepository:
@@ -985,6 +1019,19 @@ class SqlAlchemyCommunicationHistoryRepository:
             .order_by(CommunicationHistoryModel.created_at.desc())
         )
         return [_communication(r) for r in rows]
+
+    async def delete(
+        self, shop_id: UUID, customer_id: UUID, communication_id: UUID
+    ) -> bool:
+        result = await self._session.execute(
+            delete(CommunicationHistoryModel).where(
+                CommunicationHistoryModel.id == communication_id,
+                CommunicationHistoryModel.shop_id == shop_id,
+                CommunicationHistoryModel.customer_id == customer_id,
+            )
+        )
+        await self._session.flush()
+        return bool(result.rowcount)
 
 
 class SqlAlchemyWalkInVisitRepository:

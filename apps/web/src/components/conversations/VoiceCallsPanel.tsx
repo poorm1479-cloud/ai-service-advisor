@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import {
@@ -87,6 +88,45 @@ function IconPhone({ className = "h-3.5 w-3.5" }: { className?: string }) {
   );
 }
 
+function IconTrash({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+    </svg>
+  );
+}
+
+function IconX({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
 /** Soft waveform bars — reads as an active voice line. */
 function CallWaveform({ className = "" }: { className?: string }) {
   return (
@@ -150,7 +190,9 @@ export function VoiceCallsPanel() {
   const [sending, setSending] = useState(false);
   const [starting, setStarting] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
+  const [checkedIds, setCheckedIds] = useState<string[]>([]);
+  const [pendingDeleteIds, setPendingDeleteIds] = useState<string[]>([]);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
 
   const selectCall = useCallback(
@@ -281,26 +323,64 @@ export function VoiceCallsPanel() {
     }
   }
 
-  function openDeleteConfirm() {
-    if (!selectedId || deleting) return;
-    setConfirmDeleteOpen(true);
+  function exitSelectMode() {
+    setSelectMode(false);
+    setCheckedIds([]);
+  }
+
+  function toggleChecked(id: string) {
+    setCheckedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  }
+
+  function toggleSelectAll() {
+    if (checkedIds.length === history.length) {
+      setCheckedIds([]);
+    } else {
+      setCheckedIds(history.map((c) => c.id));
+    }
+  }
+
+  function openDeleteConfirm(ids: string | string[]) {
+    const list = (Array.isArray(ids) ? ids : [ids]).filter(Boolean);
+    if (!list.length || deleting) return;
+    setError(null);
+    setPendingDeleteIds(list);
   }
 
   function closeDeleteConfirm() {
     if (deleting) return;
-    setConfirmDeleteOpen(false);
+    setPendingDeleteIds([]);
   }
 
   async function onConfirmDeleteCall() {
-    if (!selectedId) return;
+    if (!pendingDeleteIds.length) return;
+    const ids = [...pendingDeleteIds];
     setError(null);
     setDeleting(true);
     try {
-      await deleteVoiceCall(selectedId);
-      setConfirmDeleteOpen(false);
-      selectCall(null);
-      setDetail(null);
+      const results = await Promise.allSettled(ids.map((id) => deleteVoiceCall(id)));
+      const failed = results.filter((r) => r.status === "rejected").length;
+      const deletedIds = ids.filter((_, i) => results[i]?.status === "fulfilled");
+      setPendingDeleteIds([]);
+      setCheckedIds((prev) => {
+        const next = prev.filter((id) => !deletedIds.includes(id));
+        if (selectMode && next.length === 0) setSelectMode(false);
+        return next;
+      });
+      if (selectedId && deletedIds.includes(selectedId)) {
+        selectCall(null);
+        setDetail(null);
+      }
       await refresh();
+      if (failed > 0) {
+        setError(
+          deletedIds.length
+            ? `Deleted ${deletedIds.length}, ${failed} failed`
+            : "Delete failed",
+        );
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Delete failed");
     } finally {
@@ -309,42 +389,83 @@ export function VoiceCallsPanel() {
   }
 
   const open = callIsOpen(detail?.call);
+  const liveCount = history.filter((c) => callIsOpen(c)).length;
+  const detailReceivedAt = detail ? formatCallReceivedAt(detail.call) : null;
+  const detailDuration =
+    detail && !open ? formatCallDuration(detail.call) : null;
+  const allSelected = history.length > 0 && checkedIds.length === history.length;
+  const pendingDeleteCount = pendingDeleteIds.length;
+  const pendingDeleteCall =
+    pendingDeleteCount === 1
+      ? history.find((c) => c.id === pendingDeleteIds[0]) ?? null
+      : null;
+  const pendingDeleteMeta = pendingDeleteCall
+    ? [formatCallReceivedAt(pendingDeleteCall), formatCallDuration(pendingDeleteCall)]
+        .filter(Boolean)
+        .join(" · ")
+    : null;
 
   if (!session && !authLoading) {
-    return <p className="text-sm text-[var(--muted)]">Sign in to view voice calls.</p>;
+    return (
+      <div className="surface-panel flex flex-col items-center px-6 py-16 text-center">
+        <span className="mb-3 inline-flex h-12 w-12 items-center justify-center rounded-full bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)]">
+          <IconPhone className="h-5 w-5" />
+        </span>
+        <p className="font-display text-lg font-semibold tracking-tight">Sign in required</p>
+        <p className="mt-1 max-w-xs text-sm text-[var(--muted)]">
+          Sign in to view and manage voice conversations.
+        </p>
+      </div>
+    );
   }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
-      {error && <p className="shrink-0 text-sm text-red-700">{error}</p>}
+      {error && (
+        <p
+          className="shrink-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+          role="alert"
+        >
+          {error}
+        </p>
+      )}
 
       <form
         onSubmit={onStartChat}
-        className="grid shrink-0 gap-2 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 sm:grid-cols-[minmax(0,220px)_auto]"
+        className="surface-panel relative shrink-0 overflow-hidden"
       >
-        <input
-          type="tel"
-          className="rounded-md border border-[var(--line)] px-3 py-2 text-sm"
-          value={simFrom}
-          onChange={(e) => setSimFrom(formatPhoneInput(e.target.value))}
-          placeholder={PHONE_PLACEHOLDER}
-          aria-label="Your phone number"
-          disabled={starting}
-        />
-        <button
-          type="submit"
-          disabled={starting}
-          className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
-        >
-          {starting ? "Starting…" : "Start conversation"}
-        </button>
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-16 bg-gradient-to-br from-[var(--accent-soft)] via-transparent to-transparent" />
+        <div className="relative grid gap-3 p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+          <label className="block min-w-0">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+              Caller number
+            </span>
+            <input
+              type="tel"
+              className="mt-1.5 w-full rounded-xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-glow)]"
+              value={simFrom}
+              onChange={(e) => setSimFrom(formatPhoneInput(e.target.value))}
+              placeholder={PHONE_PLACEHOLDER}
+              aria-label="Your phone number"
+              disabled={starting}
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={starting}
+            className="btn-primary gap-2 px-5 py-2.5 shadow-[0_14px_32px_-16px_rgba(240,90,36,0.85)] disabled:opacity-60"
+          >
+            <IconPhone className="h-3.5 w-3.5" />
+            {starting ? "Starting…" : "Start conversation"}
+          </button>
+        </div>
       </form>
 
       <div
         className={`grid min-h-0 flex-1 gap-4 ${
           detail?.call.recording_url
-            ? "lg:grid-cols-[260px_1fr_280px]"
-            : "lg:grid-cols-[260px_1fr]"
+            ? "lg:grid-cols-[280px_1fr_260px]"
+            : "lg:grid-cols-[280px_1fr]"
         }`}
       >
         <section
@@ -352,86 +473,208 @@ export function VoiceCallsPanel() {
             selectedId ? "hidden lg:flex" : "flex"
           }`}
         >
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)]">
-            <header className="shrink-0 border-b border-[var(--line)] px-4 py-3 text-sm font-medium">
-              Call history
+          <div className="surface-panel flex min-h-0 flex-1 flex-col overflow-hidden">
+            <header className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--line)] px-4 py-3">
+              <div className="flex min-w-0 items-center gap-2.5">
+                <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)]">
+                  <IconPhone className="h-3.5 w-3.5" />
+                </span>
+                <p className="text-sm font-semibold tracking-tight">Call history</p>
+              </div>
+              <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                {!loading && !selectMode && (
+                  <span className="rounded-full bg-[var(--background)] px-2.5 py-1 text-[11px] font-semibold tabular-nums text-[var(--muted)] ring-1 ring-[var(--line)]">
+                    {history.length}
+                    {liveCount > 0 ? ` · ${liveCount} live` : ""}
+                  </span>
+                )}
+                {!loading && history.length > 0 && (
+                  selectMode ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={toggleSelectAll}
+                        className="rounded-full px-2.5 py-1 text-[11px] font-semibold text-[var(--muted)] ring-1 ring-[var(--line)] transition hover:bg-[var(--background)]"
+                      >
+                        {allSelected ? "Clear" : "All"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openDeleteConfirm(checkedIds)}
+                        disabled={deleting || checkedIds.length === 0}
+                        title={
+                          checkedIds.length > 0
+                            ? `Delete ${checkedIds.length} selected`
+                            : "Delete selected"
+                        }
+                        aria-label={
+                          checkedIds.length > 0
+                            ? `Delete ${checkedIds.length} selected`
+                            : "Delete selected"
+                        }
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-full text-red-600 transition hover:bg-red-50 disabled:opacity-40"
+                      >
+                        <IconTrash />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={exitSelectMode}
+                        disabled={deleting}
+                        title="Done"
+                        aria-label="Done"
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)] disabled:opacity-40"
+                      >
+                        <IconX />
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setSelectMode(true)}
+                      className="rounded-full px-2.5 py-1 text-[11px] font-semibold text-[var(--muted)] ring-1 ring-[var(--line)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]"
+                    >
+                      Select
+                    </button>
+                  )
+                )}
+              </div>
             </header>
-            <ul className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+            <ul className="asa-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain">
               {loading && (
-                <li className="px-4 py-6 text-sm text-[var(--muted)]">Loading…</li>
+                <li className="space-y-3 px-4 py-5">
+                  {[0, 1, 2].map((i) => (
+                    <div
+                      key={i}
+                      className="flex animate-pulse gap-3 rounded-xl bg-[var(--background)]/70 p-3"
+                    >
+                      <div className="h-9 w-9 rounded-full bg-[var(--panel)]" />
+                      <div className="min-w-0 flex-1 space-y-2 py-1">
+                        <div className="h-3 w-2/3 rounded bg-[var(--panel)]" />
+                        <div className="h-2.5 w-1/2 rounded bg-[var(--panel)]" />
+                      </div>
+                    </div>
+                  ))}
+                </li>
               )}
               {!loading && history.length === 0 && (
-                <li className="px-4 py-6 text-sm text-[var(--muted)]">No call history.</li>
+                <li className="flex flex-col items-center px-6 py-14 text-center">
+                  <span className="mb-3 inline-flex h-12 w-12 items-center justify-center rounded-full bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)]">
+                    <IconPhone className="h-5 w-5" />
+                  </span>
+                  <p className="font-display text-base font-semibold tracking-tight">
+                    No calls yet
+                  </p>
+                  <p className="mt-1 max-w-[14rem] text-sm text-[var(--muted)]">
+                    Start a conversation above to open your first live line.
+                  </p>
+                </li>
               )}
               {history.map((c) => {
                 const isLive = callIsOpen(c);
                 const receivedAt = formatCallReceivedAt(c);
                 const duration = isLive ? null : formatCallDuration(c);
+                const active = selectedId === c.id;
+                const checked = checkedIds.includes(c.id);
                 return (
                   <li key={c.id}>
-                    <button
-                      type="button"
-                      onClick={() => selectCall(c.id)}
-                      className={`w-full border-b border-[var(--line)] px-4 py-3 text-left transition-colors ${
+                    <div
+                      className={`group flex items-start gap-1 border-b border-[var(--line)] transition-colors ${
                         isLive ? "border-l-2 border-l-emerald-500" : ""
                       } ${
-                        selectedId === c.id
-                          ? isLive
-                            ? "bg-emerald-50/80"
-                            : "bg-[var(--accent-soft)]"
-                          : isLive
-                            ? "bg-emerald-50/40 hover:bg-emerald-50/70"
-                            : "hover:bg-[var(--background)]"
+                        selectMode && checked
+                          ? "bg-red-50/70"
+                          : active
+                            ? isLive
+                              ? "bg-emerald-50/90"
+                              : "bg-[var(--accent-soft)]/70"
+                            : isLive
+                              ? "bg-emerald-50/35 hover:bg-emerald-50/65"
+                              : "hover:bg-[var(--accent-soft)]/30"
                       }`}
                     >
-                      <div className="flex items-start gap-2.5">
-                        <span className="mt-0.5 shrink-0">
-                          {isLive ? <LiveCallBadge /> : <CallIconBadge />}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="truncate font-mono text-sm leading-7">
-                              {c.caller_phone}
-                            </span>
-                            <span className="flex shrink-0 items-center gap-1.5">
-                              {isLive && (
-                                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-800">
-                                  <CallWaveform className="text-emerald-600" />
-                                  Live
-                                </span>
-                              )}
-                              {c.escalate && (
-                                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] uppercase text-amber-800">
-                                  Escalate
-                                </span>
-                              )}
-                              {!isLive && c.status !== "completed" && (
-                                <span className="text-[10px] uppercase text-[var(--muted)]">
-                                  {c.status}
-                                </span>
-                              )}
-                            </span>
-                          </div>
-                          {isLive ? (
-                            <p className="mt-0.5 flex items-center gap-1.5 truncate text-xs font-medium text-emerald-700">
-                              <CallWaveform className="text-emerald-600" />
-                              On the line…
-                              {receivedAt ? (
-                                <span className="font-normal text-[var(--muted)]">
-                                  · {receivedAt}
-                                </span>
-                              ) : null}
-                            </p>
-                          ) : (
-                            (receivedAt || duration) && (
-                              <p className="mt-0.5 truncate text-xs text-[var(--muted)]">
-                                {[receivedAt, duration].filter(Boolean).join(" · ")}
+                      {selectMode && (
+                        <label className="mt-4 flex shrink-0 cursor-pointer items-center pl-3">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleChecked(c.id)}
+                            disabled={deleting}
+                            className="h-4 w-4 rounded border-[var(--line)] text-[var(--accent)] focus:ring-[var(--accent-glow)]"
+                            aria-label={`Select call ${c.caller_phone}`}
+                          />
+                        </label>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          selectMode ? toggleChecked(c.id) : selectCall(c.id)
+                        }
+                        className="min-w-0 flex-1 px-4 py-3.5 text-left"
+                      >
+                        <div className="flex items-start gap-3">
+                          <span className="mt-0.5 shrink-0">
+                            {isLive ? <LiveCallBadge /> : <CallIconBadge />}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="truncate font-mono text-sm font-medium leading-7 tracking-tight">
+                                {c.caller_phone}
+                              </span>
+                              <span className="flex shrink-0 items-center gap-1.5">
+                                {isLive && (
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100/90 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-800 ring-1 ring-emerald-200/80">
+                                    <CallWaveform className="text-emerald-600" />
+                                    Live
+                                  </span>
+                                )}
+                                {c.escalate && (
+                                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 ring-1 ring-amber-200/80">
+                                    Escalate
+                                  </span>
+                                )}
+                                {!isLive && c.status !== "completed" && (
+                                  <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--muted)]">
+                                    {c.status}
+                                  </span>
+                                )}
+                              </span>
+                            </div>
+                            {isLive ? (
+                              <p className="mt-0.5 flex items-center gap-1.5 truncate text-xs font-medium text-emerald-700">
+                                <CallWaveform className="text-emerald-600" />
+                                On the line…
+                                {receivedAt ? (
+                                  <span className="font-normal text-[var(--muted)]">
+                                    · {receivedAt}
+                                  </span>
+                                ) : null}
                               </p>
-                            )
-                          )}
+                            ) : (
+                              (receivedAt || duration) && (
+                                <p className="mt-0.5 truncate text-xs text-[var(--muted)]">
+                                  {[receivedAt, duration].filter(Boolean).join(" · ")}
+                                </p>
+                              )
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    </button>
+                      </button>
+                      {!selectMode && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openDeleteConfirm(c.id);
+                          }}
+                          disabled={deleting}
+                          title="Delete call"
+                          aria-label={`Delete call ${c.caller_phone}`}
+                          className="mr-2 mt-3.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--muted)] transition hover:bg-red-50 hover:text-red-600 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 disabled:opacity-40"
+                        >
+                          <IconTrash />
+                        </button>
+                      )}
+                    </div>
                   </li>
                 );
               })}
@@ -440,114 +683,142 @@ export function VoiceCallsPanel() {
         </section>
 
         <section
-          className={`min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] ${
+          className={`surface-panel min-h-0 flex-col overflow-hidden ${
             selectedId ? "flex" : "hidden lg:flex"
           }`}
         >
           <header
-            className={`flex shrink-0 flex-wrap items-center justify-between gap-2 border-b px-4 py-3 ${
+            className={`relative flex shrink-0 flex-wrap items-center justify-between gap-3 border-b px-4 py-3.5 sm:px-5 ${
               open
-                ? "border-emerald-200 bg-gradient-to-r from-emerald-50/90 to-transparent"
+                ? "border-emerald-200/80"
                 : "border-[var(--line)]"
             }`}
           >
-            <div className="flex min-w-0 items-start gap-3">
-              {detail && (
-                <span className="mt-0.5 shrink-0">
-                  {open ? <LiveCallBadge size="md" /> : <CallIconBadge size="md" />}
-                </span>
-              )}
-              <div className="min-w-0">
-                {selectedId && (
-                  <button
-                    type="button"
-                    onClick={() => selectCall(null)}
-                    className="mb-1 text-xs text-[var(--accent)] lg:hidden"
-                  >
-                    ← Calls
-                  </button>
-                )}
-                <p className="truncate text-sm font-medium">
-                  {detail ? detail.call.caller_phone : "Select a call"}
-                </p>
-                {detail && (
-                  <p
-                    className={`flex flex-wrap items-center gap-1.5 truncate text-xs ${
-                      open ? "font-medium text-emerald-700" : "text-[var(--muted)]"
-                    }`}
-                  >
-                    {open ? (
-                      <>
-                        <CallWaveform className="text-emerald-600" />
-                        <span>On call</span>
-                      </>
-                    ) : detail.call.status !== "completed" ? (
-                      detail.call.status
-                    ) : null}
-                  </p>
-                )}
-              </div>
-            </div>
-            {detail && (
-              <div className="flex flex-wrap gap-2">
-                {open && (
-                  <button
-                    type="button"
-                    onClick={() => void onComplete()}
-                    className="rounded-md border border-[var(--line)] px-3 py-1.5 text-xs"
-                  >
-                    End & summarize
-                  </button>
-                )}
+            <div
+              className={`pointer-events-none absolute inset-0 ${
+                open
+                  ? "bg-gradient-to-r from-emerald-50/95 via-emerald-50/40 to-transparent"
+                  : "bg-gradient-to-br from-[var(--accent-soft)]/50 via-transparent to-transparent"
+              }`}
+            />
+            <div className="relative min-w-0 flex-1">
+              {selectedId && (
                 <button
                   type="button"
-                  onClick={openDeleteConfirm}
-                  disabled={deleting}
-                  className="rounded-md border border-red-200 px-3 py-1.5 text-xs text-red-600 disabled:opacity-50"
+                  onClick={() => selectCall(null)}
+                  className="mb-1 text-xs font-medium text-[var(--accent)] lg:hidden"
                 >
-                  {deleting ? "Deleting…" : "Delete"}
+                  ← Calls
+                </button>
+              )}
+              <div className="flex min-w-0 items-start gap-3">
+                {detail ? (
+                  <span className="shrink-0">
+                    {open ? <LiveCallBadge size="md" /> : <CallIconBadge size="md" />}
+                  </span>
+                ) : (
+                  <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)]">
+                    <IconPhone className="h-4 w-4" />
+                  </span>
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="flex h-8 items-center justify-between gap-3">
+                    <p className="min-w-0 truncate font-display text-base font-semibold leading-8 tracking-tight">
+                      {detail ? detail.call.caller_phone : "Select a call"}
+                    </p>
+                    {detail && (detailReceivedAt || detailDuration) ? (
+                      <p className="shrink-0 text-xs tabular-nums text-[var(--muted)]">
+                        {[detailReceivedAt, detailDuration].filter(Boolean).join(" · ")}
+                      </p>
+                    ) : null}
+                  </div>
+                  {detail && open ? (
+                    <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs font-medium text-emerald-700">
+                      <CallWaveform className="text-emerald-600" />
+                      <span>On call</span>
+                    </p>
+                  ) : detail && detail.call.status !== "completed" ? (
+                    <p className="mt-0.5 text-xs text-[var(--muted)]">
+                      {detail.call.status}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+            {detail && open && (
+              <div className="relative flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void onComplete()}
+                  className="btn-ghost rounded-full px-3.5 py-1.5 text-xs"
+                >
+                  End & summarize
                 </button>
               </div>
             )}
           </header>
 
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-4">
+          <div className="asa-scroll relative min-h-0 flex-1 space-y-3.5 overflow-y-auto overscroll-contain bg-[radial-gradient(120%_80%_at_100%_0%,rgba(240,90,36,0.07),transparent_42%),radial-gradient(90%_70%_at_0%_100%,rgba(0,0,0,0.035),transparent_48%),linear-gradient(180deg,#f6f5f4_0%,#f2f2f2_45%,#eeeeee_100%)] p-4 sm:p-5">
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-0 opacity-[0.35] [background-image:radial-gradient(rgba(0,0,0,0.045)_0.6px,transparent_0.6px)] [background-size:14px_14px] [mask-image:linear-gradient(180deg,black,transparent_92%)]"
+            />
             {!detail && (
-              <p className="text-sm text-[var(--muted)]">
-                Start a conversation with your phone number, then chat turn-by-turn like SMS —
-                book, change, or cancel, then say goodbye to hang up.
-              </p>
+              <div className="relative flex h-full min-h-[12rem] flex-col items-center justify-center px-4 py-10 text-center">
+                <span className="mb-4 inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--accent)]/20">
+                  <IconPhone className="h-6 w-6" />
+                </span>
+                <p className="font-display text-lg font-semibold tracking-tight">
+                  Ready when you are
+                </p>
+                <p className="mt-1.5 max-w-sm text-sm leading-relaxed text-[var(--muted)]">
+                  Start with a phone number, then chat turn-by-turn — book, change, or cancel,
+                  then say goodbye to hang up.
+                </p>
+              </div>
             )}
             {detail?.turns.map((t) => {
               const isYou = t.role === "caller" || t.role === "customer" || t.role === "user";
               return (
                 <div
                   key={t.id}
-                  className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
+                  className={`relative w-fit max-w-[85%] overflow-hidden px-3.5 py-2.5 text-sm backdrop-blur-[2px] ${
                     isYou
-                      ? "ml-auto bg-[var(--accent-soft)] text-[var(--accent)]"
-                      : "bg-[var(--background)]"
+                      ? "ml-auto rounded-[1.25rem] rounded-br-md bg-[linear-gradient(145deg,rgba(240,90,36,0.16)_0%,rgba(240,90,36,0.07)_42%,rgba(255,255,255,0.92)_100%)] text-[var(--accent)] shadow-[0_1px_1px_rgba(240,90,36,0.08),0_10px_28px_-16px_rgba(240,90,36,0.45)] ring-1 ring-[var(--accent)]/20"
+                      : "rounded-[1.25rem] rounded-bl-md bg-[linear-gradient(160deg,rgba(255,255,255,0.98)_0%,rgba(255,255,255,0.9)_55%,rgba(246,246,246,0.95)_100%)] text-[var(--foreground)] shadow-[0_1px_1px_rgba(0,0,0,0.03),0_12px_28px_-18px_rgba(0,0,0,0.28)] ring-1 ring-black/[0.06]"
                   }`}
                 >
-                  <p className="break-words">{t.text}</p>
-                  <p className="mt-1 text-[10px] uppercase tracking-wide opacity-70">
-                    {isYou ? "You" : "AI"}
-                    {t.interrupted ? " · interrupted" : ""}
-                    {t.intent ? ` · ${t.intent}` : ""}
+                  <div
+                    aria-hidden
+                    className={`pointer-events-none absolute inset-x-3 top-0 h-px ${
+                      isYou
+                        ? "bg-gradient-to-r from-transparent via-[var(--accent)]/40 to-transparent"
+                        : "bg-gradient-to-r from-transparent via-black/12 to-transparent"
+                    }`}
+                  />
+                  <div
+                    aria-hidden
+                    className={`pointer-events-none absolute -left-8 -top-10 h-24 w-24 rounded-full blur-2xl ${
+                      isYou ? "bg-[var(--accent)]/15" : "bg-black/[0.04]"
+                    }`}
+                  />
+                  <p className="relative break-words leading-relaxed">{t.text}</p>
+                  <p className="relative mt-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+                    {isYou ? "Customer" : "AI"}
                   </p>
                 </div>
               );
             })}
-            <div ref={transcriptEndRef} />
+            <div ref={transcriptEndRef} className="relative" />
           </div>
 
           {detail && open && (
             <form
               onSubmit={onSendMessage}
-              className="flex shrink-0 gap-2 border-t border-[var(--line)] p-3"
+              className="flex shrink-0 gap-2 border-t border-[var(--line)] bg-[var(--panel)]/95 px-3 py-3 backdrop-blur-sm sm:px-4"
             >
               <input
-                className="min-w-0 flex-1 rounded-md border border-[var(--line)] px-3 py-2 text-sm"
+                className="min-w-0 flex-1 rounded-full border border-[var(--line)] bg-white px-4 py-2.5 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-glow)]"
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
                 placeholder="Type as the customer…"
@@ -558,7 +829,7 @@ export function VoiceCallsPanel() {
               <button
                 type="submit"
                 disabled={sending || !message.trim()}
-                className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+                className="btn-primary px-5 py-2.5 disabled:opacity-60"
               >
                 {sending ? "…" : "Send"}
               </button>
@@ -572,62 +843,115 @@ export function VoiceCallsPanel() {
               selectedId ? "block" : "hidden lg:block"
             }`}
           >
-            <div className="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4">
-              <h2 className="text-sm font-medium">Recording</h2>
-              <p className="mt-2 break-all font-mono text-xs text-[var(--muted)]">
-                {detail.call.recording_url}
-              </p>
-              {detail.call.recording_duration_sec != null && (
-                <p className="mt-1 text-xs text-[var(--muted)]">
-                  {detail.call.recording_duration_sec}s
+            <div className="surface-panel relative overflow-hidden p-4">
+              <div className="pointer-events-none absolute inset-x-0 top-0 h-12 bg-gradient-to-br from-[var(--accent-soft)] via-transparent to-transparent" />
+              <div className="relative">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+                  Recording
                 </p>
-              )}
+                <h2 className="mt-1 text-sm font-semibold tracking-tight">Call audio</h2>
+                <p className="mt-3 break-all font-mono text-[11px] leading-relaxed text-[var(--muted)]">
+                  {detail.call.recording_url}
+                </p>
+                {detail.call.recording_duration_sec != null && (
+                  <p className="mt-2 inline-flex rounded-full bg-[var(--background)] px-2.5 py-1 text-xs font-semibold tabular-nums text-[var(--muted)] ring-1 ring-[var(--line)]">
+                    {detail.call.recording_duration_sec}s
+                  </p>
+                )}
+              </div>
             </div>
           </section>
         )}
       </div>
 
-      {confirmDeleteOpen && (
-        <div
-          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="delete-call-title"
-          onClick={closeDeleteConfirm}
-        >
+      {pendingDeleteCount > 0 &&
+        createPortal(
           <div
-            className="w-full max-w-md space-y-4 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5 shadow-xl"
-            onClick={(e) => e.stopPropagation()}
+            className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-call-title"
+            onClick={closeDeleteConfirm}
           >
-            <div>
-              <h2 id="delete-call-title" className="text-sm font-semibold text-red-700">
-                Delete this call history?
-              </h2>
-              <p className="mt-2 text-sm text-[var(--muted)]">
-                Transcripts cannot be recovered. This action cannot be undone.
-              </p>
+            <div
+              className="w-full max-w-[26rem] overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="relative overflow-hidden border-b border-red-100 bg-gradient-to-br from-red-50 via-white to-white px-4 py-3.5">
+                <div
+                  className="pointer-events-none absolute -right-6 -top-8 h-24 w-24 rounded-full bg-red-100/70 blur-2xl"
+                  aria-hidden="true"
+                />
+                <div className="relative flex items-center gap-3">
+                  <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-red-600 text-white shadow-md shadow-red-600/25">
+                    <IconTrash className="h-4 w-4" />
+                  </span>
+                  <h2
+                    id="delete-call-title"
+                    className="text-base font-semibold tracking-tight text-slate-900"
+                  >
+                    {pendingDeleteCount > 1
+                      ? `Delete ${pendingDeleteCount} conversations?`
+                      : "Delete call history?"}
+                  </h2>
+                </div>
+              </div>
+
+              <div className="space-y-4 px-5 py-5">
+                {pendingDeleteCall ? (
+                  <div className="flex items-start gap-3 rounded-xl border border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-3.5 py-3">
+                    <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-900 text-white">
+                      <IconPhone className="h-4 w-4" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold text-slate-900">
+                        {pendingDeleteCall.caller_phone}
+                      </p>
+                      {pendingDeleteMeta && (
+                        <p className="mt-1 text-xs text-[var(--muted)]">
+                          {pendingDeleteMeta}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-[var(--muted)]">
+                    {pendingDeleteCount} selected conversations will be permanently removed.
+                  </p>
+                )}
+
+                {error && (
+                  <p
+                    className="rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-700"
+                    role="alert"
+                  >
+                    {error}
+                  </p>
+                )}
+
+                <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                  <button
+                    type="button"
+                    onClick={closeDeleteConfirm}
+                    disabled={deleting}
+                    className="btn-ghost px-4 py-2 text-sm disabled:opacity-60"
+                  >
+                    No
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onConfirmDeleteCall()}
+                    disabled={deleting}
+                    className="inline-flex items-center justify-center rounded-full bg-red-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm shadow-red-600/20 transition hover:bg-red-700 disabled:opacity-60"
+                  >
+                    {deleting ? "Deleting…" : "Yes"}
+                  </button>
+                </div>
+              </div>
             </div>
-            <div className="flex flex-wrap justify-end gap-2">
-              <button
-                type="button"
-                onClick={closeDeleteConfirm}
-                disabled={deleting}
-                className="rounded-md border border-[var(--line)] px-4 py-2 text-sm disabled:opacity-60"
-              >
-                No
-              </button>
-              <button
-                type="button"
-                onClick={() => void onConfirmDeleteCall()}
-                disabled={deleting}
-                className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-60"
-              >
-                {deleting ? "Deleting…" : "Yes"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

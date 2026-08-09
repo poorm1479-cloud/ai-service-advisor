@@ -8,11 +8,11 @@ import {
   DashboardCard,
   ExecutiveDashboard,
   getExecutiveDashboard,
-  refreshExecutiveDashboard,
   Widget,
   WidgetItem,
 } from "@/lib/executive";
 import { listOpportunities, Opportunity, updateOpportunityStatus } from "@/lib/revenue";
+import { getShopSettings, setShopAiPaused } from "@/lib/tenant";
 
 const POLL_MS = 15000;
 
@@ -39,16 +39,16 @@ export default function DashboardPage() {
   const [data, setData] = useState<ExecutiveDashboard | null>(null);
   const [opps, setOpps] = useState<Opportunity[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [live, setLive] = useState(true);
-  const [busy, setBusy] = useState(false);
+  const [aiPaused, setAiPaused] = useState(false);
+  const [pauseBusy, setPauseBusy] = useState(false);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   // null until mount — avoids SSR/client clock mismatch (hydration error)
   const [now, setNow] = useState<Date | null>(null);
 
-  const load = useCallback(async (force = false) => {
+  const load = useCallback(async () => {
     try {
       const [dash, opportunities] = await Promise.all([
-        force ? refreshExecutiveDashboard() : getExecutiveDashboard(false),
+        getExecutiveDashboard(false),
         listOpportunities({ status: "open" }).catch(() => [] as Opportunity[]),
       ]);
       setData(dash);
@@ -61,8 +61,12 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!session) return;
-    // Prefer cached executive snapshot on first paint; manual Refresh still forces.
-    void load(false);
+    void load();
+    void getShopSettings()
+      .then((s) => setAiPaused(Boolean(s.ai_paused)))
+      .catch(() => {
+        /* keep default */
+      });
   }, [session, load]);
 
   useEffect(() => {
@@ -72,12 +76,12 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    if (!session || !live) return;
+    if (!session) return;
     const tick = () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         return;
       }
-      void load(false);
+      void load();
     };
     const id = setInterval(tick, POLL_MS);
     const onVisibility = () => {
@@ -88,14 +92,18 @@ export default function DashboardPage() {
       clearInterval(id);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [session, live, load]);
+  }, [session, load]);
 
-  async function onRefresh() {
-    setBusy(true);
+  async function onToggleAiPause() {
+    setPauseBusy(true);
     try {
-      await load(true);
+      const next = !aiPaused;
+      const shop = await setShopAiPaused(next);
+      setAiPaused(Boolean(shop.ai_paused));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update AI pause");
     } finally {
-      setBusy(false);
+      setPauseBusy(false);
     }
   }
 
@@ -142,66 +150,78 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="space-y-4 pb-2 md:space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-2">
-        <div>
-          <h1 className="page-title">Dashboard</h1>
-          <p className="mt-0.5 text-sm text-[var(--muted)]">
-            {session
-              ? `${session.shopName} · ${ROLE_LABELS[session.role]}`
-              : "Loading shop context…"}
-            <span className="ml-2 text-xs">
-              {now ? ` · ${now.toLocaleTimeString()}` : null}
-              {data ? (live ? " · live" : " · paused") : null}
+    <div className="relative space-y-6 pb-4 md:space-y-7">
+      {/* Ambient wash — scoped to dashboard content */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -inset-x-2 -top-4 h-56 rounded-[1.5rem] bg-[radial-gradient(ellipse_at_top_left,rgba(240,90,36,0.09),transparent_55%),linear-gradient(180deg,rgba(255,255,255,0.55),transparent)]"
+      />
+
+      <header className="hero-motion relative flex flex-wrap items-end justify-between gap-4">
+        <div className="min-w-0">
+          <p className="section-label">Shop command</p>
+          <h1 className="page-title mt-1.5 text-2xl sm:text-3xl">Dashboard</h1>
+          <div className="mt-2.5 flex flex-wrap items-center gap-2 text-sm text-[var(--muted)]">
+            <span className="font-medium text-[var(--foreground)]">
+              {session ? session.shopName : "Loading shop…"}
             </span>
-          </p>
+            {session && (
+              <>
+                <span className="text-[var(--line)]" aria-hidden>
+                  ·
+                </span>
+                <span>{ROLE_LABELS[session.role]}</span>
+              </>
+            )}
+            {now && (
+              <>
+                <span className="text-[var(--line)]" aria-hidden>
+                  ·
+                </span>
+                <span className="tabular-nums">{now.toLocaleTimeString()}</span>
+              </>
+            )}
+          </div>
         </div>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() => setLive((v) => !v)}
-            className="btn-ghost px-3 py-2 text-sm"
-          >
-            {live ? "Pause" : "Live"}
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void onRefresh()}
-            className="btn-primary px-3 py-2 disabled:opacity-60"
-          >
-            {busy ? "…" : "Refresh"}
-          </button>
-        </div>
-      </div>
+
+        <StatusPill
+          live={!aiPaused}
+          busy={pauseBusy}
+          onToggle={() => void onToggleAiPause()}
+        />
+      </header>
 
       {error && (
-        <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <p className="relative rounded-xl border border-red-200/80 bg-red-50/90 px-4 py-3 text-sm text-red-700 shadow-[var(--shadow-soft)]">
           {error}
         </p>
       )}
 
       {isEmptyShop && session?.role === "owner" && (
-        <div className="surface-panel flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-          <div>
-            <p className="text-sm font-medium">No shop data yet</p>
-            <p className="mt-0.5 text-sm text-[var(--muted)]">
-              Import customers and history to populate this dashboard.
-            </p>
+        <div className="hero-motion-delay relative overflow-hidden rounded-2xl border border-[var(--line)] bg-[linear-gradient(135deg,#111_0%,#1a1a1a_55%,#2a1810_100%)] px-5 py-4 text-white shadow-[var(--shadow-soft)]">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute -right-8 -top-10 h-36 w-36 rounded-full bg-[radial-gradient(circle,rgba(240,90,36,0.45),transparent_70%)]"
+          />
+          <div className="relative flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold tracking-tight">No shop data yet</p>
+              <p className="mt-1 max-w-md text-sm text-white/65">
+                Import customers and history to populate this dashboard.
+              </p>
+            </div>
+            <Link href="/dashboard/import" className="btn-primary px-4 py-2 text-sm">
+              Import data
+            </Link>
           </div>
-          <Link href="/dashboard/import" className="btn-primary px-3 py-2 text-sm">
-            Import data
-          </Link>
         </div>
       )}
 
       {/* 1. Today Overview */}
-      <section>
-        <h2 className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
-          Today Overview
-        </h2>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-          {OVERVIEW_CARD_IDS.map((id) => {
+      <section className="hero-motion-delay relative">
+        <SectionHeading title="Today Overview" hint="Live shop pulse" />
+        <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
+          {OVERVIEW_CARD_IDS.map((id, i) => {
             const card = cardsById.get(id);
             return (
               <Metric
@@ -210,6 +230,8 @@ export default function DashboardPage() {
                 value={card?.value ?? "—"}
                 tone={card?.tone}
                 detail={card?.detail}
+                emphasis={id === "todays_revenue" || id === "expected_revenue"}
+                delayMs={40 * i}
               />
             );
           })}
@@ -217,11 +239,9 @@ export default function DashboardPage() {
       </section>
 
       {/* 2. AI Activity */}
-      <section>
-        <h2 className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
-          AI Activity
-        </h2>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <section className="hero-motion-late relative">
+        <SectionHeading title="AI Activity" hint="Automated work today" />
+        <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
           <Metric label="AI calls handled" value={String(aiActivity.callsHandled)} />
           <Metric label="Appointments created" value={String(aiActivity.appointmentsCreated)} />
           <Metric label="Reminders sent" value={String(aiActivity.remindersSent)} />
@@ -230,119 +250,139 @@ export default function DashboardPage() {
       </section>
 
       {/* 3. Today's Actions */}
-      <section>
-        <h2 className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
-          Today&apos;s Actions
-        </h2>
-        {todaysActions.length === 0 ? (
-          <p className="surface-panel px-4 py-3 text-sm text-[var(--muted)]">
-            No actions needed right now.
-          </p>
-        ) : (
-          <ul className="divide-y divide-[var(--line)] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)]">
-            {todaysActions.map((item) => (
-              <li
-                key={item.id}
-                className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:flex-nowrap"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{item.customer}</p>
-                  <p className="truncate text-xs text-[var(--muted)]">{item.issue}</p>
-                </div>
-                <p className="shrink-0 font-display text-sm font-semibold tabular-nums">
-                  {item.value}
-                </p>
-                <button
-                  type="button"
-                  disabled={actionBusy === item.id}
-                  onClick={() => void onContact(item.oppId, item.href)}
-                  className="btn-primary shrink-0 px-3 py-1.5 text-sm disabled:opacity-60"
+      <section className="relative">
+        <SectionHeading
+          title="Today's Actions"
+          hint={todaysActions.length ? `${todaysActions.length} waiting` : "Clear"}
+        />
+        <div className="mt-3">
+          {todaysActions.length === 0 ? (
+            <EmptyPanel message="No actions needed right now." />
+          ) : (
+            <ul className="divide-y divide-[var(--line)] overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[var(--shadow-soft)]">
+              {todaysActions.map((item) => (
+                <li
+                  key={item.id}
+                  className="group flex flex-wrap items-center justify-between gap-3 px-4 py-3.5 transition-colors hover:bg-[rgba(240,90,36,0.03)] sm:flex-nowrap sm:px-5"
                 >
-                  {actionBusy === item.id ? "…" : "Contact"}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
+                  <div className="flex min-w-0 flex-1 items-start gap-3">
+                    <span
+                      aria-hidden
+                      className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent)] opacity-70 transition-opacity group-hover:opacity-100"
+                    />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold tracking-tight">
+                        {item.customer}
+                      </p>
+                      <p className="mt-0.5 truncate text-xs text-[var(--muted)]">{item.issue}</p>
+                    </div>
+                  </div>
+                  <p className="font-display shrink-0 text-sm font-semibold tabular-nums tracking-tight">
+                    {item.value}
+                  </p>
+                  <button
+                    type="button"
+                    disabled={actionBusy === item.id}
+                    onClick={() => void onContact(item.oppId, item.href)}
+                    className="btn-primary shrink-0 px-3.5 py-1.5 text-sm disabled:opacity-60"
+                  >
+                    {actionBusy === item.id ? "…" : "Contact"}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </section>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="relative grid gap-5 lg:grid-cols-2 lg:gap-6">
         {/* 4. Repair Status */}
         <section>
-          <h2 className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
-            Repair Status
-          </h2>
-          <div className="grid grid-cols-3 gap-2">
-            <RepairColumn title="Active" items={repairGroups.active} />
-            <RepairColumn title="Waiting" items={repairGroups.waiting} />
-            <RepairColumn title="Scheduled" items={repairGroups.scheduled} />
+          <SectionHeading title="Repair Status" hint="Bay & schedule" />
+          <div className="mt-3 grid grid-cols-3 gap-2.5">
+            <RepairColumn title="Active" tone="active" items={repairGroups.active} />
+            <RepairColumn title="Waiting" tone="waiting" items={repairGroups.waiting} />
+            <RepairColumn title="Scheduled" tone="scheduled" items={repairGroups.scheduled} />
           </div>
         </section>
 
         {/* 5. Customers To Contact */}
         <section>
-          <h2 className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
-            Customers To Contact
-          </h2>
-          {opps.length === 0 ? (
-            <p className="surface-panel px-4 py-3 text-sm text-[var(--muted)]">
-              No customers waiting for contact.
-            </p>
-          ) : (
-            <div className="surface-panel overflow-x-auto">
-              <table className="min-w-full text-left text-sm">
-                <thead className="text-[10px] uppercase tracking-wide text-[var(--muted)]">
-                  <tr>
-                    <th className="px-3 py-2 font-medium">Customer</th>
-                    <th className="hidden px-3 py-2 font-medium sm:table-cell">
-                      AI recommendation
-                    </th>
-                    <th className="hidden px-3 py-2 font-medium md:table-cell">Reason</th>
-                    <th className="px-3 py-2 font-medium">Est. value</th>
-                    <th className="px-3 py-2 font-medium">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {opps.map((o) => (
-                    <tr key={o.id} className="border-t border-[var(--line)]">
-                      <td className="px-3 py-2">
-                        <p className="font-medium">{o.customer_name}</p>
-                        <p className="mt-0.5 text-xs text-[var(--muted)] sm:hidden">
-                          {o.recommended_message || o.recommended_channel}
-                        </p>
-                      </td>
-                      <td className="hidden max-w-[12rem] truncate px-3 py-2 text-xs text-[var(--muted)] sm:table-cell">
-                        {o.recommended_message || `Contact via ${o.recommended_channel}`}
-                      </td>
-                      <td className="hidden max-w-[10rem] truncate px-3 py-2 text-xs md:table-cell">
-                        {o.reason || o.title}
-                      </td>
-                      <td className="px-3 py-2 tabular-nums">
-                        ${Number(o.expected_revenue).toLocaleString()}
-                      </td>
-                      <td className="px-3 py-2">
-                        <button
-                          type="button"
-                          disabled={actionBusy === o.id}
-                          onClick={() =>
-                            void onContact(o.id, `/dashboard/customers/${o.customer_id}`)
-                          }
-                          className="btn-ghost px-2 py-1 text-xs"
+          <SectionHeading
+            title="Customers To Contact"
+            hint={opps.length ? `${opps.length} open` : "None open"}
+          />
+          <div className="mt-3">
+            {opps.length === 0 ? (
+              <EmptyPanel message="No customers waiting for contact." />
+            ) : (
+              <div className="surface-panel overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-[var(--line)] bg-[rgba(0,0,0,0.015)] text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">
+                        <th className="px-4 py-2.5 font-semibold">Customer</th>
+                        <th className="hidden px-4 py-2.5 font-semibold sm:table-cell">
+                          AI recommendation
+                        </th>
+                        <th className="hidden px-4 py-2.5 font-semibold md:table-cell">Reason</th>
+                        <th className="px-4 py-2.5 font-semibold">Est. value</th>
+                        <th className="px-4 py-2.5 font-semibold">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {opps.map((o) => (
+                        <tr
+                          key={o.id}
+                          className="border-t border-[var(--line)] transition-colors hover:bg-[rgba(240,90,36,0.025)]"
                         >
-                          {actionBusy === o.id ? "…" : "Contact"}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                          <td className="px-4 py-3">
+                            <p className="font-semibold tracking-tight">{o.customer_name}</p>
+                            <p className="mt-0.5 text-xs text-[var(--muted)] sm:hidden">
+                              {o.recommended_message || o.recommended_channel}
+                            </p>
+                          </td>
+                          <td className="hidden max-w-[12rem] truncate px-4 py-3 text-xs text-[var(--muted)] sm:table-cell">
+                            {o.recommended_message || `Contact via ${o.recommended_channel}`}
+                          </td>
+                          <td className="hidden max-w-[10rem] truncate px-4 py-3 text-xs md:table-cell">
+                            {o.reason || o.title}
+                          </td>
+                          <td className="px-4 py-3 font-display text-sm font-semibold tabular-nums tracking-tight">
+                            ${Number(o.expected_revenue).toLocaleString()}
+                          </td>
+                          <td className="px-4 py-3">
+                            <button
+                              type="button"
+                              disabled={actionBusy === o.id}
+                              onClick={() =>
+                                void onContact(o.id, `/dashboard/customer/${o.customer_id}`)
+                              }
+                              className="btn-ghost px-2.5 py-1 text-xs disabled:opacity-60"
+                            >
+                              {actionBusy === o.id ? "…" : "Contact"}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
         </section>
       </div>
 
       {!data && !error && (
-        <p className="text-sm text-[var(--muted)]">Loading shop snapshot…</p>
+        <div className="relative grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div
+              key={i}
+              className="surface-panel h-[4.75rem] animate-pulse bg-[linear-gradient(90deg,rgba(0,0,0,0.02),rgba(0,0,0,0.05),rgba(0,0,0,0.02))]"
+            />
+          ))}
+        </div>
       )}
     </div>
   );
@@ -381,7 +421,7 @@ function buildTodaysActions(
     issue: o.reason || o.title,
     value: `$${Number(o.expected_revenue).toLocaleString()}`,
     oppId: o.id,
-    href: `/dashboard/customers/${o.customer_id}`,
+    href: `/dashboard/customer/${o.customer_id}`,
   }));
 }
 
@@ -431,16 +471,150 @@ function looksLikeUuid(value: string) {
   );
 }
 
+function SectionHeading({ title, hint }: { title: string; hint?: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">
+        {title}
+      </h2>
+      {hint && (
+        <span className="truncate text-[11px] text-[var(--muted)]/80">{hint}</span>
+      )}
+    </div>
+  );
+}
+
+function StatusPill({
+  live,
+  busy,
+  onToggle,
+}: {
+  live: boolean;
+  busy: boolean;
+  onToggle: () => void;
+}) {
+  const label = busy
+    ? "Updating…"
+    : live
+      ? "AI answering — click to pause"
+      : "Calls paused — click to resume";
+
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      onClick={onToggle}
+      title={label}
+      aria-label={label}
+      aria-pressed={!live}
+      className={`group inline-flex items-center gap-1.5 rounded-full border p-1.5 pr-2 text-xs font-semibold tracking-wide transition-[background-color,border-color,opacity,transform] duration-200 hover:scale-[1.02] disabled:opacity-60 ${
+        live
+          ? "border-emerald-200/80 bg-emerald-50/90 text-emerald-800 hover:border-emerald-300 hover:bg-emerald-100/90"
+          : "border-amber-200/80 bg-amber-50/90 text-amber-900 hover:border-amber-300 hover:bg-amber-100/90"
+      }`}
+    >
+      <span className="relative inline-flex h-7 w-7 items-center justify-center">
+        {live && !busy && (
+          <span
+            aria-hidden
+            className="absolute inset-0 animate-ping rounded-full bg-emerald-400/35"
+          />
+        )}
+        <span
+          aria-hidden
+          className={`relative inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
+            live ? "bg-emerald-500/15 text-emerald-700" : "bg-amber-500/15 text-amber-800"
+          }`}
+        >
+          <IconAiAnswering paused={!live} className="h-4 w-4" />
+        </span>
+      </span>
+      <span
+        aria-hidden
+        className={`inline-flex h-6 w-6 items-center justify-center rounded-full transition-colors ${
+          live ? "bg-emerald-600/10 text-emerald-800" : "bg-amber-700/10 text-amber-900"
+        }`}
+      >
+        {busy ? (
+          <span className="text-[10px] leading-none">…</span>
+        ) : live ? (
+          <IconPause className="h-3 w-3" />
+        ) : (
+          <IconPlay className="h-3 w-3" />
+        )}
+      </span>
+    </button>
+  );
+}
+
+/** Phone handset + spark — AI picking up; slash when paused */
+function IconAiAnswering({
+  className,
+  paused,
+}: {
+  className?: string;
+  paused?: boolean;
+}) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <path d="M8.5 3.8c.6-.5 1.5-.4 2 .3l1.1 1.6c.4.6.3 1.4-.2 1.9l-.9.9c.5 1.4 1.6 2.6 3 3.2l.9-.9c.5-.5 1.3-.6 1.9-.2l1.6 1.1c.7.5.8 1.4.3 2l-1 1.3c-.5.6-1.3.9-2.1.7-2.2-.4-4.3-1.7-6.1-3.5S5.8 9.2 5.4 7c-.2-.8.1-1.6.7-2.1l1.3-1.1Z" />
+      {!paused && (
+        <>
+          <path d="M17.2 3.5l.4 1.3 1.3.4-1.3.4-.4 1.3-.4-1.3-1.3-.4 1.3-.4.4-1.3Z" />
+          <path d="M20.2 7.8l.25.75.75.25-.75.25-.25.75-.25-.75-.75-.25.75-.25.25-.75Z" />
+        </>
+      )}
+      {paused && <path d="M5 19L19 5" />}
+    </svg>
+  );
+}
+
+function IconPause({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden>
+      <rect x="6" y="5" width="4" height="14" rx="1" />
+      <rect x="14" y="5" width="4" height="14" rx="1" />
+    </svg>
+  );
+}
+
+function IconPlay({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden>
+      <path d="M8 5.5v13l11-6.5-11-6.5Z" />
+    </svg>
+  );
+}
+
+function EmptyPanel({ message }: { message: string }) {
+  return (
+    <p className="surface-panel px-5 py-6 text-center text-sm text-[var(--muted)]">{message}</p>
+  );
+}
+
 function Metric({
   label,
   value,
   tone,
   detail,
+  emphasis,
+  delayMs = 0,
 }: {
   label: string;
   value: string;
   tone?: string;
   detail?: string | null;
+  emphasis?: boolean;
+  delayMs?: number;
 }) {
   const toneClass =
     tone === "positive"
@@ -450,47 +624,84 @@ function Metric({
         : tone === "negative"
           ? "text-red-700"
           : "text-[var(--foreground)]";
+
   return (
-    <div className="surface-panel px-3 py-2.5">
-      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+    <div
+      className={`group relative overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] px-3.5 py-3 shadow-[var(--shadow-soft)] transition-[transform,box-shadow,border-color] duration-200 hover:-translate-y-0.5 hover:border-[rgba(240,90,36,0.22)] hover:shadow-[0_1px_0_rgba(255,255,255,0.9)_inset,0_22px_44px_-28px_rgba(0,0,0,0.35)] ${
+        emphasis ? "ring-1 ring-[rgba(240,90,36,0.12)]" : ""
+      }`}
+      style={delayMs ? { animationDelay: `${delayMs}ms` } : undefined}
+    >
+      <div
+        aria-hidden
+        className={`pointer-events-none absolute inset-x-0 top-0 h-[2px] ${
+          emphasis
+            ? "bg-[linear-gradient(90deg,transparent,var(--accent),transparent)]"
+            : "bg-[linear-gradient(90deg,transparent,rgba(0,0,0,0.08),transparent)] opacity-0 transition-opacity group-hover:opacity-100"
+        }`}
+      />
+      <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-[var(--muted)]">
         {label}
       </p>
-      <p className={`font-display mt-1 text-xl font-semibold tracking-tight ${toneClass}`}>
+      <p
+        className={`font-display mt-1.5 text-[1.35rem] font-semibold leading-none tracking-tight sm:text-xl ${toneClass}`}
+      >
         {value}
       </p>
-      {detail && <p className="mt-0.5 text-[10px] text-[var(--muted)]">{detail}</p>}
+      {detail && <p className="mt-1.5 text-[10px] leading-snug text-[var(--muted)]">{detail}</p>}
     </div>
   );
 }
 
-function RepairColumn({ title, items }: { title: string; items: WidgetItem[] }) {
+function RepairColumn({
+  title,
+  items,
+  tone,
+}: {
+  title: string;
+  items: WidgetItem[];
+  tone: "active" | "waiting" | "scheduled";
+}) {
+  const dot =
+    tone === "active"
+      ? "bg-emerald-500"
+      : tone === "waiting"
+        ? "bg-amber-500"
+        : "bg-[var(--muted)]";
+
   return (
-    <div className="surface-panel flex max-h-48 flex-col px-2.5 py-2">
-      <p className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+    <div className="surface-panel flex max-h-52 flex-col px-3 py-2.5">
+      <p className="flex shrink-0 items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+        <span className={`h-1.5 w-1.5 rounded-full ${dot}`} aria-hidden />
         {title}
-        <span className="ml-1 tabular-nums">({items.length})</span>
+        <span className="ml-auto tabular-nums text-[var(--foreground)]/70">{items.length}</span>
       </p>
-      <ul className="mt-2 min-h-0 flex-1 space-y-1.5 overflow-y-auto overscroll-contain pr-0.5">
+      <ul className="asa-scroll mt-2.5 min-h-0 flex-1 space-y-1.5 overflow-y-auto overscroll-contain pr-0.5">
         {items.length === 0 ? (
-          <li className="text-xs text-[var(--muted)]">None</li>
+          <li className="rounded-lg bg-[rgba(0,0,0,0.02)] px-2 py-2 text-xs text-[var(--muted)]">
+            None
+          </li>
         ) : (
           items.map((item) => {
             const body = (
               <>
-                <p className="truncate text-xs font-medium">{item.title}</p>
+                <p className="truncate text-xs font-semibold tracking-tight">{item.title}</p>
                 {item.subtitle && (
-                  <p className="truncate text-[10px] text-[var(--muted)]">{item.subtitle}</p>
+                  <p className="mt-0.5 truncate text-[10px] text-[var(--muted)]">{item.subtitle}</p>
                 )}
               </>
             );
             return (
               <li key={item.id} className="min-w-0">
                 {item.href ? (
-                  <Link href={item.href} className="block hover:text-[var(--accent)]">
+                  <Link
+                    href={item.href}
+                    className="block rounded-lg px-2 py-1.5 transition-colors hover:bg-[var(--accent-soft)] hover:text-[var(--accent)]"
+                  >
                     {body}
                   </Link>
                 ) : (
-                  body
+                  <div className="rounded-lg px-2 py-1.5">{body}</div>
                 )}
               </li>
             );

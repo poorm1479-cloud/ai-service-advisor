@@ -123,6 +123,7 @@ export async function getCalendar(view: "day" | "week", anchor?: string): Promis
 
 export async function bookAppointment(input: {
   service_id: string;
+  extra_service_ids?: string[];
   preferred_start?: string;
   vehicle_type?: string;
   priority?: string;
@@ -224,6 +225,7 @@ export async function listBays(): Promise<Bay[]> {
 
 export async function recommendSlots(body: {
   service_id: string;
+  extra_service_ids?: string[];
   preferred_start?: string;
   vehicle_type?: string;
   priority?: string;

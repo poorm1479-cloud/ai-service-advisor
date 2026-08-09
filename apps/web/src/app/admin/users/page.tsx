@@ -141,6 +141,9 @@ function UsersBody({ accessToken }: { accessToken: string }) {
             u.full_name.toLowerCase().includes(q) ||
             (u.email ?? "").toLowerCase().includes(q) ||
             (u.phone ?? "").toLowerCase().includes(q) ||
+            (u.twilio_phone_e164 ?? "").toLowerCase().includes(q) ||
+            (u.sms_phone_e164 ?? "").toLowerCase().includes(q) ||
+            (u.voice_phone_e164 ?? "").toLowerCase().includes(q) ||
             u.role.toLowerCase().includes(q) ||
             u.shop_name.toLowerCase().includes(q) ||
             u.shop_slug.toLowerCase().includes(q),
@@ -500,6 +503,35 @@ function UsersBody({ accessToken }: { accessToken: string }) {
                   {selected.shop_name}
                 </Link>
                 <div className="font-mono text-xs text-[var(--muted)]">{selected.shop_slug}</div>
+              </DetailField>
+              <DetailField label="Twilio number">
+                {selected.twilio_phone_e164 ? (
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <span className="font-mono text-sm">{selected.twilio_phone_e164}</span>
+                    <button
+                      type="button"
+                      className="rounded border border-[var(--line)] px-1.5 py-0.5 text-[11px] text-[var(--muted)] hover:text-[var(--foreground)]"
+                      onClick={() =>
+                        void navigator.clipboard.writeText(selected.twilio_phone_e164 || "")
+                      }
+                    >
+                      Copy
+                    </button>
+                  </div>
+                ) : (
+                  <span className="text-[var(--muted)]">Not provisioned</span>
+                )}
+                {selected.sms_phone_e164 &&
+                selected.voice_phone_e164 &&
+                selected.sms_phone_e164 !== selected.voice_phone_e164 ? (
+                  <div className="mt-1 space-y-0.5 font-mono text-xs text-[var(--muted)]">
+                    <div>SMS: {selected.sms_phone_e164}</div>
+                    <div>Voice: {selected.voice_phone_e164}</div>
+                  </div>
+                ) : null}
+                <p className="mt-1 text-[11px] text-[var(--muted)]">
+                  Shop-level Twilio channel for {selected.shop_name}
+                </p>
               </DetailField>
               <DetailField label="User ID">
                 <span className="font-mono text-xs">{selected.user_id}</span>

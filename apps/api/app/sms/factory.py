@@ -82,7 +82,14 @@ def build_sms_runtime(
             scheduling_store=get_workflow_runtime().coordinator.resolve_scheduling_agent_store()
         )
     agent_runtime = agents
-    sms_store = store or InMemorySmsStore()
+    if store is not None:
+        sms_store = store
+    elif (settings.sms_store_backend or "db").lower() == "memory":
+        sms_store = InMemorySmsStore()
+    else:
+        from app.sms.sql_store import SqlAlchemySmsStore
+
+        sms_store = SqlAlchemySmsStore()
     # Seed shop map into in-memory store when applicable
     shop_map = _parse_shop_map(settings.twilio_shop_map)
     if isinstance(sms_store, InMemorySmsStore):

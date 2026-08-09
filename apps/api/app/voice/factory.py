@@ -93,7 +93,14 @@ def build_voice_runtime(
             scheduling_store=get_workflow_runtime().coordinator.resolve_scheduling_agent_store()
         )
     agent_runtime = agents
-    voice_store = store or InMemoryVoiceStore()
+    if store is not None:
+        voice_store = store
+    elif (settings.voice_store_backend or "db").lower() == "memory":
+        voice_store = InMemoryVoiceStore()
+    else:
+        from app.voice.sql_store import SqlAlchemyVoiceStore
+
+        voice_store = SqlAlchemyVoiceStore()
     shop_map = _parse_shop_map(settings.twilio_voice_shop_map or settings.twilio_shop_map)
     if isinstance(voice_store, InMemoryVoiceStore):
         for phone, shop_id in shop_map.items():

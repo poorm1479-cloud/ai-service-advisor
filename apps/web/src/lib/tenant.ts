@@ -267,6 +267,12 @@ export type ShopSettings = {
   name: string;
   slug: string;
   timezone: string;
+  /** Assigned Twilio SMS channel number (E.164), if provisioned. */
+  sms_phone_e164?: string | null;
+  /** Assigned Twilio Voice channel number (E.164), if provisioned. */
+  voice_phone_e164?: string | null;
+  /** When true, only SMS auto-replies and Voice AI are paused (not Voice Notes / other AI). */
+  ai_paused?: boolean;
 };
 
 export type ProfileSettings = {
@@ -282,6 +288,15 @@ export type ProfileSettings = {
 
 export async function getShopSettings(): Promise<ShopSettings> {
   const res = await authFetch("/v1/tenant/shop");
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function setShopAiPaused(aiPaused: boolean): Promise<ShopSettings> {
+  const res = await authFetch("/v1/tenant/shop/ai-paused", {
+    method: "PATCH",
+    body: JSON.stringify({ ai_paused: aiPaused }),
+  });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
 }

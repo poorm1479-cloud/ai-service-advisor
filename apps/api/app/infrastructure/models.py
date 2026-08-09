@@ -7,6 +7,7 @@ from decimal import Decimal
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     Numeric,
@@ -30,6 +31,9 @@ class ShopModel(Base):
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="America/Los_Angeles")
     sms_phone_e164: Mapped[str | None] = mapped_column(String(32), unique=True, nullable=True, index=True)
     voice_phone_e164: Mapped[str | None] = mapped_column(String(32), unique=True, nullable=True, index=True)
+    ai_paused: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     memberships: Mapped[list[ShopMembershipModel]] = relationship(back_populates="shop")
@@ -323,3 +327,65 @@ class VoiceTurnModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     call: Mapped[VoiceCallModel] = relationship(back_populates="turns")
+
+
+class ImportJobModel(Base):
+    __tablename__ = "import_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shop_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    progress_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    progress_message: Mapped[str | None] = mapped_column(Text)
+    filename: Mapped[str | None] = mapped_column(String(512))
+    content_type: Mapped[str | None] = mapped_column(String(128))
+    options_json: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    report_json: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ImportRecordModel(Base):
+    __tablename__ = "import_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shop_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("import_jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    entity_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    external_id: Mapped[str | None] = mapped_column(String(128))
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    merged_into_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ImportDuplicateModel(Base):
+    __tablename__ = "import_duplicates"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shop_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("import_jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    entity_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    match_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    incoming_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    existing_ref: Mapped[str | None] = mapped_column(String(255))
+    incoming_json: Mapped[str | None] = mapped_column(Text)
+    existing_json: Mapped[str | None] = mapped_column(Text)
+    suggested_action: Mapped[str] = mapped_column(String(32), nullable=False, default="merge")
+    resolved_action: Mapped[str | None] = mapped_column(String(32))
+    resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

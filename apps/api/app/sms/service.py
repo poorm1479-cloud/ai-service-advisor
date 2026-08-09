@@ -113,7 +113,13 @@ class SmsAiService:
 
         # Idempotency: Twilio retries with the same MessageSid must not re-run AI.
         if inbound.message_sid:
-            existing = await self._store.find_message_by_twilio_sid(inbound.message_sid)
+            existing = await self._store.find_message_by_twilio_sid(
+                inbound.message_sid, shop_id=shop_id
+            )
+            if existing is None:
+                existing = await self._store.find_message_by_twilio_sid(
+                    inbound.message_sid
+                )
             if existing is not None:
                 conversation = await self._store.get_conversation(shop_id, existing.conversation_id)
                 if conversation is None:
@@ -141,8 +147,10 @@ class SmsAiService:
             customer_phone=phone,
         )
 
-        # Human takeover — record inbound only, no AI reply
-        if conversation.human_takeover:
+        shop_ai_paused = await self._store.is_shop_ai_paused(shop_id)
+
+        # Human takeover / shop AI pause — record inbound only, no AI reply
+        if conversation.human_takeover or shop_ai_paused:
             inbound_msg = await self._persist_inbound(
                 conversation, inbound, now, intent=None
             )
@@ -153,12 +161,20 @@ class SmsAiService:
                 turn=ConversationTurn(role="customer", content=inbound.body, at=now),
             )
             conversation.reply_preview = None
-            conversation.owner_summary = (
-                conversation.owner_summary
-                or "Human takeover active — AI replies paused."
-            )
+            if shop_ai_paused and not conversation.human_takeover:
+                conversation.owner_summary = (
+                    conversation.owner_summary
+                    or "Shop AI paused — inbound recorded, no auto-reply."
+                )
+                reason = "ai_paused"
+            else:
+                conversation.owner_summary = (
+                    conversation.owner_summary
+                    or "Human takeover active — AI replies paused."
+                )
+                reason = "human_takeover"
             await self._store.update_conversation(conversation)
-            draft = ReplyDraft(body="", send=False, reason="human_takeover")
+            draft = ReplyDraft(body="", send=False, reason=reason)
             empty_pipeline = PipelineResult(
                 correlation_id=str(uuid4()),
                 success=True,
@@ -520,7 +536,12 @@ class SmsAiService:
                 )
 
         outbound_msg: SmsMessage | None = None
-        if draft.send and draft.body and not conversation.human_takeover:
+        if (
+            draft.send
+            and draft.body
+            and not conversation.human_takeover
+            and not await self._store.is_shop_ai_paused(shop_id)
+        ):
             from app.saas.quotas import QuotaService
 
             await QuotaService().consume(shop_id, "sms", 1)

@@ -25,8 +25,9 @@ import {
 type Tab = "followup" | "messages" | "analytics";
 
 const STEPS = ["AI Recommendations", "Review customer", "AI message", "Send"] as const;
-/** Review customer: SMS / Email only (no voice). */
-const REVIEW_CHANNELS = ["sms", "email"] as const;
+/** Review customer: Email only (SMS / voice hidden in UI). */
+const REVIEW_CHANNELS = ["email"] as const;
+const HIDDEN_CHANNELS = new Set(["sms", "voice"]);
 
 export default function MarketingPage() {
   const { session, loading: authLoading } = useAuth();
@@ -141,13 +142,19 @@ export default function MarketingPage() {
     return campaignType.replaceAll("_", " ");
   }, [suggestedActions]);
 
+  /** Visible messages only (SMS / voice hidden in marketing UI). */
+  const visibleTabMessages = useMemo(
+    () => tabMessages.filter((m) => !HIDDEN_CHANNELS.has(m.channel)),
+    [tabMessages],
+  );
+
   /** Messages tab: group by campaign_type so the same kind appears in one place. */
   const messagesByType = useMemo(() => {
     const map = new Map<
       string,
       (CampaignMessage & { campaign_name: string; campaign_type: string })[]
     >();
-    for (const m of tabMessages) {
+    for (const m of visibleTabMessages) {
       if (messagesTypeFilter && m.campaign_type !== messagesTypeFilter) continue;
       const list = map.get(m.campaign_type) ?? [];
       list.push(m);
@@ -164,21 +171,25 @@ export default function MarketingPage() {
         }),
       }))
       .sort((a, b) => a.label.localeCompare(b.label));
-  }, [tabMessages, messagesTypeFilter, typeLabel]);
+  }, [visibleTabMessages, messagesTypeFilter, typeLabel]);
 
   const messageTypeChips = useMemo(() => {
-    const types = new Set(tabMessages.map((m) => m.campaign_type));
+    const types = new Set(visibleTabMessages.map((m) => m.campaign_type));
     return [...types]
-      .map((type) => ({ type, label: typeLabel(type), count: tabMessages.filter((m) => m.campaign_type === type).length }))
+      .map((type) => ({
+        type,
+        label: typeLabel(type),
+        count: visibleTabMessages.filter((m) => m.campaign_type === type).length,
+      }))
       .sort((a, b) => a.label.localeCompare(b.label));
-  }, [tabMessages, typeLabel]);
+  }, [visibleTabMessages, typeLabel]);
 
   const aiChannel =
-    channelOverride ?? aiPreview?.channel ?? selected?.ai_defaults?.channel ?? "sms";
-  /** Voice is not offered in Review customer; map AI voice picks to SMS. */
-  const recommendedChannel = aiChannel === "voice" ? "sms" : aiChannel;
+    channelOverride ?? aiPreview?.channel ?? selected?.ai_defaults?.channel ?? "email";
+  /** SMS / voice are hidden in Review customer; map to email. */
+  const recommendedChannel = HIDDEN_CHANNELS.has(aiChannel) ? "email" : aiChannel;
   const reviewChannels = (channels.length ? channels : [...REVIEW_CHANNELS]).filter(
-    (ch) => ch !== "voice",
+    (ch) => !HIDDEN_CHANNELS.has(ch),
   );
 
   /** Contact for the active channel only (email vs phone). */
@@ -226,7 +237,7 @@ export default function MarketingPage() {
     setTab("followup");
     try {
       const allowed = (channels.length > 0 ? channels : [...REVIEW_CHANNELS]).filter(
-        (ch) => ch !== "voice",
+        (ch) => !HIDDEN_CHANNELS.has(ch),
       );
       const created = await createCampaign({
         name: `${action.title} follow-up`,
@@ -310,8 +321,8 @@ export default function MarketingPage() {
     setError(null);
     try {
       const patch: Record<string, unknown> = { custom_message: body };
-      // Pin channel on send when user overrode it, or when AI chose voice (not offered).
-      if (channelOverride || aiChannel === "voice") {
+      // Pin channel on send when user overrode it, or when AI chose a hidden channel.
+      if (channelOverride || HIDDEN_CHANNELS.has(aiChannel)) {
         patch.channels_allowed = [recommendedChannel];
       }
       const updated = await updateCampaign(selected.id, patch);
@@ -430,7 +441,7 @@ export default function MarketingPage() {
       <div className="shrink-0">
         <h1 className="page-title">AI Customer Follow-up</h1>
         <p className="mt-1 text-sm text-[var(--muted)]">
-          SMS · Email · Voice — AI suggests who to contact and drafts the message
+          Email — AI suggests who to contact and drafts the message
         </p>
       </div>
 
@@ -653,9 +664,9 @@ export default function MarketingPage() {
                   <div className="mt-2 flex flex-wrap gap-2">
                     {reviewChannels.map((ch) => {
                       const backendAi =
-                        aiPreview?.channel ?? selected.ai_defaults?.channel ?? "sms";
+                        aiPreview?.channel ?? selected.ai_defaults?.channel ?? "email";
                       const isAi =
-                        ch === (backendAi === "voice" ? "sms" : backendAi);
+                        ch === (HIDDEN_CHANNELS.has(backendAi) ? "email" : backendAi);
                       const isSelected = ch === recommendedChannel;
                       const editable = canEditCampaign(selected);
                       return (
@@ -758,11 +769,11 @@ export default function MarketingPage() {
             <h2 className="text-sm font-medium">By channel</h2>
             <div className="mt-3 space-y-2">
               {Object.entries(summary.by_channel)
-                .filter(([ch]) => ch !== "voice")
+                .filter(([ch]) => !HIDDEN_CHANNELS.has(ch))
                 .map(([ch, n]) => {
                   const max = Math.max(
                     ...Object.entries(summary.by_channel)
-                      .filter(([k]) => k !== "voice")
+                      .filter(([k]) => !HIDDEN_CHANNELS.has(k))
                       .map(([, v]) => v),
                     1,
                   );
@@ -788,7 +799,7 @@ export default function MarketingPage() {
 
       {tab === "messages" && (
         <section className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
-          {(messageTypeChips.length > 0 || tabMessages.length > 0) && (
+          {(messageTypeChips.length > 0 || visibleTabMessages.length > 0) && (
             <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap gap-2">
                 <button
@@ -804,7 +815,7 @@ export default function MarketingPage() {
                       : "border-[var(--line)] text-[var(--muted)] hover:bg-[var(--accent-soft)]"
                   }`}
                 >
-                  All ({tabMessages.length})
+                  All ({visibleTabMessages.length})
                 </button>
                 {messageTypeChips.map((chip) => (
                   <button
@@ -825,7 +836,7 @@ export default function MarketingPage() {
                   </button>
                 ))}
               </div>
-              {tabMessages.length > 0 && (
+              {visibleTabMessages.length > 0 && (
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
@@ -847,7 +858,7 @@ export default function MarketingPage() {
               )}
             </div>
           )}
-          {tabMessages.length === 0 && !busy && (
+          {visibleTabMessages.length === 0 && !busy && (
             <p className="shrink-0 text-sm text-[var(--muted)]">
               {recentSentFollowUps.length === 0
                 ? "Start a follow-up from the Follow-up tab to see messages"

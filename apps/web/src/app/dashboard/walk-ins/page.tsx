@@ -4,6 +4,7 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import {
   FormEvent,
+  ReactNode,
   Suspense,
   useCallback,
   useEffect,
@@ -440,360 +441,453 @@ function WalkInsContent() {
     ? "existing"
     : "unknown";
 
+  const waitingCount = visits.filter((v) => v.status === "open").length;
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:h-full">
-      <div className="shrink-0">
-        <h1 className="page-title">Walk-ins</h1>
+      <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="page-title">Walk-ins</h1>
+        </div>
+        {pageView === "todays" && !loading ? (
+          <span className="rounded-full bg-[var(--background)] px-3 py-1 text-[11px] font-semibold tabular-nums text-[var(--muted)] ring-1 ring-[var(--line)]">
+            {visits.length} today
+            {waitingCount > 0 ? ` · ${waitingCount} waiting` : ""}
+          </span>
+        ) : null}
       </div>
 
       {error && (
-        <p className="shrink-0 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+        <p
+          className="shrink-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+          role="alert"
+        >
           {error}
         </p>
       )}
 
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
-        <div className="flex shrink-0 flex-wrap gap-2">
+        <div
+          className="surface-panel flex shrink-0 gap-1 p-1.5"
+          role="tablist"
+          aria-label="Walk-in mode"
+        >
           <ModeChip
             active={pageView === "intake" && entryMode === "vin"}
             onClick={() => selectView("vin")}
-            label="Scan / enter VIN"
+            label="Scan VIN"
+            hint="Barcode or type"
+            icon={<IconScanVin />}
           />
           <ModeChip
             active={pageView === "intake" && entryMode === "manual"}
             onClick={() => selectView("manual")}
-            label="No VIN — enter vehicle"
+            label="No VIN"
+            hint="Plate / YMM"
+            icon={<IconNoVin />}
           />
           <ModeChip
             active={pageView === "todays"}
             onClick={() => selectView("todays")}
-            label="Today's walk-ins"
+            label="Today"
+            hint="Queue"
+            icon={<IconQueue />}
           />
         </div>
 
         {pageView === "todays" ? (
-          <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4">
-            <h2 className="mb-2 shrink-0 text-sm font-semibold">Today&apos;s walk-ins</h2>
-            <div className="table-scroll asa-scroll min-h-0 flex-1 overflow-auto overscroll-contain">
-              <table>
-                <thead className="border-b border-[var(--line)] text-xs uppercase tracking-[0.08em] text-[var(--muted)]">
-                  <tr>
-                    <th className="px-3 py-2">Arrived</th>
-                    <th className="px-3 py-2">Service Request</th>
-                    <th className="px-3 py-2">Status</th>
-                    <th className="px-3 py-2">Customer</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {loading ? (
-                    <tr>
-                      <td colSpan={4} className="px-3 py-6 text-[var(--muted)]">
-                        Loading…
-                      </td>
-                    </tr>
-                  ) : visits.length === 0 ? (
-                    <tr>
-                      <td colSpan={4} className="px-3 py-6 text-[var(--muted)]">
-                        No walk-ins yet
-                      </td>
-                    </tr>
-                  ) : (
-                    visits.map((v) => (
-                      <tr
-                        key={v.id}
-                        className="border-t border-[var(--line)] hover:bg-[var(--accent-soft)]/40"
-                      >
-                        <td className="px-3 py-2 text-xs text-[var(--muted)]">
-                          {v.arrived_at ? new Date(v.arrived_at).toLocaleString() : "—"}
-                        </td>
-                        <td className="px-3 py-2">
-                          <Link
-                            href={`/dashboard/walk-ins/${v.id}`}
-                            className="text-sm font-medium text-[var(--accent)]"
-                          >
-                            <span className="whitespace-pre-line">
-                              {v.complaint.split("\n").filter(Boolean).join(" · ") || v.complaint}
-                            </span>
-                          </Link>
-                        </td>
-                        <td className="px-3 py-2 capitalize text-xs text-[var(--muted)]">{v.status}</td>
-                        <td className="px-3 py-2 text-xs text-[var(--muted)]">
-                          {v.customer_id ? "Linked" : "Unknown"}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        ) : (
-      <form
-        onSubmit={onCreate}
-        className="asa-scroll min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4"
-      >
+          <section className="surface-panel flex min-h-0 flex-1 flex-col overflow-hidden">
+            <header className="flex shrink-0 items-center gap-2.5 border-b border-[var(--line)] px-4 py-3">
+              <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)]">
+                <IconQueue />
+              </span>
+              <p className="text-sm font-semibold tracking-tight">List</p>
+            </header>
 
-        {entryMode === "vin" ? (
-          <VinInput
-            value={vin}
-            onChange={setVin}
-            status={vinStatus}
-            looking={vinLooking}
-            required
-          />
-        ) : (
-          <div className="space-y-1">
-            <p className="text-sm text-[var(--muted)]">
-              Enter plate and/or year, make, model. Matching customers are linked automatically; a
-              temporary VIN is used only when no vehicle is found.
-            </p>
-            {(vinLooking || vinStatus) && (
-              <p className="text-xs text-[var(--muted)]">
-                {vinLooking ? "Looking up vehicle…" : vinStatus}
-              </p>
-            )}
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          <Field
-            label={`Year${autoFilled ? " (auto)" : ""}`}
-            value={year}
-            onChange={setYear}
-            required
-            placeholder={entryMode === "vin" ? "Auto from VIN" : "e.g. 2018"}
-          />
-          <Field
-            label={`Make${autoFilled ? " (auto)" : ""}`}
-            value={make}
-            onChange={setMake}
-            required
-            placeholder={entryMode === "vin" ? "Auto from VIN" : "e.g. Toyota"}
-          />
-          <Field
-            label={`Model${autoFilled ? " (auto)" : ""}`}
-            value={model}
-            onChange={setModel}
-            required
-            placeholder={entryMode === "vin" ? "Auto from VIN" : "e.g. Camry"}
-          />
-          <Field label="License plate" value={plate} onChange={setPlate} placeholder="Optional" />
-          <Field
-            label="Mileage"
-            value={mileage}
-            onChange={setMileage}
-            required
-            placeholder="Current odometer"
-          />
-          <Field
-            label="Arrival time"
-            type="datetime-local"
-            value={arrivedAt}
-            onChange={setArrivedAt}
-            required
-          />
-        </div>
-
-        {/* Customer Match — never requires name/phone; anonymous walk-ins allowed */}
-        <section className="rounded-lg border border-dashed border-[var(--line)] bg-[var(--background)]/60 p-3">
-          <h2 className="text-sm font-semibold">Customer Match</h2>
-          <p className="mt-1 text-xs text-[var(--muted)]">
-            Name and phone are never required. Unknown walk-ins still create a guest customer.
-          </p>
-
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            <MatchOption
-              active={customerMatchMode === "existing"}
-              disabled={!matchedExisting}
-              label="Existing customer found"
-              description={
-                match?.customer
-                  ? match.customer.name
-                  : "Shown when plate or vehicle details match a customer"
-              }
-              onClick={() => undefined}
-            />
-            <MatchOption
-              active={customerMatchMode === "unknown"}
-              disabled={matchedExisting}
-              label="Unknown walk-in"
-              description="Creates a guest customer for this visit"
-              onClick={() => undefined}
-            />
-          </div>
-
-          {match?.customer && (
-            <p className="mt-3 text-sm">
-              Linked:{" "}
-              <Link
-                href={`/dashboard/customers/${match.customer.id}`}
-                className="font-medium text-[var(--accent)]"
-              >
-                {match.customer.name}
-              </Link>
-              {match.customer.phone ? (
-                <span className="text-[var(--muted)]"> · {match.customer.phone}</span>
-              ) : null}
-            </p>
-          )}
-        </section>
-
-        {/* After VIN lookup: vehicle history, previous repairs, AI recommendation */}
-        {(matchLoading || match) && (
-          <section className="space-y-3 rounded-lg border border-[var(--line)] bg-[var(--background)]/60 p-3">
-            <h2 className="text-sm font-semibold">Vehicle match</h2>
-            {matchLoading && !match ? (
-              <p className="text-sm text-[var(--muted)]">Loading vehicle history…</p>
-            ) : match ? (
-              <div className="grid gap-3 lg:grid-cols-3">
-                <div>
-                  <p className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
-                    Vehicle history
-                  </p>
-                  <ul className="mt-1 space-y-1 text-sm">
-                    <li>
-                      {match.vehicle.year} {match.vehicle.make} {match.vehicle.model}
-                    </li>
-                    <li className="font-mono text-xs text-[var(--muted)]">{match.vehicle.vin}</li>
-                    <li className="text-[var(--muted)]">
-                      Plate {match.vehicle.license_plate ?? "—"} ·{" "}
-                      {match.vehicle.mileage.toLocaleString()} mi on file
-                    </li>
-                    {match.customer ? (
-                      <li className="text-[var(--muted)]">
-                        Owner: {match.customer.name}
-                        {match.customer.phone ? ` · ${match.customer.phone}` : ""}
-                      </li>
-                    ) : (
-                      <li className="text-[var(--muted)]">No customer linked to this vehicle</li>
-                    )}
-                  </ul>
-                </div>
-                <div>
-                  <p className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
-                    Previous repairs
-                  </p>
-                  {match.repairs.length === 0 ? (
-                    <p className="mt-1 text-sm text-[var(--muted)]">No prior repairs</p>
-                  ) : (
-                    <ul className="mt-1 max-h-36 space-y-2 overflow-y-auto text-sm">
-                      {match.repairs.slice(0, 5).map((r) => (
-                        <li key={r.id}>
-                          <span className="font-medium">{r.service_type}</span>
-                          <span className="text-[var(--muted)]">
-                            {" "}
-                            · ${Number(r.cost).toFixed(0)}
-                            {r.created_at
-                              ? ` · ${new Date(r.created_at).toLocaleDateString()}`
-                              : ""}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-                <div>
-                  <p className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
-                    AI recommendation
-                  </p>
-                  <ul className="mt-1 list-disc space-y-1 pl-4 text-sm text-[var(--muted)]">
-                    {recommendations.map((tip) => (
-                      <li key={tip}>{tip}</li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            ) : null}
-          </section>
-        )}
-
-        <div className="space-y-2">
-          <span className="text-sm font-medium">Service Request</span>
-          <p className="text-xs text-[var(--muted)]">
-            Choose from your Service Catalog. Tap a service to add or remove it.
-          </p>
-          {services.length === 0 ? (
-            <p className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-3 py-2 text-sm text-[var(--muted)]">
-              No active services yet.{" "}
-              <Link href="/dashboard/services" className="font-medium text-[var(--accent)] hover:underline">
-                Add services in Service Catalog
-              </Link>
-            </p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {services.map((svc) => {
-                const selected = complaints.some((c) => c.trim() === svc.name);
-                return (
-                  <button
-                    key={svc.id}
-                    type="button"
-                    onClick={() => togglePreset(svc.name)}
-                    className={`rounded-md border px-2.5 py-1.5 text-xs ${
-                      selected
-                        ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
-                        : "border-[var(--line)] text-[var(--muted)] hover:border-[var(--accent)]"
-                    }`}
-                  >
-                    {svc.name}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          <div className="space-y-2">
-            {complaints.map((item, index) => (
-              <div key={index} className="flex gap-2">
-                <select
-                  value={item}
-                  required={index === 0 || Boolean(item.trim())}
-                  onChange={(e) => updateComplaint(index, e.target.value)}
-                  className="w-full rounded-md border border-[var(--line)] bg-white px-3 py-2 text-sm outline-none ring-[var(--accent)] focus:ring-2"
-                >
-                  <option value="" disabled>
-                    {services.length === 0
-                      ? "No active services — add in Service Catalog"
-                      : index === 0
-                        ? "Select a service…"
-                        : "Additional service…"}
-                  </option>
-                  {services.map((svc) => (
-                    <option key={svc.id} value={svc.name}>
-                      {svc.name}
-                      {svc.price != null ? ` — $${Number(svc.price).toFixed(2)}` : ""}
-                    </option>
+            <div className="asa-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain">
+              {loading ? (
+                <div className="space-y-3 px-4 py-5">
+                  {[0, 1, 2].map((i) => (
+                    <div key={i} className="flex animate-pulse gap-3 rounded-xl bg-[var(--background)]/70 p-3">
+                      <div className="h-10 w-10 rounded-full bg-[var(--panel)]" />
+                      <div className="min-w-0 flex-1 space-y-2 py-1">
+                        <div className="h-3 w-2/3 rounded bg-[var(--panel)]" />
+                        <div className="h-2.5 w-1/2 rounded bg-[var(--panel)]" />
+                      </div>
+                    </div>
                   ))}
-                </select>
-                {complaints.length > 1 ? (
+                </div>
+              ) : visits.length === 0 ? (
+                <div className="flex flex-col items-center px-6 py-16 text-center">
+                  <span className="mb-3 inline-flex h-12 w-12 items-center justify-center rounded-full bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)]">
+                    <IconQueue />
+                  </span>
+                  <p className="font-display text-lg font-semibold tracking-tight">No walk-ins yet</p>
+                  <p className="mt-1 max-w-xs text-sm text-[var(--muted)]">
+                    Check-ins from today will appear here as a live queue.
+                  </p>
                   <button
                     type="button"
-                    onClick={() => removeComplaint(index)}
-                    className="shrink-0 rounded-md border border-[var(--line)] px-2.5 text-sm text-[var(--muted)] hover:border-red-300 hover:text-red-700"
-                    aria-label={`Remove service request ${index + 1}`}
+                    onClick={() => selectView("vin")}
+                    className="btn-primary mt-5 px-4 py-2 text-xs"
                   >
-                    Remove
+                    Start first check-in
                   </button>
-                ) : null}
-              </div>
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={addComplaint}
-            disabled={services.length === 0}
-            className="text-sm font-medium text-[var(--accent)] hover:underline disabled:opacity-50"
+                </div>
+              ) : (
+                <ul className="divide-y divide-[var(--line)]">
+                  {visits.map((v) => {
+                    const servicesLine =
+                      v.complaint.split("\n").filter(Boolean).join(" · ") || v.complaint;
+                    return (
+                      <li key={v.id}>
+                        <Link
+                          href={`/dashboard/walk-ins/${v.id}`}
+                          className="group flex items-start gap-3 px-4 py-3.5 transition hover:bg-[var(--accent-soft)]/35"
+                        >
+                          <span
+                            className="mt-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--background)] text-xs font-semibold tracking-wide text-[var(--muted)] ring-1 ring-[var(--line)] group-hover:bg-[var(--accent)] group-hover:text-white group-hover:ring-[var(--accent)]"
+                            aria-hidden="true"
+                          >
+                            {visitInitials(v.complaint, Boolean(v.customer_id))}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="truncate text-sm font-semibold tracking-tight group-hover:text-[var(--accent)]">
+                                {servicesLine}
+                              </p>
+                              <StatusPill status={v.status} />
+                            </div>
+                            <p className="mt-1 text-xs text-[var(--muted)]">
+                              {v.customer_id ? "Customer linked" : "Unknown walk-in"}
+                              {v.arrived_at
+                                ? ` · Arrived ${new Date(v.arrived_at).toLocaleString()}`
+                                : ""}
+                            </p>
+                          </div>
+                          <span className="mt-2 shrink-0 text-[var(--muted)] opacity-0 transition group-hover:opacity-100">
+                            →
+                          </span>
+                        </Link>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          </section>
+        ) : (
+          <form
+            onSubmit={onCreate}
+            className="surface-panel flex min-h-0 flex-1 flex-col overflow-hidden"
           >
-            + Add another request
-          </button>
-        </div>
+            <div className="asa-scroll min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-4 sm:p-5">
+              <SectionHeader
+                title="Vehicle"
+                titleClassName="text-[var(--accent)]"
+                description={
+                  entryMode === "vin"
+                    ? "Scan a barcode or enter the 17-character VIN to decode and match."
+                    : "Use plate and/or year, make, model. A temporary VIN is assigned only when no vehicle matches."
+                }
+              />
 
-        <button
-          type="submit"
-          disabled={saving || vinLooking || services.length === 0}
-          className="rounded-md bg-[var(--accent)] px-4 py-2.5 text-sm font-medium text-white disabled:opacity-60"
-        >
-          {saving ? "Starting…" : "Start Service"}
-        </button>
-      </form>
+              {entryMode === "vin" ? (
+                <VinInput
+                  value={vin}
+                  onChange={setVin}
+                  status={vinStatus}
+                  looking={vinLooking}
+                  required
+                />
+              ) : (vinLooking || vinStatus) ? (
+                <div className="rounded-xl border border-dashed border-[var(--line)] bg-[var(--background)]/50 px-3.5 py-3">
+                  <p className="text-xs text-[var(--muted)]">
+                    {vinLooking ? (
+                      <span className="inline-flex items-center gap-2">
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)]" />
+                        Looking up vehicle…
+                      </span>
+                    ) : (
+                      vinStatus
+                    )}
+                  </p>
+                </div>
+              ) : null}
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <Field
+                  label={`Year${autoFilled ? " · auto" : ""}`}
+                  value={year}
+                  onChange={setYear}
+                  required
+                  placeholder={entryMode === "vin" ? "Auto from VIN" : "e.g. 2018"}
+                />
+                <Field
+                  label={`Make${autoFilled ? " · auto" : ""}`}
+                  value={make}
+                  onChange={setMake}
+                  required
+                  placeholder={entryMode === "vin" ? "Auto from VIN" : "e.g. Toyota"}
+                />
+                <Field
+                  label={`Model${autoFilled ? " · auto" : ""}`}
+                  value={model}
+                  onChange={setModel}
+                  required
+                  placeholder={entryMode === "vin" ? "Auto from VIN" : "e.g. Camry"}
+                />
+                <Field
+                  label="License plate"
+                  value={plate}
+                  onChange={setPlate}
+                  placeholder="Optional"
+                />
+                <Field
+                  label="Mileage"
+                  value={mileage}
+                  onChange={setMileage}
+                  required
+                  placeholder="Current odometer"
+                />
+                <Field
+                  label="Arrival time"
+                  type="datetime-local"
+                  value={arrivedAt}
+                  onChange={setArrivedAt}
+                  required
+                />
+              </div>
+
+              <section className="rounded-xl border border-[var(--line)] bg-[var(--background)]/55 p-4">
+                <SectionHeader
+                  title="Customer"
+                  titleClassName="text-[var(--accent)]"
+                  description="Name and phone are never required. Unknown walk-ins still create a guest customer."
+                  compact
+                />
+
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <MatchOption
+                    active={customerMatchMode === "existing"}
+                    disabled={!matchedExisting}
+                    label="Existing customer"
+                    description={
+                      match?.customer
+                        ? match.customer.name
+                        : "Appears when plate or vehicle details match"
+                    }
+                    onClick={() => undefined}
+                  />
+                  <MatchOption
+                    active={customerMatchMode === "unknown"}
+                    disabled={matchedExisting}
+                    label="Unknown walk-in"
+                    description="Creates a guest customer for this visit"
+                    onClick={() => undefined}
+                  />
+                </div>
+
+                {match?.customer && (
+                  <p className="mt-3 rounded-lg bg-[var(--panel)] px-3 py-2 text-sm ring-1 ring-[var(--line)]">
+                    Linked:{" "}
+                    <Link
+                      href={`/dashboard/customer/${match.customer.id}`}
+                      className="font-semibold text-[var(--accent)]"
+                    >
+                      {match.customer.name}
+                    </Link>
+                    {match.customer.phone ? (
+                      <span className="text-[var(--muted)]"> · {match.customer.phone}</span>
+                    ) : null}
+                  </p>
+                )}
+              </section>
+
+              {(matchLoading || match) && (
+                <section className="rounded-xl border border-[var(--line)] bg-gradient-to-br from-[var(--panel)] to-[var(--background)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]">
+                  <SectionHeader
+                    eyebrow="Intelligence"
+                    title="Vehicle match"
+                    description="History and suggestions for this check-in."
+                    compact
+                  />
+                  {matchLoading && !match ? (
+                    <p className="mt-3 text-sm text-[var(--muted)]">Loading vehicle history…</p>
+                  ) : match ? (
+                    <div className="mt-3 grid gap-3 lg:grid-cols-3">
+                      <div className="rounded-xl bg-[var(--panel)] p-3 ring-1 ring-[var(--line)]">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+                          Vehicle history
+                        </p>
+                        <ul className="mt-2 space-y-1 text-sm">
+                          <li className="font-semibold tracking-tight">
+                            {match.vehicle.year} {match.vehicle.make} {match.vehicle.model}
+                          </li>
+                          <li className="font-mono text-[11px] text-[var(--muted)]">
+                            {match.vehicle.vin}
+                          </li>
+                          <li className="text-xs text-[var(--muted)]">
+                            Plate {match.vehicle.license_plate ?? "—"} ·{" "}
+                            {match.vehicle.mileage.toLocaleString()} mi on file
+                          </li>
+                          {match.customer ? (
+                            <li className="text-xs text-[var(--muted)]">
+                              Owner: {match.customer.name}
+                              {match.customer.phone ? ` · ${match.customer.phone}` : ""}
+                            </li>
+                          ) : (
+                            <li className="text-xs text-[var(--muted)]">
+                              No customer linked to this vehicle
+                            </li>
+                          )}
+                        </ul>
+                      </div>
+                      <div className="rounded-xl bg-[var(--panel)] p-3 ring-1 ring-[var(--line)]">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+                          Previous repairs
+                        </p>
+                        {match.repairs.length === 0 ? (
+                          <p className="mt-2 text-sm text-[var(--muted)]">No prior repairs</p>
+                        ) : (
+                          <ul className="asa-scroll mt-2 max-h-36 space-y-2 overflow-y-auto text-sm">
+                            {match.repairs.slice(0, 5).map((r) => (
+                              <li key={r.id} className="border-b border-[var(--line)] pb-2 last:border-0 last:pb-0">
+                                <span className="font-medium">{r.service_type}</span>
+                                <span className="block text-xs text-[var(--muted)]">
+                                  ${Number(r.cost).toFixed(0)}
+                                  {r.created_at
+                                    ? ` · ${new Date(r.created_at).toLocaleDateString()}`
+                                    : ""}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                      <div className="rounded-xl bg-[var(--accent-soft)]/50 p-3 ring-1 ring-[var(--accent)]/20">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--accent)]">
+                          AI recommendation
+                        </p>
+                        <ul className="mt-2 space-y-2 text-sm text-[var(--muted)]">
+                          {recommendations.map((tip) => (
+                            <li key={tip} className="flex gap-2">
+                              <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-[var(--accent)]" />
+                              <span>{tip}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  ) : null}
+                </section>
+              )}
+
+              <section className="space-y-3">
+                <SectionHeader
+                  title="Service"
+                  titleClassName="text-[var(--accent)]"
+                  description="Choose from your Service Catalog. Tap a service to add or remove it."
+                  compact
+                />
+                {services.length === 0 ? (
+                  <p className="rounded-xl border border-[var(--line)] bg-[var(--background)]/60 px-3.5 py-3 text-sm text-[var(--muted)]">
+                    No active services yet.{" "}
+                    <Link
+                      href="/dashboard/settings?tab=shop"
+                      className="font-semibold text-[var(--accent)] hover:underline"
+                    >
+                      Add services in Service Catalog
+                    </Link>
+                  </p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {services.map((svc) => {
+                      const selected = complaints.some((c) => c.trim() === svc.name);
+                      return (
+                        <button
+                          key={svc.id}
+                          type="button"
+                          onClick={() => togglePreset(svc.name)}
+                          className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${
+                            selected
+                              ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] shadow-[0_8px_20px_-14px_rgba(240,90,36,0.9)]"
+                              : "border-[var(--line)] bg-white text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--foreground)]"
+                          }`}
+                        >
+                          {svc.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                <div className="space-y-2">
+                  {complaints.map((item, index) => (
+                    <div key={index} className="flex gap-2">
+                      <select
+                        value={item}
+                        required={index === 0 || Boolean(item.trim())}
+                        onChange={(e) => updateComplaint(index, e.target.value)}
+                        className="w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2.5 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-glow)]"
+                      >
+                        <option value="" disabled>
+                          {services.length === 0
+                            ? "No active services — add in Service Catalog"
+                            : index === 0
+                              ? "Select a service…"
+                              : "Additional service…"}
+                        </option>
+                        {services.map((svc) => (
+                          <option key={svc.id} value={svc.name}>
+                            {svc.name}
+                            {svc.price != null ? ` — $${Number(svc.price).toFixed(2)}` : ""}
+                          </option>
+                        ))}
+                      </select>
+                      {complaints.length > 1 ? (
+                        <button
+                          type="button"
+                          onClick={() => removeComplaint(index)}
+                          className="shrink-0 rounded-full border border-[var(--line)] px-3 text-sm text-[var(--muted)] transition hover:border-red-300 hover:text-red-700"
+                          aria-label={`Remove service request ${index + 1}`}
+                        >
+                          Remove
+                        </button>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={addComplaint}
+                  disabled={services.length === 0}
+                  className="text-sm font-semibold text-[var(--accent)] hover:underline disabled:opacity-50"
+                >
+                  + Add another request
+                </button>
+              </section>
+            </div>
+
+            <div className="shrink-0 border-t border-[var(--line)] bg-[var(--panel)]/95 px-4 py-3 backdrop-blur-sm sm:px-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-xs text-[var(--muted)]">
+                  {vinLooking
+                    ? "Finishing vehicle lookup…"
+                    : match?.customer
+                      ? `Ready · ${match.customer.name}`
+                      : "Ready to open a guest visit"}
+                </p>
+                <button
+                  type="submit"
+                  disabled={saving || vinLooking || services.length === 0}
+                  className="btn-primary inline-flex min-w-[9.5rem] items-center justify-center gap-1.5 px-5 py-2.5 shadow-[0_14px_32px_-16px_rgba(240,90,36,0.85)] disabled:opacity-60"
+                >
+                  {!saving ? <IconPlay className="h-4 w-4" /> : null}
+                  {saving ? "Starting…" : "Start Service"}
+                </button>
+              </div>
+            </div>
+          </form>
         )}
       </div>
     </div>
@@ -802,7 +896,15 @@ function WalkInsContent() {
 
 export default function WalkInsPage() {
   return (
-    <Suspense fallback={<p className="text-sm text-[var(--muted)]">Loading walk-ins…</p>}>
+    <Suspense
+      fallback={
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:h-full">
+          <div className="h-7 w-36 animate-pulse rounded-md bg-[var(--panel)]" />
+          <div className="surface-panel h-11 animate-pulse" />
+          <div className="surface-panel min-h-0 flex-1 animate-pulse" />
+        </div>
+      }
+    >
       <WalkInsContent />
     </Suspense>
   );
@@ -812,23 +914,86 @@ function ModeChip({
   active,
   onClick,
   label,
+  hint,
+  icon,
 }: {
   active: boolean;
   onClick: () => void;
   label: string;
+  hint: string;
+  icon: ReactNode;
 }) {
   return (
     <button
       type="button"
+      role="tab"
+      aria-selected={active}
       onClick={onClick}
-      className={`rounded-md border px-3 py-1.5 text-sm ${
+      className={`min-w-0 flex-1 rounded-lg px-3 py-2 text-left transition ${
         active
-          ? "border-[var(--accent)] bg-[var(--accent-soft)] font-medium text-[var(--accent)]"
-          : "border-[var(--line)] text-[var(--muted)] hover:border-[var(--accent)]"
+          ? "bg-[var(--accent-soft)] shadow-[inset_0_0_0_1px_rgba(240,90,36,0.35)]"
+          : "hover:bg-[var(--background)]"
       }`}
     >
-      {label}
+      <span className="flex items-start gap-2.5">
+        <span
+          className={`mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${
+            active
+              ? "bg-[var(--panel)] text-[var(--accent)] ring-1 ring-[var(--accent)]/25"
+              : "bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)]"
+          }`}
+          aria-hidden
+        >
+          {icon}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span
+            className={`block truncate text-sm font-semibold tracking-tight ${
+              active ? "text-[var(--accent)]" : "text-[var(--foreground)]"
+            }`}
+          >
+            {label}
+          </span>
+          <span className="mt-0.5 block truncate text-[11px] text-[var(--muted)]">{hint}</span>
+        </span>
+      </span>
     </button>
+  );
+}
+
+function SectionHeader({
+  eyebrow,
+  title,
+  titleClassName,
+  description,
+  compact,
+}: {
+  eyebrow?: string;
+  title: string;
+  titleClassName?: string;
+  description: string;
+  compact?: boolean;
+}) {
+  return (
+    <div>
+      {eyebrow ? <p className="section-label">{eyebrow}</p> : null}
+      <h2
+        className={`font-display font-semibold tracking-tight ${
+          compact
+            ? eyebrow
+              ? "mt-1 text-base"
+              : "text-base"
+            : eyebrow
+              ? "mt-1.5 text-lg"
+              : "text-lg"
+        }${titleClassName ? ` ${titleClassName}` : ""}`}
+      >
+        {title}
+      </h2>
+      <p className={`text-[var(--muted)] ${compact ? "mt-0.5 text-xs" : "mt-1 text-sm"}`}>
+        {description}
+      </p>
+    </div>
   );
 }
 
@@ -850,24 +1015,61 @@ function MatchOption({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className={`rounded-md border px-3 py-2 text-left transition ${
+      className={`rounded-xl border px-3.5 py-3 text-left transition ${
         active
-          ? "border-[var(--accent)] bg-[var(--accent-soft)]"
+          ? "border-[var(--accent)] bg-[var(--panel)] shadow-[0_12px_28px_-22px_rgba(240,90,36,0.85)] ring-1 ring-[var(--accent)]/25"
           : disabled
-            ? "cursor-not-allowed border-[var(--line)] opacity-50"
-            : "border-[var(--line)] hover:border-[var(--accent)]"
+            ? "cursor-not-allowed border-[var(--line)] bg-[var(--background)]/40 opacity-55"
+            : "border-[var(--line)] bg-[var(--panel)] hover:border-[var(--accent)]/50"
       }`}
     >
-      <span
-        className={`block text-sm font-medium ${
-          active ? "text-[var(--accent)]" : "text-[var(--foreground)]"
-        }`}
-      >
-        {label}
+      <span className="flex items-center gap-2">
+        <span
+          className={`h-2 w-2 rounded-full ${
+            active ? "bg-[var(--accent)]" : "bg-[var(--line)]"
+          }`}
+          aria-hidden
+        />
+        <span
+          className={`text-sm font-semibold ${
+            active ? "text-[var(--accent)]" : "text-[var(--foreground)]"
+          }`}
+        >
+          {label}
+        </span>
       </span>
-      <span className="mt-0.5 block text-xs text-[var(--muted)]">{description}</span>
+      <span className="mt-1 block pl-4 text-xs text-[var(--muted)]">{description}</span>
     </button>
   );
+}
+
+function StatusPill({ status }: { status: string }) {
+  const tone =
+    status === "converted"
+      ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+      : status === "open"
+        ? "bg-[var(--accent-soft)] text-[var(--accent)] ring-[var(--accent)]/25"
+        : "bg-[var(--background)] text-[var(--muted)] ring-[var(--line)]";
+  return (
+    <span
+      className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize ring-1 ${tone}`}
+    >
+      {status.replace(/_/g, " ")}
+    </span>
+  );
+}
+
+function visitInitials(complaint: string, linked: boolean): string {
+  const first = complaint
+    .split("\n")
+    .map((s) => s.trim())
+    .find(Boolean);
+  if (first) {
+    const parts = first.split(/\s+/).filter(Boolean);
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+  }
+  return linked ? "C" : "?";
 }
 
 function Field({
@@ -887,15 +1089,88 @@ function Field({
 }) {
   return (
     <label className="block space-y-1.5">
-      <span className="text-sm font-medium">{label}</span>
+      <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--muted)]">
+        {label}
+      </span>
       <input
         type={type}
         value={value}
         placeholder={placeholder}
         required={required}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-md border border-[var(--line)] bg-white px-3 py-2 text-sm outline-none ring-[var(--accent)] focus:ring-2"
+        className="w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2.5 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-glow)]"
       />
     </label>
+  );
+}
+
+function IconScanVin({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden className={className}>
+      <path
+        d="M4 7V5a1 1 0 0 1 1-1h2M20 7V5a1 1 0 0 0-1-1h-2M4 17v2a1 1 0 0 0 1 1h2M20 17v2a1 1 0 0 1-1 1h-2"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+      <path
+        d="M8 12h1.5M11 12h2M14.5 12H16"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function IconNoVin({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden className={className}>
+      <rect
+        x="3.5"
+        y="7.5"
+        width="17"
+        height="9"
+        rx="2"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M7 12h3.5M13.5 12H17"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function IconQueue({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden className={className}>
+      <path
+        d="M5 7h14M5 12h10M5 17h7"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function IconPlay({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M7 4.5v15l13-7.5L7 4.5z" />
+    </svg>
   );
 }

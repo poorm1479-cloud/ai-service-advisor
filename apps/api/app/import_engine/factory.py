@@ -9,6 +9,7 @@ from app.import_engine.monitoring import ImportMonitor
 from app.import_engine.service import ImportEngineService
 from app.import_engine.store import InMemoryImportStore, ImportStorePort
 from app.import_engine.validation import ValidationEngine
+from app.infrastructure.config import settings
 
 
 @dataclass(slots=True)
@@ -25,17 +26,29 @@ _runtime: ImportRuntime | None = None
 def _build_crm_backed_agents() -> AgentRuntime | None:
     """Wire agents to SQL CRM so import apply shows on /customers and dashboard."""
     try:
-        from app.infrastructure.agent_directories import SqlCustomerDirectory, SqlVehicleDirectory
-        from app.infrastructure.config import settings
-
         if settings.environment in {"test", "testing"}:
             return None
+        from app.infrastructure.agent_directories import SqlCustomerDirectory, SqlVehicleDirectory
+
         return build_agent_runtime(
             customer_directory=SqlCustomerDirectory(),
             vehicle_directory=SqlVehicleDirectory(),
         )
     except Exception:  # noqa: BLE001
         return None
+
+
+def _build_import_store() -> ImportStorePort:
+    if (settings.import_store_backend or "db").lower() == "memory":
+        return InMemoryImportStore()
+    if settings.environment in {"test", "testing"}:
+        return InMemoryImportStore()
+    try:
+        from app.import_engine.sql_store import SqlAlchemyImportStore
+
+        return SqlAlchemyImportStore()
+    except Exception:  # noqa: BLE001
+        return InMemoryImportStore()
 
 
 def build_import_runtime(
@@ -55,7 +68,7 @@ def build_import_runtime(
         except Exception:  # noqa: BLE001
             agents = build_agent_runtime()
 
-    resource_store = store or InMemoryImportStore()
+    resource_store = store or _build_import_store()
     service = ImportEngineService(
         store=resource_store,
         validation=ValidationEngine(),

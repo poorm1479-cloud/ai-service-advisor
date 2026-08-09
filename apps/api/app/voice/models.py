@@ -73,3 +73,5 @@ class StreamChunk:
     event_type: str
     payload: dict[str, Any] = field(default_factory=dict)
     sequence_number: int | None = None
+    shop_id: UUID | None = None
+    to_number: str | None = None

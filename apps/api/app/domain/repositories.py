@@ -24,6 +24,16 @@ class ShopRepository(Protocol):
     async def get_by_name(self, name: str) -> Shop | None: ...
     async def add(self, shop: Shop) -> Shop: ...
     async def update(self, shop: Shop) -> Shop: ...
+    async def set_channel_phones(
+        self,
+        shop_id: UUID,
+        *,
+        sms_phone_e164: str | None,
+        voice_phone_e164: str | None,
+    ) -> None: ...
+    async def get_channel_phones(
+        self, shop_id: UUID
+    ) -> tuple[str | None, str | None]: ...
 
 
 class UserRepository(Protocol):
@@ -116,6 +126,9 @@ class CommunicationHistoryRepository(Protocol):
     async def list_by_customer(
         self, shop_id: UUID, customer_id: UUID
     ) -> list[CommunicationHistory]: ...
+    async def delete(
+        self, shop_id: UUID, customer_id: UUID, communication_id: UUID
+    ) -> bool: ...
 
 
 class WalkInVisitRepository(Protocol):

@@ -223,7 +223,9 @@ function ManualField({
 }) {
   return (
     <label className="block space-y-1.5">
-      <span className="text-sm font-medium">{label}</span>
+      <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+        {label}
+      </span>
       <input
         type={type}
         value={value}
@@ -231,10 +233,297 @@ function ManualField({
         placeholder={placeholder}
         autoComplete={autoComplete}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-md border border-[var(--line)] bg-transparent px-3 py-2 text-sm"
+        className="w-full rounded-xl border border-[var(--line)] bg-[var(--background)]/40 px-3.5 py-2.5 text-sm"
       />
     </label>
   );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const s = (status || "").toLowerCase();
+  const tone =
+    s === "completed"
+      ? "bg-emerald-50 text-emerald-800 ring-emerald-200/80"
+      : s === "failed" || s === "cancelled"
+        ? "bg-red-50 text-red-700 ring-red-200/80"
+        : s === "awaiting_resolution"
+          ? "bg-amber-50 text-amber-800 ring-amber-200/80"
+          : "bg-[var(--accent-soft)] text-[var(--accent)] ring-[var(--accent)]/20";
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold capitalize ring-1 ring-inset ${tone}`}
+    >
+      {jobStatusLabel(status)}
+    </span>
+  );
+}
+
+function StepRail({ active }: { active: DisplayStep }) {
+  const activeIdx = DISPLAY_STEPS.indexOf(active);
+  return (
+    <ol className="surface-panel flex shrink-0 items-center gap-1 overflow-x-auto p-2 sm:gap-0 sm:p-1.5">
+      {DISPLAY_STEPS.map((label, idx) => {
+        const done = idx < activeIdx;
+        const current = idx === activeIdx;
+        return (
+          <li key={label} className="flex min-w-0 flex-1 items-center">
+            <div
+              className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 transition-colors ${
+                current ? "bg-[var(--accent-soft)]" : done ? "bg-transparent" : ""
+              }`}
+            >
+              <span
+                className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold tabular-nums ${
+                  current
+                    ? "bg-[var(--accent)] text-white shadow-[0_8px_20px_-10px_rgba(240,90,36,0.9)]"
+                    : done
+                      ? "bg-[var(--ink)] text-white"
+                      : "bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)]"
+                }`}
+              >
+                {done ? (
+                  <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" aria-hidden>
+                    <path
+                      fill="currentColor"
+                      d="M6.5 11.2 3.3 8l1.1-1.1 2.1 2.1 4.6-4.6L12.2 5.5 6.5 11.2z"
+                    />
+                  </svg>
+                ) : (
+                  idx + 1
+                )}
+              </span>
+              <span
+                className={`truncate text-[11px] font-semibold uppercase tracking-[0.14em] ${
+                  current ? "text-[var(--accent)]" : done ? "text-[var(--foreground)]" : "text-[var(--muted)]"
+                }`}
+              >
+                {label}
+              </span>
+            </div>
+            {idx < DISPLAY_STEPS.length - 1 && (
+              <span
+                className={`mx-0.5 hidden h-px w-4 shrink-0 sm:block sm:w-6 ${
+                  done ? "bg-[var(--ink)]/40" : "bg-[var(--line)]"
+                }`}
+                aria-hidden
+              />
+            )}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function SourceOptionCard({
+  title,
+  description,
+  selected,
+  onClick,
+  icon,
+}: {
+  title: string;
+  description: string;
+  selected?: boolean;
+  onClick: () => void;
+  icon: "file" | "manual";
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`group relative overflow-hidden rounded-2xl border bg-[var(--panel)] p-5 text-left shadow-[var(--shadow-soft)] transition-all duration-200 hover:-translate-y-0.5 hover:border-[var(--accent)] ${
+        selected ? "border-[var(--accent)] ring-2 ring-[var(--accent)]/15" : "border-[var(--line)]"
+      }`}
+    >
+      <div
+        className="pointer-events-none absolute -right-8 -top-10 h-28 w-28 rounded-full bg-[radial-gradient(circle,rgba(240,90,36,0.14),transparent_68%)] opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+        aria-hidden
+      />
+      <div className="relative flex items-start gap-4">
+        <span
+          className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${
+            selected
+              ? "bg-[var(--accent)] text-white"
+              : "bg-[var(--background)] text-[var(--foreground)] ring-1 ring-[var(--line)] group-hover:bg-[var(--accent-soft)] group-hover:text-[var(--accent)]"
+          }`}
+        >
+          {icon === "file" ? (
+            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <path d="M8 4h6l4 4v12H8V4z" />
+              <path d="M14 4v4h4" />
+              <path d="M10 13h6M10 17h4" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <path d="M5 19h14" />
+              <path d="M7 15.5 16.5 6a1.8 1.8 0 0 1 2.5 2.5L9.5 18l-4 1 1.5-3.5z" />
+            </svg>
+          )}
+        </span>
+        <div className="min-w-0">
+          <p className="font-display text-base font-semibold tracking-tight">{title}</p>
+          <p className="mt-1 text-sm leading-relaxed text-[var(--muted)]">{description}</p>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function IconCancel({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="m15 9-6 6" />
+      <path d="m9 9 6 6" />
+    </svg>
+  );
+}
+
+function IconApply({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+function IconContinue({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M5 12h14" />
+      <path d="m13 6 6 6-6 6" />
+    </svg>
+  );
+}
+
+function IconSave({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
+      <path d="M17 21v-8H7v8" />
+      <path d="M7 3v5h8" />
+    </svg>
+  );
+}
+
+function IconPlus({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </svg>
+  );
+}
+
+function IconCsv({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" />
+      <path d="M14 3v5h5" />
+      <path d="M8 13h8" />
+      <path d="M8 17h5" />
+    </svg>
+  );
+}
+
+function IconExcel({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" />
+      <path d="M14 3v5h5" />
+      <path d="m9.5 12.5 5 5" />
+      <path d="m14.5 12.5-5 5" />
+    </svg>
+  );
+}
+
+function IconUpload({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 16V5" />
+      <path d="m8 9 4-4 4 4" />
+      <path d="M4 19h16" />
+    </svg>
+  );
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export default function ImportPage() {
@@ -256,6 +545,8 @@ export default function ImportPage() {
   const [vinStatus, setVinStatus] = useState<string | null>(null);
   const [vinLooking, setVinLooking] = useState(false);
   const [portalReady, setPortalReady] = useState(false);
+  const [fileDragOver, setFileDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const vinAssistSeq = useRef(0);
 
   useEffect(() => {
@@ -467,12 +758,19 @@ export default function ImportPage() {
     setSuccess(null);
     try {
       let activeSource = source;
-      // Spreadsheet uploads: pick connector from file extension (CSV vs Excel).
+      // Spreadsheet uploads: selected CSV/Excel connector must match the file type.
       if (FILE_SOURCES.has(source) || primaryGroup === "file") {
         if (!file) throw new Error("Upload a CSV or Excel file to continue");
         const inferred = inferFileImportSource(file.name);
         if (!inferred) {
           throw new Error("Unsupported file type. Use .csv or .xlsx");
+        }
+        if (FILE_SOURCES.has(source) && inferred !== source) {
+          throw new Error(
+            source === "excel"
+              ? "Upload an Excel file (.xlsx) for this import"
+              : "Upload a CSV file for this import",
+          );
         }
         activeSource = inferred;
         setSource(inferred);
@@ -563,10 +861,36 @@ export default function ImportPage() {
     }
   }
 
+  function clearSelectedFile() {
+    setFile(null);
+    setFileDragOver(false);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function applySpreadsheetFile(next: File) {
+    const inferred = inferFileImportSource(next.name);
+    if (!inferred) {
+      setError("Unsupported file type. Use .csv or .xlsx");
+      clearSelectedFile();
+      return;
+    }
+    if (FILE_SOURCES.has(source) && inferred !== source) {
+      setError(
+        source === "excel"
+          ? "This step expects an Excel file (.xlsx). Choose CSV for .csv uploads."
+          : "This step expects a CSV file. Choose Excel for .xlsx uploads.",
+      );
+      clearSelectedFile();
+      return;
+    }
+    setError(null);
+    setFile(next);
+  }
+
   function resetWizard() {
     setStep("source");
     setSource("");
-    setFile(null);
+    clearSelectedFile();
     setJob(null);
     setError(null);
     setSuccess(null);
@@ -602,9 +926,11 @@ export default function ImportPage() {
 
   if (!authLoading && session && session.role !== "owner") {
     return (
-      <div className="flex h-full min-h-0 flex-1 flex-col gap-4 overflow-hidden">
-        <h1 className="page-title">Import</h1>
-        <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
+      <div className="flex h-full min-h-0 flex-1 flex-col gap-5 overflow-hidden">
+        <div>
+          <h1 className="page-title">Import</h1>
+        </div>
+        <p className="surface-panel max-w-lg border-amber-200/80 bg-amber-50 px-4 py-3 text-sm text-amber-900">
           Only shop owners can import data.
         </p>
       </div>
@@ -612,102 +938,109 @@ export default function ImportPage() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-hidden">
       <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
-        <div>
+        <div className="hero-motion min-w-0">
           <h1 className="page-title">Import</h1>
-          <p className="mt-1 text-sm text-[var(--muted)]">
-            Bring in shop history so AI can advise with real customer and vehicle context
+          <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-[var(--muted)]">
+            Bring in shop history so AI can advise with real customer and vehicle context.
           </p>
         </div>
         {step !== "source" && (
           <button
             type="button"
             onClick={resetWizard}
-            className="rounded-md border border-[var(--line)] px-3 py-2 text-sm text-[var(--muted)]"
+            className="btn-ghost inline-flex items-center justify-center gap-1.5 px-4 py-2 text-sm"
           >
+            <IconPlus />
             New import
           </button>
         )}
       </div>
 
-      <ol className="flex shrink-0 flex-wrap gap-2 text-xs uppercase tracking-[0.12em] text-[var(--muted)]">
-        {DISPLAY_STEPS.map((label) => (
-          <li
-            key={label}
-            className={`rounded-md px-2 py-1 ${
-              activeDisplayStep === label ? "bg-[var(--accent-soft)] text-[var(--accent)]" : ""
-            }`}
-          >
-            {label}
-          </li>
-        ))}
-      </ol>
+      <div className="hero-motion-delay shrink-0">
+        <StepRail active={activeDisplayStep} />
+      </div>
 
       {error && (
-        <p className="shrink-0 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <p className="shrink-0 rounded-xl border border-red-200/80 bg-red-50 px-4 py-3 text-sm text-red-700">
           {error}
         </p>
       )}
 
       {success && (
-        <p className="shrink-0 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+        <p className="shrink-0 rounded-xl border border-emerald-200/80 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
           {success}
         </p>
       )}
 
-      <div className="asa-scroll min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
+      <div className="asa-scroll min-h-0 min-w-0 flex-1 space-y-6 overflow-y-auto overscroll-contain pb-2 [-webkit-overflow-scrolling:touch]">
       {step === "source" && (
-        <section className="space-y-4">
-          <aside className="max-w-2xl rounded-md border border-[var(--line)] bg-[var(--panel)] px-4 py-3">
-            <h2 className="text-sm font-medium">AI Import Assistant</h2>
-            <p className="mt-1 text-sm text-[var(--muted)]">While importing, AI will:</p>
-            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-[var(--muted)]">
-              <li>detect customers</li>
-              <li>match vehicles</li>
-              <li>build repair history</li>
-              <li>create memory</li>
-            </ul>
+        <section className="hero-motion-late space-y-5">
+          <aside className="relative overflow-hidden rounded-2xl border border-[var(--line)] bg-[linear-gradient(135deg,#111_0%,#1c1c1c_48%,#2a1810_100%)] px-5 py-5 text-white shadow-[var(--shadow-soft)] sm:px-6">
+            <div
+              className="pointer-events-none absolute -right-10 -top-16 h-44 w-44 rounded-full bg-[radial-gradient(circle,rgba(240,90,36,0.45),transparent_70%)]"
+              aria-hidden
+            />
+            <div className="relative">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--rail-active-fg)]">
+                AI Import Assistant
+              </p>
+              <h2 className="font-display mt-2 text-xl font-semibold tracking-tight sm:text-2xl">
+                History becomes context
+              </h2>
+              <p className="mt-2 text-sm leading-relaxed text-white/70 md:whitespace-nowrap">
+                While importing, AI detects customers, matches vehicles, builds repair history, and creates lasting memory for better advice.
+              </p>
+              <ul className="mt-4 flex flex-wrap gap-2">
+                {["Detect customers", "Match vehicles", "Build history", "Create memory"].map(
+                  (item) => (
+                    <li
+                      key={item}
+                      className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] font-medium tracking-wide text-white/80"
+                    >
+                      {item}
+                    </li>
+                  ),
+                )}
+              </ul>
+            </div>
           </aside>
 
           <div>
-            <h2 className="text-sm font-medium">Choose how to import</h2>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              <button
-                type="button"
+            <div className="flex items-end justify-between gap-3">
+              <div>
+                <h2 className="font-display text-lg font-semibold tracking-tight">
+                  Choose how to import
+                </h2>
+              </div>
+            </div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <SourceOptionCard
+                title="CSV / Excel"
+                description="Upload spreadsheet exports from your shop system"
+                selected={primaryGroup === "file"}
+                icon="file"
                 onClick={() => {
                   setPrimaryGroup("file");
                   setSource(fileSources[0]?.source ?? "csv");
                 }}
-                className={`rounded-md border bg-[var(--panel)] px-4 py-3 text-left hover:border-[var(--accent)] ${
-                  primaryGroup === "file" ? "border-[var(--accent)]" : "border-[var(--line)]"
-                }`}
-              >
-                <p className="text-sm font-medium">CSV / Excel</p>
-                <p className="mt-1 text-xs text-[var(--muted)]">
-                  Spreadsheet exports from your shop
-                </p>
-              </button>
+              />
 
               {manualSource && (
-              <button
-                type="button"
-                onClick={() => {
-                  setSuccess(null);
-                  setError(null);
-                  selectSource("manual");
-                }}
-                className="rounded-md border border-[var(--line)] bg-[var(--panel)] px-4 py-3 text-left hover:border-[var(--accent)]"
-              >
-                <p className="text-sm font-medium">Manual Entry</p>
-                <p className="mt-1 text-xs text-[var(--muted)]">
-                  Enter a customer and vehicle with simple forms
-                </p>
-              </button>
+                <SourceOptionCard
+                  title="Manual Entry"
+                  description="Enter a customer and vehicle with guided forms"
+                  icon="manual"
+                  onClick={() => {
+                    setSuccess(null);
+                    setError(null);
+                    selectSource("manual");
+                  }}
+                />
               )}
             </div>
           </div>
-
         </section>
       )}
 
@@ -717,62 +1050,93 @@ export default function ImportPage() {
         step === "source" &&
         createPortal(
           <div
-            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+            className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
             role="dialog"
             aria-modal="true"
             aria-labelledby="file-import-dialog-title"
             onClick={() => {
               setPrimaryGroup(null);
               setSource("");
+              clearSelectedFile();
             }}
           >
             <div
-              className="w-full max-w-md space-y-4 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-5 shadow-lg"
+              className="flex w-full max-w-[32rem] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]"
               onClick={(e) => e.stopPropagation()}
             >
-              <div>
-                <p id="file-import-dialog-title" className="text-sm font-medium">
-                  Select file type
-                </p>
-                <p className="mt-1 text-xs text-[var(--muted)]">
-                  Choose CSV or Excel, then continue to upload
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {fileSources.map((s) => (
-                  <button
-                    key={s.source}
-                    type="button"
-                    onClick={() => setSource(s.source)}
-                    className={`rounded-md border px-3 py-2 text-sm ${
-                      source === s.source
-                        ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
-                        : "border-[var(--line)]"
-                    }`}
+              <div className="relative shrink-0 overflow-hidden border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white px-5 pb-5 pt-6">
+                <div
+                  className="pointer-events-none absolute right-0 top-0 h-40 w-40 translate-x-1/4 -translate-y-1/4 rounded-full bg-[var(--accent-glow)] blur-2xl"
+                  aria-hidden="true"
+                />
+                <div className="relative">
+                  <p
+                    id="file-import-dialog-title"
+                    className="text-lg font-semibold tracking-tight text-[var(--ink)]"
                   >
-                    {s.label}
-                  </button>
-                ))}
+                    Select file type
+                  </p>
+                  <p className="mt-1 text-sm text-[var(--muted)]">
+                    Choose CSV or Excel, then continue to upload.
+                  </p>
+                </div>
               </div>
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPrimaryGroup(null);
-                    setSource("");
-                  }}
-                  className="rounded-md border border-[var(--line)] px-4 py-2 text-sm"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  disabled={!source || !FILE_SOURCES.has(source)}
-                  onClick={() => setStep("configure")}
-                  className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
-                >
-                  Continue
-                </button>
+              <div className="space-y-5 px-5 py-5">
+                <div className="grid grid-cols-2 gap-2">
+                  {fileSources.map((s) => {
+                    const selected = source === s.source;
+                    const FileIcon = s.source === "excel" ? IconExcel : IconCsv;
+                    return (
+                      <button
+                        key={s.source}
+                        type="button"
+                        onClick={() => {
+                          if (source !== s.source) clearSelectedFile();
+                          setSource(s.source);
+                        }}
+                        className={`flex flex-col items-center gap-2 rounded-xl border px-3 py-4 text-sm font-medium transition-colors ${
+                          selected
+                            ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
+                            : "border-[var(--line)] hover:border-[var(--accent)]/50"
+                        }`}
+                      >
+                        <span
+                          className={`inline-flex h-10 w-10 items-center justify-center rounded-xl ${
+                            selected
+                              ? "bg-[var(--accent)] text-white shadow-md shadow-[var(--accent-glow)]"
+                              : "bg-[var(--background)] text-[var(--foreground)] ring-1 ring-[var(--line)]"
+                          }`}
+                        >
+                          <FileIcon />
+                        </span>
+                        {s.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPrimaryGroup(null);
+                      setSource("");
+                      clearSelectedFile();
+                    }}
+                    className="btn-ghost inline-flex items-center justify-center gap-1.5 px-4 py-2 text-sm"
+                  >
+                    <IconCancel />
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!source || !FILE_SOURCES.has(source)}
+                    onClick={() => setStep("configure")}
+                    className="btn-primary inline-flex items-center justify-center gap-1.5 px-4 py-2 text-sm disabled:opacity-60"
+                  >
+                    Continue
+                    <IconContinue />
+                  </button>
+                </div>
               </div>
             </div>
           </div>,
@@ -784,158 +1148,333 @@ export default function ImportPage() {
         selectedSource &&
         createPortal(
           <div
-            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+            className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
             role="dialog"
             aria-modal="true"
             aria-labelledby="import-review-dialog-title"
             onClick={() => {
               setStep("source");
               setPrimaryGroup(null);
+              setFileDragOver(false);
             }}
           >
             <form
               onSubmit={startImport}
               onClick={(e) => e.stopPropagation()}
-              className="max-h-[min(90vh,44rem)] w-full max-w-2xl space-y-4 overflow-y-auto rounded-lg border border-[var(--line)] bg-[var(--panel)] p-5 shadow-lg"
+              className={`asa-scroll flex w-full flex-col overflow-hidden overscroll-contain rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_28px_80px_-20px_rgba(15,23,42,0.55)] ${
+                FILE_SOURCES.has(source)
+                  ? "max-w-[32rem]"
+                  : "max-h-[min(92vh,44rem)] max-w-2xl"
+              }`}
             >
-              <h2 id="import-review-dialog-title" className="text-sm font-medium">
-                {source === "manual" ? "Manual Entry" : `Review · ${selectedSource.label}`}
-              </h2>
-              <p className="text-sm text-[var(--muted)]">
-                {source === "manual"
-                  ? "Enter a customer and/or vehicle, then save. The form stays open for the next entry."
-                  : "Confirm source settings, then start import. Validation and duplicate detection run next."}
-              </p>
+              <div
+                className={`relative shrink-0 border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white ${
+                  FILE_SOURCES.has(source) ? "p-5" : "px-5 py-6 sm:px-6"
+                }`}
+              >                <div
+                  className="pointer-events-none absolute -right-6 -top-10 h-40 w-40 rounded-full bg-[var(--accent-glow)] blur-2xl"
+                  aria-hidden="true"
+                />
+                <div
+                  className={`relative flex gap-3.5 ${
+                    FILE_SOURCES.has(source) ? "items-center" : "items-start"
+                  }`}
+                >
+                  {FILE_SOURCES.has(source) ? (
+                    <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-white shadow-[0_8px_20px_-8px_rgba(240,90,36,0.85)]">
+                      {source === "excel" ? <IconExcel className="h-5 w-5" /> : <IconCsv className="h-5 w-5" />}
+                    </span>
+                  ) : null}
+                  <div className="min-w-0 flex items-center">
+                    {source === "manual" ? (
+                      <div>
+                        <h2
+                          id="import-review-dialog-title"
+                          className="font-display text-xl font-semibold tracking-tight text-[var(--ink)]"
+                        >
+                          Manual Entry
+                        </h2>
+                        <p className="mt-1.5 text-sm leading-relaxed text-[var(--muted)] whitespace-nowrap">
+                          Enter a customer and/or vehicle, then save. The form stays open for the next entry.
+                        </p>
+                      </div>
+                    ) : (
+                      <h2
+                        id="import-review-dialog-title"
+                        className="font-display text-xl font-semibold leading-none tracking-tight text-[var(--ink)]"
+                      >
+                        {FILE_SOURCES.has(source) ? "Review" : selectedSource.label}
+                      </h2>
+                    )}
+                  </div>
+                </div>
+              </div>
 
-              {selectedSource.requires_upload && (
-                <div className="space-y-3">
-                  <input
-                    type="file"
-                    accept={
-                      FILE_SOURCES.has(source)
-                        ? ".csv,.tsv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        : source === "pdf"
-                          ? ".pdf,application/pdf"
-                          : "*/*"
-                    }
-                    onChange={(e) => {
-                      const next = e.target.files?.[0] ?? null;
-                      setFile(next);
-                      if (next && FILE_SOURCES.has(source)) {
-                        const inferred = inferFileImportSource(next.name);
-                        if (inferred) setSource(inferred);
+              <div
+                className={
+                  FILE_SOURCES.has(source)
+                    ? "p-5"
+                    : "asa-scroll min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5 sm:px-6"
+                }
+              >
+                {selectedSource.requires_upload && FILE_SOURCES.has(source) && (
+                  <div>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept={
+                        source === "excel"
+                          ? ".xlsx,.xlsm,.xltx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                          : ".csv,.tsv,.txt,text/csv,text/tab-separated-values"
                       }
-                    }}
-                    className="block w-full text-sm"
-                  />
-                  {FILE_SOURCES.has(source) && (
-                    <p className="text-xs text-[var(--muted)]">
-                      Accepts CSV or Excel (.xlsx). Connector is chosen from the file type
-                      {file ? ` · using ${source.toUpperCase()}` : ""}.
-                    </p>
-                  )}
-                  {(source === "ocr" || source === "pdf") && (
-                    <textarea
-                      className="min-h-28 w-full rounded-md border border-[var(--line)] bg-transparent px-3 py-2 text-sm"
-                      placeholder="OCR / document text (optional for PDF; required for OCR without file)"
-                      value={ocrText}
-                      onChange={(e) => setOcrText(e.target.value)}
-                    />
-                  )}
-                </div>
-              )}
-
-              {source === "manual" && (
-                <div className="space-y-5">
-                  <div className="space-y-3">
-                    <h3 className="text-sm font-medium">Customer</h3>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <ManualField
-                        label="Name"
-                        value={manualCustomer.name}
-                        onChange={(name) => setManualCustomer((c) => ({ ...c, name }))}
-                        autoComplete="name"
-                        placeholder="Sam Chen"
-                      />
-                      <ManualField
-                        label="Phone"
-                        value={manualCustomer.phone}
-                        onChange={(phone) =>
-                          setManualCustomer((c) => ({ ...c, phone: formatPhoneInput(phone) }))
+                      className="sr-only"
+                      onChange={(e) => {
+                        const next = e.target.files?.[0] ?? null;
+                        if (!next) {
+                          clearSelectedFile();
+                          return;
                         }
-                        type="tel"
-                        autoComplete="tel"
-                        placeholder={PHONE_PLACEHOLDER}
+                        applySpreadsheetFile(next);
+                      }}
+                    />
+                    {!file ? (
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        onDragEnter={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setFileDragOver(true);
+                        }}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setFileDragOver(true);
+                        }}
+                        onDragLeave={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setFileDragOver(false);
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setFileDragOver(false);
+                          const next = e.dataTransfer.files?.[0] ?? null;
+                          if (!next) return;
+                          applySpreadsheetFile(next);
+                        }}
+                        className={`group relative flex w-full flex-col items-center justify-center rounded-2xl border border-dashed px-5 py-8 text-center transition-colors ${
+                          fileDragOver
+                            ? "border-[var(--accent)] bg-[var(--accent-soft)]"
+                            : "border-[var(--line)] bg-[var(--background)]/45 hover:border-[var(--accent)]/55 hover:bg-[var(--accent-soft)]/40"
+                        }`}
+                      >
+                        <div
+                          className="pointer-events-none absolute inset-x-0 top-0 h-20 rounded-t-2xl bg-[radial-gradient(circle_at_50%_0%,var(--accent-glow),transparent_70%)] opacity-50"
+                          aria-hidden
+                        />
+                        <span
+                          className={`relative inline-flex h-12 w-12 items-center justify-center rounded-xl transition-colors ${
+                            fileDragOver
+                              ? "bg-[var(--accent)] text-white shadow-lg shadow-[var(--accent-glow)]"
+                              : "bg-white text-[var(--accent)] ring-1 ring-[var(--line)] group-hover:bg-[var(--accent)] group-hover:text-white group-hover:shadow-md group-hover:shadow-[var(--accent-glow)] group-hover:ring-0"
+                          }`}
+                        >
+                          <IconUpload className="h-5 w-5" />
+                        </span>
+                        <p className="relative mt-3 font-display text-sm font-semibold tracking-tight text-[var(--ink)]">
+                          {fileDragOver
+                            ? "Drop to upload"
+                            : source === "excel"
+                              ? "Import the Excel file"
+                              : "Import the CSV file"}
+                        </p>
+                      </button>
+                    ) : (
+                      <div className="relative overflow-hidden rounded-2xl border border-[var(--line)] bg-[linear-gradient(135deg,#111_0%,#1c1c1c_55%,#2a1810_100%)] px-5 py-5 text-white shadow-[var(--shadow-soft)]">
+                        <div
+                          className="pointer-events-none absolute -right-8 -top-10 h-36 w-36 rounded-full bg-[radial-gradient(circle,rgba(240,90,36,0.4),transparent_70%)]"
+                          aria-hidden
+                        />
+                        <div className="relative flex items-center gap-3.5">
+                          <span className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-white/10 ring-1 ring-white/15">
+                            {source === "excel" ? (
+                              <IconExcel className="h-5 w-5 text-[var(--rail-active-fg)]" />
+                            ) : (
+                              <IconCsv className="h-5 w-5 text-[var(--rail-active-fg)]" />
+                            )}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate font-display text-sm font-semibold tracking-tight">
+                              {file.name}
+                            </p>
+                            <p className="mt-1 text-xs leading-none text-white/55">
+                              {formatFileSize(file.size)} · {source.toUpperCase()} connector
+                            </p>
+                          </div>
+                          <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-400/20 text-emerald-300 ring-1 ring-emerald-400/30">
+                            <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" aria-hidden>
+                              <path
+                                fill="currentColor"
+                                d="M6.5 11.2 3.3 8l1.1-1.1 2.1 2.1 4.6-4.6L12.2 5.5 6.5 11.2z"
+                              />
+                            </svg>
+                          </span>
+                        </div>
+                        <div className="relative mt-4 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => fileInputRef.current?.click()}
+                            className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/15 transition-colors hover:bg-white/15"
+                          >
+                            Replace file
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              clearSelectedFile();
+                            }}
+                            className="rounded-lg px-3 py-1.5 text-xs font-semibold text-white/70 transition-colors hover:bg-white/10 hover:text-white"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {selectedSource.requires_upload && !FILE_SOURCES.has(source) && (
+                  <div className="space-y-3 rounded-xl border border-dashed border-[var(--line)] bg-[var(--background)]/50 p-4">
+                    <input
+                      type="file"
+                      accept={
+                        source === "pdf" ? ".pdf,application/pdf" : "*/*"
+                      }
+                      onChange={(e) => {
+                        setFile(e.target.files?.[0] ?? null);
+                      }}
+                      className="block w-full text-sm file:mr-3 file:rounded-full file:border-0 file:bg-[var(--accent-soft)] file:px-3 file:py-1.5 file:text-sm file:font-semibold file:text-[var(--accent)]"
+                    />
+                    {(source === "ocr" || source === "pdf") && (
+                      <textarea
+                        className="min-h-28 w-full rounded-xl border border-[var(--line)] bg-transparent px-3.5 py-2.5 text-sm"
+                        placeholder="OCR / document text (optional for PDF; required for OCR without file)"
+                        value={ocrText}
+                        onChange={(e) => setOcrText(e.target.value)}
                       />
-                      <div className="sm:col-span-2">
+                    )}
+                  </div>
+                )}
+
+                {source === "manual" && (
+                  <div className="space-y-5">
+                    <div className="space-y-3 rounded-xl border border-[var(--line)] bg-[var(--background)]/35 p-4">
+                      <h3 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+                        Customer
+                      </h3>
+                      <div className="grid gap-3 sm:grid-cols-2">
                         <ManualField
-                          label="Email (optional)"
-                          value={manualCustomer.email}
-                          onChange={(email) => setManualCustomer((c) => ({ ...c, email }))}
-                          type="email"
-                          autoComplete="email"
-                          placeholder="sam@example.com"
+                          label="Name"
+                          value={manualCustomer.name}
+                          onChange={(name) => setManualCustomer((c) => ({ ...c, name }))}
+                          autoComplete="name"
+                          placeholder="Sam Chen"
+                        />
+                        <ManualField
+                          label="Phone"
+                          value={manualCustomer.phone}
+                          onChange={(phone) =>
+                            setManualCustomer((c) => ({ ...c, phone: formatPhoneInput(phone) }))
+                          }
+                          type="tel"
+                          autoComplete="tel"
+                          placeholder={PHONE_PLACEHOLDER}
+                        />
+                        <div className="sm:col-span-2">
+                          <ManualField
+                            label="Email (optional)"
+                            value={manualCustomer.email}
+                            onChange={(email) => setManualCustomer((c) => ({ ...c, email }))}
+                            type="email"
+                            autoComplete="email"
+                            placeholder="sam@example.com"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 rounded-xl border border-[var(--line)] bg-[var(--background)]/35 p-4">
+                      <h3 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+                        Vehicle
+                      </h3>
+                      <p className="text-xs text-[var(--muted)]">
+                        Scan or type a 17-character VIN to auto-fill year, make, and model.
+                      </p>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="sm:col-span-2">
+                          <VinInput
+                            value={manualVehicle.vin}
+                            onChange={(vin) => setManualVehicle((v) => ({ ...v, vin }))}
+                            status={vinStatus}
+                            looking={vinLooking}
+                            required={false}
+                          />
+                        </div>
+                        <ManualField
+                          label="Year"
+                          value={manualVehicle.year}
+                          onChange={(year) => setManualVehicle((v) => ({ ...v, year }))}
+                          type="number"
+                          placeholder="2018"
+                        />
+                        <ManualField
+                          label="Make"
+                          value={manualVehicle.make}
+                          onChange={(make) => setManualVehicle((v) => ({ ...v, make }))}
+                          placeholder="Honda"
+                        />
+                        <ManualField
+                          label="Model"
+                          value={manualVehicle.model}
+                          onChange={(model) => setManualVehicle((v) => ({ ...v, model }))}
+                          placeholder="Accord"
+                        />
+                        <ManualField
+                          label="Mileage"
+                          value={manualVehicle.mileage}
+                          onChange={(mileage) => setManualVehicle((v) => ({ ...v, mileage }))}
+                          type="number"
+                          placeholder="54000"
                         />
                       </div>
                     </div>
                   </div>
+                )}
+              </div>
 
-                  <div className="space-y-3">
-                    <h3 className="text-sm font-medium">Vehicle</h3>
-                    <p className="text-xs text-[var(--muted)]">
-                      Scan or type a 17-character VIN to auto-fill year, make, and model.
-                    </p>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="sm:col-span-2">
-                        <VinInput
-                          value={manualVehicle.vin}
-                          onChange={(vin) => setManualVehicle((v) => ({ ...v, vin }))}
-                          status={vinStatus}
-                          looking={vinLooking}
-                          required={false}
-                        />
-                      </div>
-                      <ManualField
-                        label="Year"
-                        value={manualVehicle.year}
-                        onChange={(year) => setManualVehicle((v) => ({ ...v, year }))}
-                        type="number"
-                        placeholder="2018"
-                      />
-                      <ManualField
-                        label="Make"
-                        value={manualVehicle.make}
-                        onChange={(make) => setManualVehicle((v) => ({ ...v, make }))}
-                        placeholder="Honda"
-                      />
-                      <ManualField
-                        label="Model"
-                        value={manualVehicle.model}
-                        onChange={(model) => setManualVehicle((v) => ({ ...v, model }))}
-                        placeholder="Accord"
-                      />
-                      <ManualField
-                        label="Mileage"
-                        value={manualVehicle.mileage}
-                        onChange={(mileage) => setManualVehicle((v) => ({ ...v, mileage }))}
-                        type="number"
-                        placeholder="54000"
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="flex gap-2">
-                <button
+              <div
+                className={`flex shrink-0 items-center justify-between gap-3 border-t border-[var(--line)] bg-[var(--background)]/35 ${
+                  FILE_SOURCES.has(source) ? "p-5" : "px-5 py-4 sm:px-6"
+                }`}
+              >                <button
                   type="button"
                   onClick={() => {
                     setStep("source");
                     setPrimaryGroup(null);
+                    setFileDragOver(false);
                   }}
-                  className="rounded-md border border-[var(--line)] px-4 py-2 text-sm"
+                  className="btn-ghost inline-flex items-center justify-center gap-1.5 px-4 py-2 text-sm"
                 >
-                  {source === "manual" ? "Cancel" : "Back"}
+                  {source === "manual" ? (
+                    <>
+                      <IconCancel />
+                      Cancel
+                    </>
+                  ) : (
+                    "Back"
+                  )}
                 </button>
                 <button
                   type="submit"
@@ -954,15 +1493,21 @@ export default function ImportPage() {
                       !manualVehicle.mileage.trim() &&
                       !manualVehicle.vin.trim())
                   }
-                  className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+                  className="btn-primary inline-flex items-center justify-center gap-1.5 px-5 py-2.5 text-sm disabled:opacity-60"
                 >
                   {source === "manual"
                     ? busy
                       ? "Saving…"
-                      : "Save"
+                      : (
+                          <>
+                            <IconSave />
+                            Save
+                          </>
+                        )
                     : busy
                       ? "Starting…"
                       : "Start import"}
+                  {source !== "manual" && !busy ? <IconContinue /> : null}
                 </button>
               </div>
             </form>
@@ -971,31 +1516,42 @@ export default function ImportPage() {
         )}
 
       {step === "progress" && (
-        <section className="max-w-xl space-y-3 rounded-md border border-[var(--line)] bg-[var(--panel)] p-5">
-          <h2 className="text-sm font-medium">Import in progress</h2>
-          <p className="text-sm text-[var(--muted)]">
+        <section className="surface-panel relative overflow-hidden max-w-xl p-6">
+          <div
+            className="pointer-events-none absolute -right-8 -top-10 h-32 w-32 rounded-full bg-[radial-gradient(circle,rgba(240,90,36,0.18),transparent_70%)]"
+            aria-hidden
+          />
+          <p className="section-label">Import</p>
+          <h2 className="font-display mt-1.5 text-lg font-semibold tracking-tight">
+            Import in progress
+          </h2>
+          <p className="mt-2 text-sm text-[var(--muted)]">
             {job?.progress.message || (busy ? "Starting import…" : "Working…")}
           </p>
-          <div className="h-2 overflow-hidden rounded-full bg-[var(--line)]">
+          <div className="mt-5 h-2.5 overflow-hidden rounded-full bg-[var(--background)] ring-1 ring-[var(--line)]">
             <div
-              className="h-full bg-[var(--accent)] transition-all"
+              className="h-full rounded-full bg-[linear-gradient(90deg,var(--accent),var(--signal))] transition-all duration-500"
               style={{ width: `${job?.progress.percent ?? (busy ? 5 : 0)}%` }}
             />
           </div>
-          <p className="text-xs text-[var(--muted)]">
+          <p className="mt-2 text-xs font-medium uppercase tracking-[0.12em] text-[var(--muted)]">
             {job ? `${job.progress.stage} · ${job.progress.percent}%` : "uploading · …"}
           </p>
         </section>
       )}
 
       {step === "duplicates" && job && (
-        <section className="space-y-4">
-          <h2 className="text-sm font-medium">Import · Resolve duplicates</h2>
-          <p className="text-sm text-[var(--muted)]">
-            These records look similar to ones you already have. Compare the two sides, then choose
-            how to handle each before applying.
-          </p>
-          <div className="space-y-3">
+        <section className="min-w-0 space-y-4">
+          <div className="min-w-0">
+            <h2 className="font-display text-lg font-semibold tracking-tight">
+              Resolve duplicates
+            </h2>
+            <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-[var(--muted)]">
+              These records look similar to ones you already have. Compare both sides, then choose
+              how to handle each before applying.
+            </p>
+          </div>
+          <div className="min-w-0 space-y-3">
             {job.duplicates
               .filter((d) => !d.resolved)
               .map((d) => (
@@ -1011,8 +1567,9 @@ export default function ImportPage() {
             type="button"
             disabled={busy}
             onClick={() => void submitResolutions()}
-            className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+            className="btn-primary inline-flex items-center justify-center gap-1.5 px-5 py-2.5 text-sm disabled:opacity-60"
           >
+            {!busy ? <IconApply /> : null}
             {busy ? "Applying…" : "Apply"}
           </button>
         </section>
@@ -1020,17 +1577,19 @@ export default function ImportPage() {
 
       {step === "report" && job && (
         <section className="space-y-4">
-          <h2 className="text-sm font-medium">Complete</h2>
-          <div className="rounded-md border border-[var(--line)] bg-[var(--panel)] p-5 text-sm">
-            <p>
-              Status:{" "}
-              <span className="font-medium">{jobStatusLabel(job.status)}</span>
+          <div className="surface-panel space-y-5 p-5 sm:p-6">
+            <div className="flex flex-wrap items-center gap-3">
+              <StatusBadge status={job.status} />
               {job.source ? (
-                <span className="text-[var(--muted)]"> · {job.source}</span>
+                <span className="text-sm capitalize text-[var(--muted)]">{job.source}</span>
               ) : null}
-            </p>
-            {job.error && <p className="mt-2 text-red-600">{job.error}</p>}
-            <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            </div>
+            {job.error && (
+              <p className="rounded-xl border border-red-200/80 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {job.error}
+              </p>
+            )}
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <StatCard label="Customers imported" value={entityImported(job, "customer")} />
               <StatCard label="Vehicles imported" value={entityImported(job, "vehicle")} />
               <StatCard label="Repair records" value={entityImported(job, "repair_history")} />
@@ -1038,23 +1597,31 @@ export default function ImportPage() {
             </div>
             {job.report && (
               <>
-                <p className="mt-3 text-[var(--muted)]">
+                <p className="text-sm text-[var(--muted)]">
                   Duration {job.report.duration_ms}ms · Pending duplicates{" "}
                   {job.report.duplicates_pending}
                 </p>
-                <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                   {Object.entries(job.report.entity_counts).map(([kind, c]) => (
-                    <div key={kind} className="rounded-md border border-[var(--line)] px-3 py-2">
-                      <p className="text-xs uppercase tracking-wide text-[var(--muted)]">{kind}</p>
-                      <p className="mt-1 font-medium">{c.imported} imported</p>
-                      <p className="text-xs text-[var(--muted)]">
+                    <div
+                      key={kind}
+                      className="rounded-xl border border-[var(--line)] bg-[var(--background)]/40 px-3.5 py-3"
+                    >
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+                        {kind}
+                      </p>
+                      <p className="font-display mt-1 text-lg font-semibold tracking-tight">
+                        {c.imported}{" "}
+                        <span className="text-sm font-medium text-[var(--muted)]">imported</span>
+                      </p>
+                      <p className="mt-1 text-xs text-[var(--muted)]">
                         merged {c.merged} · skipped {c.skipped} · failed {c.failed}
                       </p>
                     </div>
                   ))}
                 </div>
                 {job.report.warnings.length > 0 && (
-                  <ul className="mt-4 list-disc space-y-1 pl-5 text-[var(--muted)]">
+                  <ul className="list-disc space-y-1 rounded-xl border border-amber-200/70 bg-amber-50/80 px-5 py-3 pl-8 text-sm text-amber-900">
                     {job.report.warnings.map((w) => (
                       <li key={w}>{w}</li>
                     ))}
@@ -1063,8 +1630,8 @@ export default function ImportPage() {
               </>
             )}
             {job.validation_issues.length > 0 && (
-              <div className="mt-4 space-y-2">
-                <p className="font-medium">Validation issues</p>
+              <div className="space-y-2 rounded-xl border border-[var(--line)] bg-[var(--background)]/40 p-4">
+                <p className="text-sm font-semibold">Validation issues</p>
                 {job.validation_issues.map((issue) => (
                   <p key={issue.id} className="text-xs text-[var(--muted)]">
                     [{issue.severity}] {issue.code}: {issue.message}
@@ -1076,45 +1643,53 @@ export default function ImportPage() {
         </section>
       )}
 
-      <section className="space-y-2">
-        <h2 className="text-sm font-medium">Recent jobs</h2>
-        <div className="overflow-x-auto rounded-md border border-[var(--line)]">
-          <table className="min-w-full text-left text-sm">
-            <thead className="bg-[var(--panel)] text-xs uppercase tracking-wide text-[var(--muted)]">
+      <section className="space-y-3">
+        <h2 className="font-display text-lg font-semibold tracking-tight">History</h2>
+        <div className="table-scroll">
+          <table>
+            <thead className="bg-[var(--background)]/70 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
               <tr>
-                <th className="px-3 py-2">Source</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2">Customers</th>
-                <th className="px-3 py-2">Vehicles</th>
-                <th className="px-3 py-2">Repairs</th>
-                <th className="px-3 py-2">Duplicates</th>
-                <th className="px-3 py-2">Created</th>
+                <th className="px-4 py-3 text-left">Source</th>
+                <th className="px-4 py-3 text-left">Status</th>
+                <th className="px-4 py-3 text-left">Customers</th>
+                <th className="px-4 py-3 text-left">Vehicles</th>
+                <th className="px-4 py-3 text-left">Repairs</th>
+                <th className="px-4 py-3 text-left">Duplicates</th>
+                <th className="px-4 py-3 text-left">Created</th>
               </tr>
             </thead>
             <tbody>
-              {jobs.map((j) => (
+              {jobs.map((j) => {
+                const selected = job?.id === j.id;
+                return (
                 <tr
                   key={j.id}
-                  className={`cursor-pointer border-t border-[var(--line)] hover:bg-[var(--accent-soft)] ${
-                    job?.id === j.id ? "bg-[var(--accent-soft)]" : ""
+                  aria-selected={selected}
+                  className={`cursor-pointer border-t border-[var(--line)] transition-colors ${
+                    selected
+                      ? "bg-[var(--accent)]/10 shadow-[inset_3px_0_0_0_var(--accent)]"
+                      : "hover:bg-[var(--accent-soft)]/60"
                   }`}
                   onClick={() => void openRecentJob(j)}
                 >
-                  <td className="px-3 py-2">{j.source}</td>
-                  <td className="px-3 py-2">{jobStatusLabel(j.status)}</td>
-                  <td className="px-3 py-2">{entityImported(j, "customer")}</td>
-                  <td className="px-3 py-2">{entityImported(j, "vehicle")}</td>
-                  <td className="px-3 py-2">{entityImported(j, "repair_history")}</td>
-                  <td className="px-3 py-2">{duplicatesResolved(j)}</td>
-                  <td className="px-3 py-2 text-[var(--muted)]">
+                  <td className="px-4 py-3 text-left capitalize">{j.source}</td>
+                  <td className="px-4 py-3 text-left">
+                    <StatusBadge status={j.status} />
+                  </td>
+                  <td className="px-4 py-3 text-left tabular-nums">{entityImported(j, "customer")}</td>
+                  <td className="px-4 py-3 text-left tabular-nums">{entityImported(j, "vehicle")}</td>
+                  <td className="px-4 py-3 text-left tabular-nums">{entityImported(j, "repair_history")}</td>
+                  <td className="px-4 py-3 text-left tabular-nums">{duplicatesResolved(j)}</td>
+                  <td className="px-4 py-3 text-left text-[var(--muted)]">
                     {j.created_at ? new Date(j.created_at).toLocaleString() : "—"}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
               {jobs.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-3 py-6 text-[var(--muted)]">
-                    No imports yet
+                  <td colSpan={7} className="px-4 py-10 text-center text-[var(--muted)]">
+                    No imports yet — start with a spreadsheet or manual entry above.
                   </td>
                 </tr>
               )}
@@ -1129,9 +1704,13 @@ export default function ImportPage() {
 
 function StatCard({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-md border border-[var(--line)] px-3 py-2">
-      <p className="text-xs uppercase tracking-wide text-[var(--muted)]">{label}</p>
-      <p className="mt-1 text-lg font-medium">{value}</p>
+    <div className="rounded-xl border border-[var(--line)] bg-[var(--background)]/40 px-3.5 py-3">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+        {label}
+      </p>
+      <p className="font-display mt-1 text-2xl font-semibold tracking-tight tabular-nums">
+        {value}
+      </p>
     </div>
   );
 }
@@ -1180,19 +1759,25 @@ function SnapshotPanel({
 }) {
   const fields = snapshotFieldOrder(entityKind, snap);
   return (
-    <div className="rounded-md border border-[var(--line)] p-3">
-      <p className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">{title}</p>
+    <div className="min-w-0 rounded-xl border border-[var(--line)] bg-[var(--background)]/35 p-3.5">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+        {title}
+      </p>
       {subtitle ? <p className="mt-0.5 text-xs text-[var(--muted)]">{subtitle}</p> : null}
       {fields.length === 0 ? (
         <p className="mt-2 text-sm text-[var(--muted)]">No details available</p>
       ) : (
-        <dl className="mt-2 space-y-1.5">
+        <dl className="mt-2.5 min-w-0 space-y-1.5">
           {fields.map((key) => {
             const highlighted = highlightKey === key;
             return (
-              <div key={key} className="grid grid-cols-[7rem_1fr] gap-2 text-sm">
+              <div key={key} className="grid min-w-0 grid-cols-[minmax(4.5rem,6.5rem)_minmax(0,1fr)] gap-2 text-sm">
                 <dt className="text-[var(--muted)]">{humanizeKey(key)}</dt>
-                <dd className={highlighted ? "font-medium text-[var(--accent)]" : ""}>
+                <dd
+                  className={`min-w-0 break-words [overflow-wrap:anywhere] ${
+                    highlighted ? "font-semibold text-[var(--accent)]" : ""
+                  }`}
+                >
                   {formatSnapshotValue(snap[key])}
                 </dd>
               </div>
@@ -1227,19 +1812,19 @@ function DuplicateCard({
         : entityLabel;
 
   return (
-    <div className="rounded-md border border-[var(--line)] bg-[var(--panel)] p-4">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <p className="text-sm font-medium">
+    <div className="surface-panel min-w-0 p-4 sm:p-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
+        <div className="min-w-0 flex-1">
+          <p className="font-display break-words text-sm font-semibold tracking-tight [overflow-wrap:anywhere]">
             Possible duplicate {entityLabel.toLowerCase()}
             {headline !== "—" ? `: ${headline}` : ""}
           </p>
-          <p className="mt-0.5 text-xs text-[var(--muted)]">
+          <p className="mt-1 break-words text-xs text-[var(--muted)]">
             Matched by {matchLabel} · {confidence}% confidence
           </p>
         </div>
         <select
-          className="rounded-md border border-[var(--line)] bg-transparent px-2 py-1 text-sm"
+          className="w-full max-w-full shrink-0 rounded-xl border border-[var(--line)] bg-[var(--background)]/40 px-3 py-2 text-sm sm:w-auto"
           value={action}
           onChange={(e) => onChange(e.target.value)}
           aria-label={`How to resolve duplicate for ${headline}`}
@@ -1251,7 +1836,7 @@ function DuplicateCard({
           ))}
         </select>
       </div>
-      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+      <div className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2">
         <SnapshotPanel
           title="Importing"
           subtitle="From this import"

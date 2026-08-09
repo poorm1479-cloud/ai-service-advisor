@@ -10,17 +10,16 @@ type NavIcon = (props: { className?: string }) => ReactNode;
 
 const NAV: { href: string; label: string; Icon: NavIcon; ownerOnly?: boolean }[] = [
   { href: "/dashboard", label: "Dashboard", Icon: IconGauge },
-  { href: "/dashboard/customers", label: "Customers", Icon: IconUsers },
+  { href: "/dashboard/customer", label: "Customer", Icon: IconUsers },
   { href: "/dashboard/appointments", label: "Schedule", Icon: IconCalendar },
   { href: "/dashboard/walk-ins", label: "Walk-ins", Icon: IconDoor },
   { href: "/dashboard/conversations", label: "Conversations", Icon: IconMessage },
-  { href: "/dashboard/services", label: "Services", Icon: IconWrench },
-  { href: "/dashboard/team", label: "Team", Icon: IconBadge },
   { href: "/dashboard/marketing", label: "Marketing", Icon: IconMegaphone },
   { href: "/dashboard/import", label: "Import", Icon: IconUpload, ownerOnly: true },
   // Hidden: Connected Services (keep for easy restore)
   // { href: "/dashboard/external", label: "Connected Services", Icon: IconLink, ownerOnly: true },
   { href: "/dashboard/billing", label: "Billing", Icon: IconCard, ownerOnly: true },
+  { href: "/dashboard/settings", label: "Setting", Icon: IconGear },
 ];
 
 type SidebarProps = {
@@ -74,27 +73,14 @@ export function Sidebar({ mobileOpen = false, onNavigate }: SidebarProps) {
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--rail-muted)]">
           Shop
         </p>
-        <Link
-          href="/dashboard/settings"
-          onClick={onNavigate}
-          tabIndex={hiddenFromA11y ? -1 : undefined}
-          className={`mt-1.5 block rounded-lg px-2.5 py-2 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-white/40 ${
-            pathname === "/dashboard/settings" || pathname.startsWith("/dashboard/settings/")
-              ? "bg-[var(--rail-active)] text-[var(--rail-active-fg)]"
-              : "hover:bg-[var(--rail-hover)]"
-          }`}
-          title="Shop settings"
-        >
+        <div className="mt-1.5 px-2.5 py-2">
           <p className="font-display truncate text-sm font-semibold tracking-tight text-white">
             {session.shopName}
           </p>
           <p className="mt-1 truncate text-xs text-[var(--rail-muted)]">
             {session.fullName} * {ROLE_LABELS[session.role]}
           </p>
-          <p className="mt-1.5 text-[10px] leading-none text-[var(--rail-muted)]" aria-hidden>
-            ▼
-          </p>
-        </Link>
+        </div>
       </div>
       <nav className="asa-scroll flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overscroll-contain px-2.5 py-3">
         {navItems.map((item) => {
@@ -183,15 +169,6 @@ function IconUsers({ className }: { className?: string }) {
   );
 }
 
-function IconBadge({ className }: { className?: string }) {
-  return (
-    <svg {...iconProps(className)}>
-      <path d="M12 3l2.2 4.5 5 .7-3.6 3.5.9 5-4.5-2.4L7.5 16.7l.9-5L4.8 8.2l5-.7L12 3Z" />
-      <path d="M8 20h8" />
-    </svg>
-  );
-}
-
 function IconCalendar({ className }: { className?: string }) {
   return (
     <svg {...iconProps(className)}>
@@ -243,10 +220,11 @@ function IconCard({ className }: { className?: string }) {
   );
 }
 
-function IconWrench({ className }: { className?: string }) {
+function IconGear({ className }: { className?: string }) {
   return (
     <svg {...iconProps(className)}>
-      <path d="M14.7 6.3a4 4 0 0 0-5.6 5.6L3 18l3 3 6.1-6.1a4 4 0 0 0 5.6-5.6l-2.5 2.5-2.5-2.5 2.5-2.5Z" />
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 2v2.5M12 19.5V22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M2 12h2.5M19.5 12H22M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8" />
     </svg>
   );
 }

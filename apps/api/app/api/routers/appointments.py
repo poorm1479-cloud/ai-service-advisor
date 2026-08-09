@@ -18,6 +18,7 @@ from app.infrastructure.database import get_session
 from app.scheduling.catalog import (
     build_booking_request,
     require_service_for_booking,
+    resolve_extra_services_for_booking,
     sync_shop_resources,
 )
 from app.scheduling.engines.availability import DEFAULT_SHOP_TZ
@@ -41,6 +42,7 @@ class BookRequest(BaseModel):
     """Book against Service Catalog. service_id required (AI voice + dashboard)."""
 
     service_id: UUID
+    extra_service_ids: list[UUID] = Field(default_factory=list)
     preferred_start: datetime | None = None
     customer_id: UUID | None = None
     vehicle_id: UUID | None = None
@@ -306,6 +308,12 @@ async def recommend_slots(
             service_id=body.service_id,
             store=runtime.store,
         )
+        extras = await resolve_extra_services_for_booking(
+            session,
+            shop_id=user.shop_id,
+            primary_id=service.id,
+            extra_service_ids=body.extra_service_ids,
+        )
     except ValidationError as exc:
         raise _http_validation(exc) from exc
 
@@ -319,6 +327,7 @@ async def recommend_slots(
         priority=body.priority,
         mechanic_id=body.mechanic_id,
         bay_id=body.bay_id,
+        additional_services=extras,
     )
     slots = await runtime.service.recommend_slots(request, days_ahead=days_ahead)
     return [
@@ -351,6 +360,12 @@ async def book_appointment(
             service_id=body.service_id,
             store=runtime.store,
         )
+        extras = await resolve_extra_services_for_booking(
+            session,
+            shop_id=user.shop_id,
+            primary_id=service.id,
+            extra_service_ids=body.extra_service_ids,
+        )
     except ValidationError as exc:
         raise _http_validation(exc) from exc
 
@@ -369,6 +384,7 @@ async def book_appointment(
             bay_id=body.bay_id,
             estimated_revenue=body.estimated_revenue,
             source=body.source,
+            additional_services=extras,
         )
     )
     if result.success:

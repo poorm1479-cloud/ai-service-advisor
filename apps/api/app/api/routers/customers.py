@@ -219,3 +219,24 @@ async def add_communication(
     except (ValidationError, NotFoundError) as exc:
         raise _http_error(exc) from exc
     return CommunicationOut.model_validate(item)
+
+
+@router.delete(
+    "/{customer_id}/communications/{communication_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_communication(
+    customer_id: UUID,
+    communication_id: UUID,
+    current: CurrentUser = Depends(get_current_user),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> None:
+    service = CrmService(uow)
+    try:
+        await service.delete_communication(
+            shop_id=current.shop_id,
+            customer_id=customer_id,
+            communication_id=communication_id,
+        )
+    except NotFoundError as exc:
+        raise _http_error(exc) from exc

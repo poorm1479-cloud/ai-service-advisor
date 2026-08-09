@@ -62,11 +62,18 @@ class ShopSettingsOut(BaseModel):
     name: str
     slug: str
     timezone: str
+    sms_phone_e164: str | None = None
+    voice_phone_e164: str | None = None
+    ai_paused: bool = False
 
 
 class UpdateShopSettingsRequest(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=255)
     timezone: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class SetShopAiPausedRequest(BaseModel):
+    ai_paused: bool
 
 
 class UpdateProfileRequest(BaseModel):
@@ -305,11 +312,15 @@ async def get_shop_settings(
     shop = await uow.shops.get_by_id(current.shop_id)
     if shop is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+    sms_phone, voice_phone = await uow.shops.get_channel_phones(shop.id)
     return ShopSettingsOut(
         shop_id=shop.id,
         name=shop.name,
         slug=shop.slug,
         timezone=shop.timezone,
+        sms_phone_e164=sms_phone,
+        voice_phone_e164=voice_phone,
+        ai_paused=bool(shop.ai_paused),
     )
 
 
@@ -340,11 +351,40 @@ async def update_shop_settings(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid timezone")
     updated = await uow.shops.update(shop)
     await uow.commit()
+    sms_phone, voice_phone = await uow.shops.get_channel_phones(updated.id)
     return ShopSettingsOut(
         shop_id=updated.id,
         name=updated.name,
         slug=updated.slug,
         timezone=updated.timezone,
+        sms_phone_e164=sms_phone,
+        voice_phone_e164=voice_phone,
+        ai_paused=bool(updated.ai_paused),
+    )
+
+
+@router.patch("/shop/ai-paused", response_model=ShopSettingsOut)
+async def set_shop_ai_paused(
+    body: SetShopAiPausedRequest,
+    current: CurrentUser = Depends(get_current_user),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> ShopSettingsOut:
+    """Pause/resume SMS + Voice AI only. Voice Notes and other AI tools stay on."""
+    shop = await uow.shops.get_by_id(current.shop_id)
+    if shop is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+    shop.ai_paused = bool(body.ai_paused)
+    updated = await uow.shops.update(shop)
+    await uow.commit()
+    sms_phone, voice_phone = await uow.shops.get_channel_phones(updated.id)
+    return ShopSettingsOut(
+        shop_id=updated.id,
+        name=updated.name,
+        slug=updated.slug,
+        timezone=updated.timezone,
+        sms_phone_e164=sms_phone,
+        voice_phone_e164=voice_phone,
+        ai_paused=bool(updated.ai_paused),
     )
 
 

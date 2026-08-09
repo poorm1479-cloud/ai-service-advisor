@@ -20,6 +20,7 @@ def _voice_env(monkeypatch):
     monkeypatch.setattr(settings, "twilio_validate_signature", False)
     monkeypatch.setattr(settings, "twilio_from_number", "+15550001111")
     monkeypatch.setattr(settings, "voice_stream_enabled", True)
+    monkeypatch.setattr(settings, "voice_store_backend", "memory")
     reset_voice_runtime()
     shop_id = uuid4()
     runtime = get_voice_runtime()

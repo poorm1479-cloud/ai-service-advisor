@@ -455,3 +455,16 @@ class CrmService:
         created = await self._uow.communications.add(entry)
         await self._uow.commit()
         return created
+
+    async def delete_communication(
+        self, *, shop_id: UUID, customer_id: UUID, communication_id: UUID
+    ) -> None:
+        await self._uow.bind_shop(shop_id)
+        if await self._uow.customers.get_by_id(shop_id, customer_id) is None:
+            raise NotFoundError("Customer not found")
+        deleted = await self._uow.communications.delete(
+            shop_id, customer_id, communication_id
+        )
+        if not deleted:
+            raise NotFoundError("Communication not found")
+        await self._uow.commit()

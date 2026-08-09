@@ -14,6 +14,7 @@ class Shop:
     name: str
     slug: str
     timezone: str
+    ai_paused: bool = False
     created_at: datetime | None = None
 
 

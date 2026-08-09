@@ -144,6 +144,12 @@ export type ShopOrgRow = {
   users?: number;
   ai_calls?: number;
   sms_usage?: number;
+  /** Shop Twilio SMS channel (E.164), if provisioned. */
+  sms_phone_e164?: string | null;
+  /** Shop Twilio voice channel (E.164), if provisioned. */
+  voice_phone_e164?: string | null;
+  /** Primary Twilio number (sms || voice). */
+  twilio_phone_e164?: string | null;
 };
 
 export type OrgMemberRow = {
@@ -705,6 +711,54 @@ export async function initializeAdminOrganizationMemberPassword(
   }>;
 }
 
+export type AdminTwilioNumberResult = {
+  ok: boolean;
+  shop_id: string;
+  sms_phone_e164: string | null;
+  voice_phone_e164: string | null;
+  twilio_phone_e164: string | null;
+  previous_twilio_phone_e164?: string | null;
+  released_from_provider?: boolean;
+  kept_on_twilio?: boolean;
+  webhooks_cleared?: boolean;
+  provider?: string;
+  action: string;
+  webhooks_configured?: boolean;
+  webhooks_error?: string | null;
+};
+
+/** Assign a shop Twilio number (auto-provision, or set phoneE164 manually). */
+export async function assignAdminOrganizationTwilioNumber(
+  accessToken: string,
+  shopId: string,
+  phoneE164?: string,
+): Promise<AdminTwilioNumberResult> {
+  return adminFetch(accessToken, `/v1/admin/organizations/${shopId}/twilio-number`, {
+    method: "POST",
+    body: JSON.stringify(phoneE164 ? { phone_e164: phoneE164 } : {}),
+  });
+}
+
+/** Unassign a shop Twilio number in the database only (Twilio account unchanged). */
+export async function clearAdminOrganizationTwilioNumber(
+  accessToken: string,
+  shopId: string,
+): Promise<AdminTwilioNumberResult> {
+  return adminFetch(accessToken, `/v1/admin/organizations/${shopId}/twilio-number`, {
+    method: "DELETE",
+  });
+}
+
+/** Provision a new shop Twilio number and release the previous one. */
+export async function resetAdminOrganizationTwilioNumber(
+  accessToken: string,
+  shopId: string,
+): Promise<AdminTwilioNumberResult> {
+  return adminFetch(accessToken, `/v1/admin/organizations/${shopId}/twilio-number/reset`, {
+    method: "POST",
+  });
+}
+
 export async function getAdminBilling(accessToken: string): Promise<BillingMonitor> {
   return adminFetch(accessToken, "/v1/admin/billing");
 }
@@ -721,6 +775,12 @@ export type AdminUserRow = {
   full_name: string;
   email: string | null;
   phone: string | null;
+  /** Shop Twilio SMS number (E.164), if provisioned. */
+  sms_phone_e164?: string | null;
+  /** Shop Twilio voice number (E.164), if provisioned. */
+  voice_phone_e164?: string | null;
+  /** Primary Twilio number for the shop (sms || voice). */
+  twilio_phone_e164?: string | null;
   role: string;
   mfa_enabled: boolean;
   is_active: boolean;

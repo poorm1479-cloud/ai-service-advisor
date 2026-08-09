@@ -4,7 +4,6 @@ import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import {
-  attachVehicleToWalkIn,
   convertWalkIn,
   getWalkIn,
   WalkInDetail,
@@ -89,25 +88,35 @@ export default function WalkInDetailPage() {
   const [email, setEmail] = useState("");
   const [address, setAddress] = useState("");
 
-  const [vin, setVin] = useState("");
-  const [plate, setPlate] = useState("");
-  const [year, setYear] = useState("");
-  const [make, setMake] = useState("");
-  const [model, setModel] = useState("");
-  const [mileage, setMileage] = useState("");
-
-  const primaryService = useMemo(() => {
-    if (!detail) return services[0] ?? null;
+  const selectedServices = useMemo(() => {
+    if (!detail) return services[0] ? [services[0]] : [];
     const names = detail.visit.complaint
       .split("\n")
       .map((s) => s.trim())
       .filter(Boolean);
+    const matched: ShopService[] = [];
+    const seen = new Set<string>();
     for (const name of names) {
       const hit = services.find((s) => s.name === name);
-      if (hit) return hit;
+      if (hit && !seen.has(hit.id)) {
+        seen.add(hit.id);
+        matched.push(hit);
+      }
     }
-    return services[0] ?? null;
+    if (matched.length > 0) return matched;
+    return services[0] ? [services[0]] : [];
   }, [detail, services]);
+
+  const primaryService = selectedServices[0] ?? null;
+  const extraServiceIds = selectedServices.slice(1).map((s) => s.id);
+  const totalDurationMin = selectedServices.reduce(
+    (sum, s) => sum + (s.duration_minutes || 0),
+    0,
+  );
+  const bookingServiceLabel =
+    selectedServices.length > 1
+      ? selectedServices.map((s) => s.name).join(" + ")
+      : primaryService?.name ?? "";
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -115,12 +124,6 @@ export default function WalkInDetailPage() {
     try {
       const next = await getWalkIn(visitId);
       setDetail(next);
-      setVin(next.vehicle.vin);
-      setPlate(next.vehicle.license_plate ?? "");
-      setYear(String(next.vehicle.year));
-      setMake(next.vehicle.make);
-      setModel(next.vehicle.model);
-      setMileage(String(next.vehicle.mileage));
       setLoading(false);
 
       // Schedule badge — do not block first paint
@@ -196,28 +199,130 @@ export default function WalkInDetailPage() {
     }
   }
 
-  async function onAttachVehicle(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
-    try {
-      const next = await attachVehicleToWalkIn(visitId, {
-        vin,
-        license_plate: plate || undefined,
-        year: Number(year),
-        make,
-        model,
-        mileage: Number(mileage),
-      });
-      setDetail(next);
-      setVin(next.vehicle.vin);
-      setPlate(next.vehicle.license_plate ?? "");
-      setYear(String(next.vehicle.year));
-      setMake(next.vehicle.make);
-      setModel(next.vehicle.model);
-      setMileage(String(next.vehicle.mileage));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Attach vehicle failed");
+  async function bookOneService(input: {
+    serviceId: string;
+    preferredStart: string;
+    source: string;
+    allowAlt?: boolean;
+  }): Promise<{
+    ok: true;
+    appointment: { id?: string; start?: string; end?: string };
+    startUsed: string;
+  } | {
+    ok: false;
+    message: string;
+    altStart?: string;
+  }> {
+    if (!detail) {
+      return { ok: false, message: "Walk-in not loaded" };
     }
+
+    const attempt = (start: string) =>
+      bookAppointment({
+        service_id: input.serviceId,
+        preferred_start: start,
+        customer_id: detail.customer?.id ?? detail.visit.customer_id ?? undefined,
+        vehicle_id: detail.vehicle.id,
+        walk_in_id: detail.visit.id,
+        notes: detail.visit.complaint,
+        source: input.source,
+      });
+
+    let booked = await attempt(input.preferredStart);
+    let startUsed = input.preferredStart;
+
+    if (booked.success === false && input.allowAlt) {
+      const alts = Array.isArray(booked.alternatives)
+        ? (booked.alternatives as { start?: string }[])
+        : [];
+      const alt = alts[0]?.start;
+      if (alt) {
+        startUsed = localDateTimeToIso(isoToLocalDateTimeValue(alt));
+        booked = await attempt(startUsed);
+      }
+    }
+
+    if (booked.success === false) {
+      const alts = Array.isArray(booked.alternatives)
+        ? (booked.alternatives as { start?: string }[])
+        : [];
+      return {
+        ok: false,
+        message:
+          typeof booked.message === "string" && booked.message
+            ? booked.message
+            : "Requested time is unavailable",
+        altStart: alts[0]?.start,
+      };
+    }
+
+    return {
+      ok: true,
+      appointment: (booked.appointment as { id?: string; start?: string; end?: string }) ?? {},
+      startUsed,
+    };
+  }
+
+  function advanceStart(
+    appt: { end?: string } | undefined,
+    fromStart: string,
+    durationMin: number,
+  ): string {
+    if (appt?.end) {
+      const local = isoToLocalDateTimeValue(appt.end);
+      if (local) return localDateTimeToIso(local);
+    }
+    const base = fromStart.length >= 16 ? fromStart.slice(0, 16) : fromStart;
+    const d = new Date(base);
+    if (Number.isNaN(d.getTime())) return fromStart;
+    d.setMinutes(d.getMinutes() + Math.max(1, durationMin || 60));
+    return localDateTimeToIso(toLocalDateTimeValue(d));
+  }
+
+  /** Book each selected catalog service as its own schedule block (sequential). */
+  async function bookAllSelectedServices(opts: {
+    startIso: string;
+    startSource: "walk_in" | "dashboard";
+    auto?: boolean;
+  }) {
+    if (!detail || selectedServices.length === 0) {
+      throw new Error("No services to book");
+    }
+
+    let cursor = opts.startIso;
+    let firstAppt: { id?: string; start?: string } | undefined;
+    const bookedLabels: string[] = [];
+
+    for (let i = 0; i < selectedServices.length; i++) {
+      const svc = selectedServices[i];
+      const result = await bookOneService({
+        serviceId: svc.id,
+        preferredStart: cursor,
+        // Only the first "Start now" uses walk_in (in-progress at the counter).
+        source: i === 0 ? opts.startSource : "dashboard",
+        allowAlt: Boolean(opts.auto) && i === 0,
+      });
+
+      if (!result.ok) {
+        const hint = result.altStart ? ` Next available: ${formatSlot(result.altStart)}.` : "";
+        if (bookedLabels.length === 0) {
+          throw new Error(`${result.message}${hint}`);
+        }
+        throw new Error(
+          `Booked ${bookedLabels.join(", ")} on the schedule, but failed on ${svc.name}: ${result.message}${hint}`,
+        );
+      }
+
+      bookedLabels.push(svc.name);
+      if (!firstAppt) {
+        firstAppt = result.appointment;
+        // If auto-book shifted the first slot, keep chaining from that timeline.
+        cursor = result.startUsed;
+      }
+      cursor = advanceStart(result.appointment, cursor, svc.duration_minutes);
+    }
+
+    return { firstAppt, bookedLabels };
   }
 
   async function onStartNow() {
@@ -226,27 +331,18 @@ export default function WalkInDetailPage() {
     setError(null);
     setApptMessage(null);
     try {
-      const booked = await bookAppointment({
-        service_id: primaryService.id,
-        preferred_start: localDateTimeToIso(toLocalDateTimeValue(new Date())),
-        customer_id: detail.customer?.id ?? detail.visit.customer_id ?? undefined,
-        vehicle_id: detail.vehicle.id,
-        walk_in_id: detail.visit.id,
-        notes: detail.visit.complaint,
-        source: "walk_in",
+      const { firstAppt, bookedLabels } = await bookAllSelectedServices({
+        startIso: localDateTimeToIso(toLocalDateTimeValue(new Date())),
+        startSource: "walk_in",
       });
-      if (booked.success === false) {
-        throw new Error(
-          typeof booked.message === "string" && booked.message
-            ? booked.message
-            : "Failed to start service on the schedule",
-        );
-      }
       setOnSchedule(true);
-      const appt = booked.appointment as { id?: string; start?: string } | undefined;
-      setScheduleHref(scheduleHrefForAppointment(appt));
+      setScheduleHref(scheduleHrefForAppointment(firstAppt));
       setApptOpen(false);
-      setApptMessage("Started now — on today’s schedule.");
+      setApptMessage(
+        bookedLabels.length > 1
+          ? `Started now — ${bookedLabels.length} services on today’s schedule.`
+          : "Started now — on today’s schedule.",
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start now");
     } finally {
@@ -262,6 +358,7 @@ export default function WalkInDetailPage() {
     try {
       const next = await recommendSlots({
         service_id: primaryService.id,
+        extra_service_ids: extraServiceIds,
         preferred_start: preferredStart ? localDateTimeToIso(preferredStart) : undefined,
         customer_id: detail.customer?.id ?? detail.visit.customer_id ?? undefined,
         vehicle_id: detail.vehicle.id,
@@ -291,66 +388,19 @@ export default function WalkInDetailPage() {
           ? startIso
           : localDateTimeToIso(isoToLocalDateTimeValue(startIso) || preferredStart);
 
-      const booked = await bookAppointment({
-        service_id: primaryService.id,
-        preferred_start: preferred,
-        customer_id: detail.customer?.id ?? detail.visit.customer_id ?? undefined,
-        vehicle_id: detail.vehicle.id,
-        walk_in_id: detail.visit.id,
-        notes: detail.visit.complaint,
-        source: "dashboard",
+      const { firstAppt, bookedLabels } = await bookAllSelectedServices({
+        startIso: preferred,
+        startSource: "dashboard",
+        auto: opts?.auto,
       });
-      if (booked.success === false) {
-        const alts = Array.isArray(booked.alternatives)
-          ? (booked.alternatives as { start?: string }[])
-          : [];
-        const nextStart = alts[0]?.start;
-        const base =
-          typeof booked.message === "string" && booked.message
-            ? booked.message
-            : "Requested time is unavailable";
-        if (opts?.auto && nextStart) {
-          // Retry once with the first suggested alternative
-          const retry = await bookAppointment({
-            service_id: primaryService.id,
-            preferred_start: localDateTimeToIso(isoToLocalDateTimeValue(nextStart)),
-            customer_id: detail.customer?.id ?? detail.visit.customer_id ?? undefined,
-            vehicle_id: detail.vehicle.id,
-            walk_in_id: detail.visit.id,
-            notes: detail.visit.complaint,
-            source: "dashboard",
-          });
-          if (retry.success === false) {
-            throw new Error(
-              typeof retry.message === "string" && retry.message
-                ? retry.message
-                : "Auto-book failed",
-            );
-          }
-          setOnSchedule(true);
-          setScheduleHref(
-            scheduleHrefForAppointment(
-              retry.appointment as { id?: string; start?: string } | undefined,
-            ),
-          );
-          setApptOpen(false);
-          setApptMessage(`Auto-booked for ${formatSlot(nextStart)}.`);
-          return;
-        }
-        const hint = nextStart ? ` Next available: ${formatSlot(nextStart)}.` : "";
-        throw new Error(`${base}${hint}`);
-      }
       setOnSchedule(true);
-      setScheduleHref(
-        scheduleHrefForAppointment(
-          booked.appointment as { id?: string; start?: string } | undefined,
-        ),
-      );
+      setScheduleHref(scheduleHrefForAppointment(firstAppt));
       setApptOpen(false);
+      const when = formatSlot(firstAppt?.start || startIso);
       setApptMessage(
         opts?.auto
-          ? `Auto-booked for ${formatSlot(startIso)}.`
-          : `Appointment booked for ${formatSlot(startIso)}.`,
+          ? `Auto-booked ${bookedLabels.length} service${bookedLabels.length === 1 ? "" : "s"} for ${when}.`
+          : `Booked ${bookedLabels.length} service${bookedLabels.length === 1 ? "" : "s"} for ${when}.`,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to book appointment");
@@ -379,6 +429,7 @@ export default function WalkInDetailPage() {
         try {
           candidates = await recommendSlots({
             service_id: primaryService.id,
+            extra_service_ids: extraServiceIds,
             preferred_start: preferredStart
               ? localDateTimeToIso(preferredStart)
               : undefined,
@@ -400,69 +451,132 @@ export default function WalkInDetailPage() {
   }
 
   if (loading) {
-    return <p className="text-sm text-[var(--muted)]">Loading walk-in…</p>;
+    return (
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:h-full">
+        <div className="h-4 w-24 animate-pulse rounded bg-[var(--panel)]" />
+        <div className="surface-panel h-28 animate-pulse" />
+        <div className="surface-panel min-h-0 flex-1 animate-pulse" />
+      </div>
+    );
   }
 
   if (!detail) {
-    return <p className="text-sm text-red-700">{error ?? "Walk-in not found"}</p>;
+    return (
+      <div className="surface-panel flex flex-col items-center px-6 py-16 text-center">
+        <p className="font-display text-lg font-semibold tracking-tight text-red-700">
+          {error ?? "Walk-in not found"}
+        </p>
+        <Link href="/dashboard/walk-ins?view=todays" className="btn-ghost mt-5 px-4 py-2 text-xs">
+          ← Back to walk-ins
+        </Link>
+      </div>
+    );
   }
 
   const { visit, vehicle, customer } = detail;
-  const serviceRequests = visit.complaint
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean);
   const busy = starting || bookingAppt || slotsLoading;
+  const vehicleTitle = `${vehicle.year} ${vehicle.make} ${vehicle.model}`.trim();
+  const arrivedLabel = visit.arrived_at
+    ? new Date(visit.arrived_at).toLocaleString([], {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:h-full">
-      <div className="shrink-0">
-        <Link
-          href="/dashboard/walk-ins?view=todays"
-          className="text-sm text-[var(--muted)] hover:text-[var(--accent)]"
-        >
-          ← Walk-ins
-        </Link>
-        <h1 className="page-title mt-2">Walk-in visit</h1>
-        <p className="text-sm capitalize text-[var(--muted)]">
-          Status: {visit.status}
-          {visit.arrived_at ? ` · Arrived ${new Date(visit.arrived_at).toLocaleString()}` : ""}
-        </p>
+      <div className="surface-panel shrink-0 overflow-hidden">
+        <div className="border-b border-[var(--line)] bg-gradient-to-br from-white via-white to-[var(--accent-soft)]/35 px-4 py-4 sm:px-5">
+          <Link
+            href="/dashboard/walk-ins?view=todays"
+            className="text-xs font-medium text-[var(--muted)] transition hover:text-[var(--accent)]"
+          >
+            ← Walk-ins
+          </Link>
+          <div className="mt-3 flex flex-wrap items-start justify-between gap-4">
+            <div className="flex min-w-0 items-start gap-3">
+              <span
+                className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-sm font-semibold tracking-wide text-white shadow-sm"
+                aria-hidden="true"
+              >
+                {vehicleInitials(vehicle.make, vehicle.model)}
+              </span>
+              <div className="min-w-0">
+                <p className="section-label">Walk-in visit</p>
+                <h1 className="page-title mt-1 truncate">{vehicleTitle || "Walk-in visit"}</h1>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <StatusPill status={visit.status} />
+                  {onSchedule ? (
+                    <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-200">
+                      On schedule
+                    </span>
+                  ) : (
+                    <span className="rounded-full bg-[var(--background)] px-2 py-0.5 text-[10px] font-semibold text-[var(--muted)] ring-1 ring-[var(--line)]">
+                      Awaiting bay
+                    </span>
+                  )}
+                  {arrivedLabel ? (
+                    <span className="text-xs text-[var(--muted)]">Arrived {arrivedLabel}</span>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       {error && !apptOpen ? (
-        <p className="shrink-0 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+        <p
+          className="shrink-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+          role="alert"
+        >
           {error}
         </p>
       ) : null}
       {apptMessage && !error ? (
-        <p className="shrink-0 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800" role="status">
+        <p
+          className="shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"
+          role="status"
+        >
           {apptMessage}
         </p>
       ) : null}
 
       {apptOpen && !onSchedule ? (
         <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+          className="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
           role="dialog"
           aria-modal="true"
           aria-labelledby="walkin-appointment-title"
           onClick={() => !busy && setApptOpen(false)}
         >
           <div
-            className="asa-scroll max-h-[min(90dvh,40rem)] w-full max-w-md overflow-y-auto overscroll-contain"
+            className="flex max-h-[min(90dvh,40rem)] w-full max-w-[32rem] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]"
             onClick={(e) => e.stopPropagation()}
           >
-            <form
-              onSubmit={(e) => void onBookPreferred(e)}
-              className="space-y-3 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 shadow-xl"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h3 id="walkin-appointment-title" className="text-sm font-medium">
+            <div className="relative shrink-0 overflow-hidden border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white px-5 pb-5 pt-6">
+              <div
+                className="pointer-events-none absolute right-0 top-0 h-40 w-40 translate-x-1/4 -translate-y-1/4 rounded-full bg-[var(--accent-glow)] blur-2xl"
+                aria-hidden="true"
+              />
+              <div className="relative flex items-start gap-4">
+                <span className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[var(--accent)] text-white shadow-lg shadow-[var(--accent-glow)]">
+                  <IconCalendar className="h-5 w-5" />
+                </span>
+                <div className="min-w-0 flex-1 pt-0.5">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--accent)]">
+                    Scheduling
+                  </p>
+                  <h3
+                    id="walkin-appointment-title"
+                    className="mt-1 text-lg font-semibold tracking-tight text-slate-900"
+                  >
                     Book appointment
                   </h3>
-                  <p className="mt-0.5 text-xs text-[var(--muted)]">
+                  <p className="mt-1 text-sm leading-relaxed text-[var(--muted)]">
                     Set a preferred time, or auto-book the next available slot.
                   </p>
                 </div>
@@ -470,27 +584,37 @@ export default function WalkInDetailPage() {
                   type="button"
                   onClick={() => setApptOpen(false)}
                   disabled={busy}
-                  className="rounded-md border border-[var(--line)] px-2.5 py-1 text-xs disabled:opacity-60"
+                  className="relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--muted)] transition hover:bg-[rgba(15,23,42,0.06)] hover:text-slate-900 disabled:opacity-60"
                   aria-label="Close appointment"
                 >
-                  Close
+                  <IconX className="h-4 w-4" />
                 </button>
               </div>
+            </div>
 
+            <form
+              onSubmit={(e) => void onBookPreferred(e)}
+              className="asa-scroll min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-5"
+            >
               {error ? (
-                <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+                <p
+                  className="rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-700"
+                  role="alert"
+                >
                   {error}
                 </p>
               ) : null}
 
               <label className="block space-y-1.5">
-                <span className="text-sm font-medium">Preferred start</span>
+                <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+                  Preferred start
+                </span>
                 <input
                   type="datetime-local"
                   value={preferredStart}
                   onChange={(e) => setPreferredStart(e.target.value)}
                   required
-                  className="w-full rounded-md border border-[var(--line)] bg-white px-3 py-2 text-sm outline-none ring-[var(--accent)] focus:ring-2"
+                  className="w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2.5 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-glow)]"
                 />
               </label>
 
@@ -499,23 +623,26 @@ export default function WalkInDetailPage() {
                   type="button"
                   onClick={() => void onFindSlots()}
                   disabled={busy || !preferredStart}
-                  className="rounded-md border border-[var(--line)] px-3 py-2 text-sm font-medium hover:border-[var(--accent)] disabled:opacity-60"
+                  className="btn-ghost inline-flex items-center gap-1.5 px-3.5 py-2 text-xs disabled:opacity-60"
                 >
+                  <IconSearch className="h-3.5 w-3.5" />
                   {slotsLoading ? "Finding…" : "Find available times"}
                 </button>
                 <button
                   type="button"
                   onClick={() => void onAutoBook()}
                   disabled={busy}
-                  className="rounded-md border border-[var(--accent)] px-3 py-2 text-sm font-medium text-[var(--accent)] disabled:opacity-60"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-[var(--accent)] px-3.5 py-2 text-xs font-semibold text-[var(--accent)] disabled:opacity-60"
                 >
-                  {bookingAppt ? "Booking…" : "Auto-book next available"}
+                  <IconBolt className="h-3.5 w-3.5" />
+                  {bookingAppt ? "Booking…" : "Auto-book next"}
                 </button>
                 <button
                   type="submit"
                   disabled={busy || !preferredStart}
-                  className="min-h-10 w-full rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
+                  className="btn-primary inline-flex w-full items-center justify-center gap-1.5 px-3 py-2.5 text-sm disabled:opacity-60"
                 >
+                  <IconCalendar className="h-4 w-4" />
                   {bookingAppt ? "Booking…" : "Book preferred time"}
                 </button>
               </div>
@@ -525,10 +652,12 @@ export default function WalkInDetailPage() {
                   {slots.map((slot) => (
                     <li
                       key={`${slot.start}-${slot.mechanic_id ?? "any"}`}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--line)] bg-white px-3 py-2"
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-3.5 py-2.5"
                     >
                       <div>
-                        <p className="text-sm font-medium">{formatSlot(slot.start)}</p>
+                        <p className="text-sm font-semibold tracking-tight text-slate-900">
+                          {formatSlot(slot.start)}
+                        </p>
                         <p className="text-xs text-[var(--muted)]">
                           {slot.reasons.slice(0, 2).join(" · ") || "Available"}
                           {slot.estimated_wait_min != null
@@ -543,9 +672,10 @@ export default function WalkInDetailPage() {
                           void bookAt(slot.start);
                         }}
                         disabled={busy}
-                        className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60"
+                        className="btn-primary inline-flex items-center gap-1 px-3 py-1.5 text-xs disabled:opacity-60"
                       >
-                        Book this time
+                        <IconCheck className="h-3.5 w-3.5" />
+                        Book
                       </button>
                     </li>
                   ))}
@@ -556,28 +686,24 @@ export default function WalkInDetailPage() {
         </div>
       ) : null}
 
-      <div className="asa-scroll min-h-0 flex-1 space-y-8 overflow-y-auto overscroll-contain">
-        <section className="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold">Schedule</h2>
-              <p className="mt-1 text-sm text-[var(--muted)]">
-                {onSchedule
-                  ? "This visit is on the schedule."
-                  : "Start now during business hours, or book an appointment for later."}
-              </p>
-              {primaryService ? (
-                <p className="mt-1 text-xs text-[var(--muted)]">
-                  Service: {primaryService.name} · {primaryService.duration_minutes} min
-                </p>
-              ) : null}
-            </div>
+      <div className="asa-scroll min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain pb-2">
+        <section className="surface-panel p-4 sm:p-5">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <SectionHeader
+              title="Schedule"
+              description={
+                onSchedule
+                  ? "This visit is already on the shop schedule."
+                  : "Start service now during business hours, or book a later appointment."
+              }
+            />
             {onSchedule ? (
               <Link
                 href={scheduleHref}
-                className="rounded-md border border-[var(--line)] px-4 py-2 text-sm font-medium text-[var(--accent)] hover:border-[var(--accent)]"
+                className="btn-ghost inline-flex items-center gap-1.5 px-4 py-2 text-xs"
               >
-                Open schedule
+                <IconCalendar className="h-3.5 w-3.5" />
+                Open schedule →
               </Link>
             ) : (
               <div className="flex flex-wrap gap-2">
@@ -585,75 +711,105 @@ export default function WalkInDetailPage() {
                   type="button"
                   onClick={() => void onStartNow()}
                   disabled={busy || !primaryService}
-                  className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+                  className="btn-primary inline-flex items-center gap-1.5 px-4 py-2 text-xs disabled:opacity-60"
                 >
+                  <IconPlay className="h-3.5 w-3.5" />
                   {starting ? "Starting…" : "Start now"}
                 </button>
                 <button
                   type="button"
                   onClick={openAppointmentPanel}
                   disabled={busy || !primaryService}
-                  className="rounded-md border border-[var(--line)] px-4 py-2 text-sm font-medium hover:border-[var(--accent)] disabled:opacity-60"
+                  className="btn-ghost inline-flex items-center gap-1.5 px-4 py-2 text-xs disabled:opacity-60"
                 >
-                  Appointment
+                  <IconCalendar className="h-3.5 w-3.5" />
+                  Book
                 </button>
               </div>
             )}
           </div>
         </section>
 
-        <section className="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4">
-          <h2 className="text-sm font-semibold">Service Request</h2>
-          {serviceRequests.length <= 1 ? (
-            <p className="mt-2 text-sm">{visit.complaint}</p>
+        <section className="surface-panel p-4 sm:p-5">
+          <SectionHeader
+            title={selectedServices.length > 1 ? "Service requests" : "Service request"}
+            compact
+          />
+          {selectedServices.length === 0 ? (
+            <p className="mt-4 text-sm text-[var(--muted)]">No catalog services matched yet.</p>
+          ) : selectedServices.length === 1 ? (
+            <div className="mt-4 rounded-xl bg-[var(--background)]/70 px-3.5 py-3">
+              <p className="text-sm font-semibold tracking-tight">{bookingServiceLabel}</p>
+              <p className="mt-0.5 text-xs text-[var(--muted)]">{totalDurationMin} min</p>
+            </div>
           ) : (
-            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
-              {serviceRequests.map((item, i) => (
-                <li key={`${i}-${item}`}>{item}</li>
+            <ul className="mt-4 space-y-2">
+              {selectedServices.map((svc, i) => (
+                <li
+                  key={svc.id}
+                  className="flex items-center justify-between gap-3 rounded-xl bg-[var(--background)]/70 px-3.5 py-2.5 text-sm"
+                >
+                  <span className="flex min-w-0 items-center gap-2.5">
+                    <span
+                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--accent-soft)] text-[10px] font-bold text-[var(--accent)]"
+                      aria-hidden
+                    >
+                      {i + 1}
+                    </span>
+                    <span className="truncate font-medium tracking-tight">{svc.name}</span>
+                  </span>
+                  <span className="shrink-0 text-xs text-[var(--muted)]">
+                    {svc.duration_minutes} min
+                  </span>
+                </li>
               ))}
+              <li className="px-1 pt-1 text-right text-xs font-medium text-[var(--muted)]">
+                Total {totalDurationMin} min
+              </li>
             </ul>
           )}
         </section>
 
-        <section className="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-sm font-semibold">Vehicle</h2>
-            <Link href={`/dashboard/vehicles/${vehicle.id}`} className="text-sm text-[var(--accent)]">
-              Open vehicle page
-            </Link>
-          </div>
-          <p className="mt-2 text-sm">
-            {vehicle.year} {vehicle.make} {vehicle.model}
-          </p>
-          <p className="font-mono text-xs text-[var(--muted)]">{vehicle.vin}</p>
-          <p className="mt-1 text-sm text-[var(--muted)]">
-            Plate {vehicle.license_plate ?? "—"} · {vehicle.mileage.toLocaleString()} mi
-          </p>
-        </section>
-
-        <section className="space-y-4 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4">
-          <h2 className="text-sm font-semibold">Customer Match</h2>
+        <section className="surface-panel space-y-4 p-4 sm:p-5">
+          <SectionHeader
+            title="Customer match"
+            description={
+              customer
+                ? undefined
+                : "Guest visit — add details when you have them. Name is required to save."
+            }
+          />
           {customer ? (
-            <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-emerald-800">
-                Existing customer found
-              </p>
-              <Link
-                href={`/dashboard/customers/${customer.id}`}
-                className="mt-1 inline-block font-medium text-[var(--accent)]"
+            <Link
+              href={`/dashboard/customer/${customer.id}`}
+              className="group flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--background)]/50 px-3.5 py-3 transition hover:border-[var(--accent)]/40 hover:bg-[var(--accent-soft)]/25"
+            >
+              <span
+                className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-xs font-semibold tracking-wide text-white"
+                aria-hidden
               >
-                {customer.name}
-              </Link>
-              <p className="mt-1 text-sm text-[var(--muted)]">
-                {customer.phone ?? "No phone"} · {customer.email ?? "No email"}
-              </p>
-            </div>
+                {customerInitials(customer.name)}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-emerald-700">
+                  Matched customer
+                </p>
+                <p className="truncate text-sm font-semibold tracking-tight group-hover:text-[var(--accent)]">
+                  {customer.name}
+                </p>
+                <p className="mt-0.5 truncate text-xs text-[var(--muted)]">
+                  {customer.phone ?? "No phone"} · {customer.email ?? "No email"}
+                </p>
+              </div>
+              <span className="text-[var(--muted)] opacity-0 transition group-hover:opacity-100">
+                →
+              </span>
+            </Link>
           ) : (
             <form onSubmit={onConvert} className="grid gap-3 sm:grid-cols-2">
-              <p className="sm:col-span-2 text-sm text-[var(--muted)]">
-                Unknown walk-in — this visit uses a guest customer. Add real details when you have
-                them. Name is required to save.
-              </p>
+              <div className="sm:col-span-2 rounded-xl border border-dashed border-[var(--line)] bg-[var(--background)]/40 px-3.5 py-2.5 text-xs text-[var(--muted)]">
+                Unknown walk-in — saving creates or updates the guest customer on this visit.
+              </div>
               <Field label="Name" value={name} onChange={setName} />
               <Field
                 label="Phone (optional)"
@@ -668,7 +824,7 @@ export default function WalkInDetailPage() {
                 <button
                   type="submit"
                   disabled={!name.trim()}
-                  className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+                  className="btn-primary px-4 py-2 text-xs disabled:opacity-60"
                 >
                   Save customer
                 </button>
@@ -676,32 +832,182 @@ export default function WalkInDetailPage() {
             </form>
           )}
         </section>
-
-        <section className="space-y-4">
-          <h2 className="text-sm font-semibold">Attach / replace vehicle</h2>
-          <form
-            onSubmit={onAttachVehicle}
-            className="grid gap-3 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 sm:grid-cols-3"
-          >
-            <p className="text-sm text-[var(--muted)] sm:col-span-3">
-              Prefills from the vehicle already on this visit. Edit only if you need to correct or
-              replace it.
-            </p>
-            <Field label="VIN" value={vin} onChange={setVin} required />
-            <Field label="License plate" value={plate} onChange={setPlate} />
-            <Field label="Year" value={year} onChange={setYear} required />
-            <Field label="Make" value={make} onChange={setMake} required />
-            <Field label="Model" value={model} onChange={setModel} required />
-            <Field label="Mileage" value={mileage} onChange={setMileage} required />
-            <div className="sm:col-span-3">
-              <button type="submit" className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white">
-                Update vehicle
-              </button>
-            </div>
-          </form>
-        </section>
       </div>
     </div>
+  );
+}
+
+function SectionHeader({
+  eyebrow,
+  title,
+  description,
+  compact,
+}: {
+  eyebrow?: string;
+  title: string;
+  description?: string;
+  compact?: boolean;
+}) {
+  return (
+    <div className="min-w-0">
+      {eyebrow ? <p className="section-label">{eyebrow}</p> : null}
+      <h2
+        className={`font-display font-semibold tracking-tight ${
+          compact
+            ? eyebrow
+              ? "mt-1 text-base"
+              : "text-base"
+            : eyebrow
+              ? "mt-1.5 text-lg"
+              : "text-lg"
+        }`}
+      >
+        {title}
+      </h2>
+      {description ? (
+        <p className={`text-[var(--muted)] ${compact ? "mt-0.5 text-xs" : "mt-1 text-sm"}`}>
+          {description}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function StatusPill({ status }: { status: string }) {
+  const tone =
+    status === "converted"
+      ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+      : status === "open"
+        ? "bg-[var(--accent-soft)] text-[var(--accent)] ring-[var(--accent)]/25"
+        : "bg-[var(--background)] text-[var(--muted)] ring-[var(--line)]";
+  return (
+    <span
+      className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize ring-1 ${tone}`}
+    >
+      {status.replace(/_/g, " ")}
+    </span>
+  );
+}
+
+function vehicleInitials(make: string, model: string): string {
+  const a = (make || "").trim()[0];
+  const b = (model || "").trim()[0];
+  if (a && b) return `${a}${b}`.toUpperCase();
+  if (a) return a.toUpperCase();
+  return "W";
+}
+
+function customerInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
+function IconCalendar({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="4" width="18" height="18" rx="2" />
+      <path d="M16 2v4" />
+      <path d="M8 2v4" />
+      <path d="M3 10h18" />
+    </svg>
+  );
+}
+
+function IconX({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
+function IconSearch({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.5-3.5" />
+    </svg>
+  );
+}
+
+function IconBolt({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z" />
+    </svg>
+  );
+}
+
+function IconPlay({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M7 4.5v15l13-7.5L7 4.5z" />
+    </svg>
+  );
+}
+
+function IconCheck({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
   );
 }
 
@@ -722,14 +1028,16 @@ function Field({
 }) {
   return (
     <label className="block space-y-1.5">
-      <span className="text-sm font-medium">{label}</span>
+      <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--muted)]">
+        {label}
+      </span>
       <input
         type={type}
         value={value}
         required={required}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-md border border-[var(--line)] bg-white px-3 py-2 text-sm outline-none ring-[var(--accent)] focus:ring-2"
+        className="w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2.5 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-glow)]"
       />
     </label>
   );

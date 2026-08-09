@@ -10,11 +10,9 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const lockPageScroll =
     pathname.startsWith("/dashboard/conversations") ||
-    pathname.startsWith("/dashboard/customers") ||
-    pathname === "/dashboard/services" ||
+    pathname.startsWith("/dashboard/customer") ||
     pathname === "/dashboard/appointments" ||
     pathname.startsWith("/dashboard/walk-ins") ||
-    pathname === "/dashboard/team" ||
     pathname === "/dashboard/marketing" ||
     pathname === "/dashboard/import" ||
     pathname === "/dashboard/settings";

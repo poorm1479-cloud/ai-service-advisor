@@ -223,6 +223,17 @@ export async function addCommunication(
   return res.json();
 }
 
+export async function deleteCommunication(
+  customerId: string,
+  communicationId: string,
+): Promise<void> {
+  const res = await authFetch(
+    `/v1/customers/${customerId}/communications/${communicationId}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) throw new Error(await parseError(res));
+}
+
 export async function getVehicleDetail(id: string): Promise<VehicleDetail> {
   const res = await authFetch(`/v1/vehicles/${id}`);
   if (!res.ok) throw new Error(await parseError(res));

@@ -42,6 +42,7 @@ class VoiceProviderPort(Protocol):
         action_url: str,
         stream_ws_url: str | None = None,
         record: bool = True,
+        stream_parameters: dict[str, str] | None = None,
     ) -> str: ...
 
     def build_gather_twiml(
@@ -86,6 +87,7 @@ class FakeVoiceProvider:
         action_url: str,
         stream_ws_url: str | None = None,
         record: bool = True,
+        stream_parameters: dict[str, str] | None = None,
     ) -> str:
         xml = render_answer_twiml(
             say_text=say_text,
@@ -96,6 +98,7 @@ class FakeVoiceProvider:
             speech_timeout=self.settings.speech_timeout,
             stream_ws_url=stream_ws_url,
             record=record,
+            stream_parameters=stream_parameters,
         )
         self.twimls.append(xml)
         return xml
@@ -160,6 +163,7 @@ class TwilioVoiceProvider:
         action_url: str,
         stream_ws_url: str | None = None,
         record: bool = True,
+        stream_parameters: dict[str, str] | None = None,
     ) -> str:
         return render_answer_twiml(
             say_text=say_text,
@@ -170,6 +174,7 @@ class TwilioVoiceProvider:
             speech_timeout=self.settings.speech_timeout,
             stream_ws_url=stream_ws_url,
             record=record,
+            stream_parameters=stream_parameters,
         )
 
     def build_gather_twiml(self, *, say_text: str, action_url: str, barge_in: bool = True) -> str:
@@ -240,6 +245,7 @@ def render_answer_twiml(
     speech_timeout: str,
     stream_ws_url: str | None,
     record: bool,
+    stream_parameters: dict[str, str] | None = None,
 ) -> str:
     # NOTE: Do NOT emit a blocking <Record> here. Twilio docs: any verbs after
     # <Record> are unreachable, and missing action re-requests this URL → silent loop.
@@ -247,9 +253,21 @@ def render_answer_twiml(
     _ = record  # reserved for future dual-channel / REST recording start
     parts = ['<?xml version="1.0" encoding="UTF-8"?><Response>']
     if stream_ws_url:
-        parts.append(
-            f'<Start><Stream url="{escape(stream_ws_url)}" track="inbound_track" /></Start>'
-        )
+        params_xml = ""
+        for key, value in (stream_parameters or {}).items():
+            if key and value is not None and str(value):
+                params_xml += (
+                    f'<Parameter name="{escape(str(key))}" value="{escape(str(value))}" />'
+                )
+        if params_xml:
+            parts.append(
+                f'<Start><Stream url="{escape(stream_ws_url)}" track="inbound_track">'
+                f"{params_xml}</Stream></Start>"
+            )
+        else:
+            parts.append(
+                f'<Start><Stream url="{escape(stream_ws_url)}" track="inbound_track" /></Start>'
+            )
     barge = "true" if barge_in else "false"
     parts.append(
         f'<Gather input="speech" action="{escape(action_url)}" method="POST" '

@@ -495,6 +495,8 @@ class BillingService:
             ).all()
             out: list[dict] = []
             for shop, sub, plan in rows:
+                sms_phone = shop.sms_phone_e164
+                voice_phone = shop.voice_phone_e164
                 out.append(
                     {
                         "shop_id": str(shop.id),
@@ -504,6 +506,9 @@ class BillingService:
                         "plan_name": plan.name if plan else "Free",
                         "status": sub.status if sub else "none",
                         "created_at": shop.created_at.isoformat() if shop.created_at else None,
+                        "sms_phone_e164": sms_phone,
+                        "voice_phone_e164": voice_phone,
+                        "twilio_phone_e164": sms_phone or voice_phone,
                     }
                 )
             return out

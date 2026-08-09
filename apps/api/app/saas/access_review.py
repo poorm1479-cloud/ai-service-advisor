@@ -23,6 +23,8 @@ class AccessReviewService:
             ).all()
             entries = []
             for shop, membership, user in rows:
+                sms_phone = shop.sms_phone_e164
+                voice_phone = shop.voice_phone_e164
                 entries.append(
                     {
                         "shop_id": str(shop.id),
@@ -35,6 +37,10 @@ class AccessReviewService:
                         "role": membership.role,
                         "mfa_enabled": bool(getattr(user, "mfa_enabled", False)),
                         "is_active": bool(user.is_active),
+                        # Shop channel numbers (Twilio) used for this membership's org.
+                        "sms_phone_e164": sms_phone,
+                        "voice_phone_e164": voice_phone,
+                        "twilio_phone_e164": sms_phone or voice_phone,
                         "review_decision": "",  # filled by reviewer
                         "reviewer_notes": "",
                     }

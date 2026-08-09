@@ -14,7 +14,7 @@ from app.admin.deps import require_platform_admin
 from app.admin.service import AdminConsoleService
 from app.admin.settings import EditableSettingsPatch, PlatformSettingsService
 from app.api.deps import CurrentUser, get_current_user, get_uow
-from app.domain.exceptions import NotFoundError, ValidationError
+from app.domain.exceptions import ConflictError, NotFoundError, ValidationError
 from app.infrastructure.security import hash_password, verify_password
 from app.infrastructure.unit_of_work import SqlAlchemyUnitOfWork
 
@@ -58,6 +58,12 @@ class DeleteAdminNotificationsRequest(BaseModel):
 
 class ChangeOrganizationPlanRequest(BaseModel):
     plan_id: str = Field(min_length=1, max_length=64)
+
+
+class AssignOrganizationTwilioNumberRequest(BaseModel):
+    """Omit phone_e164 to auto-provision; set phone_e164 for a manual E.164 assign."""
+
+    phone_e164: str | None = Field(default=None, max_length=32)
 
 
 async def _fingerprint_sse(
@@ -203,6 +209,57 @@ async def admin_organization_change_plan(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post("/organizations/{shop_id}/twilio-number")
+async def admin_organization_assign_twilio_number(
+    shop_id: str,
+    body: AssignOrganizationTwilioNumberRequest = Body(
+        default_factory=AssignOrganizationTwilioNumberRequest
+    ),
+    _: str = Depends(require_platform_admin),
+) -> dict:
+    """Assign a Twilio SMS/Voice number to a shop (manual E.164 or auto-provision)."""
+    try:
+        return await _svc().assign_organization_twilio_number(
+            shop_id, phone_e164=body.phone_e164
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.delete("/organizations/{shop_id}/twilio-number")
+async def admin_organization_clear_twilio_number(
+    shop_id: str,
+    _: str = Depends(require_platform_admin),
+) -> dict:
+    """Unassign shop↔number in DB only. Never calls Twilio (number stays purchased)."""
+    try:
+        return await _svc().clear_organization_twilio_number(shop_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post("/organizations/{shop_id}/twilio-number/reset")
+async def admin_organization_reset_twilio_number(
+    shop_id: str,
+    _: str = Depends(require_platform_admin),
+) -> dict:
+    """Release previous number (best-effort) and assign a newly provisioned one."""
+    try:
+        return await _svc().reset_organization_twilio_number(shop_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.post("/organizations/{shop_id}/members/{user_id}/suspend")

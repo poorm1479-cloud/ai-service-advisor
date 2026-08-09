@@ -232,18 +232,27 @@ async def twilio_voice_status(
     params = parse_twilio_form(form)
     call_sid = params.get("CallSid", "")
     call_status = (params.get("CallStatus") or "").lower()
+    # Inbound: To = shop number. Outbound / edge cases may use Called.
+    to_number = (
+        params.get("To", "")
+        or params.get("Called", "")
+        or params.get("CalledVia", "")
+    )
     terminal = {"completed", "busy", "no-answer", "failed", "canceled", "cancelled"}
     if call_sid and call_status in terminal:
         try:
             call = await runtime.service.complete_call_by_sid(
                 call_sid=call_sid,
                 final_status=call_status,
+                to_number=to_number or None,
             )
             if call is None:
                 logger.info(
-                    "voice.webhook.status.unknown_sid sid=%s status=%s",
+                    "voice.webhook.status.unknown_sid sid=%s status=%s to=%s keys=%s",
                     call_sid,
                     call_status,
+                    to_number,
+                    sorted(params.keys()),
                 )
             else:
                 logger.info(
@@ -288,36 +297,82 @@ async def twilio_voice_stream(websocket: WebSocket) -> None:
 
     Twilio emits stream ``stop`` when the call ends (remote hang-up included).
     Use that as a secondary complete signal when Status Callback is delayed or
-    missing. Do not close on bare WebSocket drops — those can be transient.
+    missing. Also complete on WebSocket disconnect if stop never arrived.
     """
     await websocket.accept()
     runtime = get_voice_runtime()
+    active_sid: str | None = None
+    active_shop = None
+    active_to: str | None = None
+    completed = False
+
+    async def _close_active(reason: str) -> None:
+        nonlocal completed
+        if completed or not active_sid:
+            return
+        try:
+            call = await runtime.service.complete_call_by_sid(
+                call_sid=active_sid,
+                final_status="completed",
+                to_number=active_to,
+                shop_id=active_shop,
+            )
+            completed = True
+            if call:
+                logger.info(
+                    "voice.stream.%s.closed sid=%s call=%s status=%s",
+                    reason,
+                    active_sid,
+                    call.id,
+                    call.status,
+                )
+            else:
+                logger.warning(
+                    "voice.stream.%s.miss sid=%s shop=%s to=%s",
+                    reason,
+                    active_sid,
+                    active_shop,
+                    active_to,
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "voice.stream.%s.complete_failed sid=%s", reason, active_sid
+            )
+
     try:
         while True:
             data = await websocket.receive_json()
             chunk = runtime.streams.handle_event(data)
+            if chunk and chunk.event_type == "start":
+                active_sid = chunk.call_sid or active_sid
+                active_shop = chunk.shop_id or active_shop
+                active_to = chunk.to_number or active_to
             if chunk and chunk.event_type == "interrupt":
-                call = await runtime.store.get_call_by_sid(chunk.call_sid)
+                call = await runtime.store.get_call_by_sid(
+                    chunk.call_sid, shop_id=chunk.shop_id
+                )
+                if call is None:
+                    call = await runtime.store.get_call_by_sid(chunk.call_sid)
                 if call:
                     await runtime.memory.mark_interrupted(
                         shop_id=call.shop_id, call_id=call.id
                     )
             if chunk and chunk.event_type == "stop":
-                try:
-                    await runtime.service.complete_call_by_sid(
-                        call_sid=chunk.call_sid,
-                        final_status="completed",
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "voice.stream.stop.complete_failed sid=%s", chunk.call_sid
-                    )
+                active_sid = chunk.call_sid or active_sid
+                active_shop = chunk.shop_id or active_shop
+                active_to = chunk.to_number or active_to
+                await _close_active("stop")
                 break
     except WebSocketDisconnect:
-        logger.info("voice.stream.disconnected")
+        logger.info("voice.stream.disconnected sid=%s", active_sid)
+        await _close_active("disconnect")
     except Exception:  # noqa: BLE001
-        logger.exception("voice.stream.error")
-        await websocket.close()
+        logger.exception("voice.stream.error sid=%s", active_sid)
+        await _close_active("error")
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @router.get("/health")

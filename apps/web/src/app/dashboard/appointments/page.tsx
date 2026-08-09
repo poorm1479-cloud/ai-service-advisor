@@ -203,7 +203,244 @@ function defaultPreferredStartLocal(openHour = 8, closeHour = 17) {
 function appointmentLabel(a: Appointment) {
   const name = a.metadata?.service_name;
   if (typeof name === "string" && name.trim()) return name;
+  // Walk-in bookings store each selected service on its own line in notes.
+  if (typeof a.notes === "string" && a.notes.trim()) {
+    const lines = a.notes
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (lines.length > 1) return lines.join(" + ");
+    if (lines.length === 1) return lines[0];
+  }
   return a.repair_type;
+}
+
+function priorityTone(priority: string): {
+  chip: string;
+  bar: string;
+  card: string;
+  cardSelected: string;
+} {
+  const p = priority.toLowerCase();
+  if (p === "emergency") {
+    return {
+      chip: "bg-red-50 text-red-700 ring-red-200",
+      bar: "bg-red-500",
+      card: "bg-red-50 text-red-800 ring-1 ring-red-200/80",
+      cardSelected: "bg-red-600 text-white ring-1 ring-red-700",
+    };
+  }
+  if (p === "high") {
+    return {
+      chip: "bg-[var(--accent-soft)] text-[var(--accent)] ring-[var(--accent)]/25",
+      bar: "bg-[var(--accent)]",
+      card: "bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--accent)]/20",
+      cardSelected: "bg-[var(--accent)] text-white ring-1 ring-[var(--accent-hover)]",
+    };
+  }
+  if (p === "low") {
+    return {
+      chip: "bg-zinc-100 text-zinc-600 ring-zinc-200",
+      bar: "bg-zinc-400",
+      card: "bg-white text-[var(--foreground)] ring-1 ring-[var(--line)]",
+      cardSelected: "bg-[var(--ink)] text-white ring-1 ring-black/20",
+    };
+  }
+  return {
+    chip: "bg-sky-50 text-sky-800 ring-sky-200/80",
+    bar: "bg-sky-500",
+    card: "bg-white text-[var(--foreground)] ring-1 ring-sky-200/70 shadow-sm",
+    cardSelected: "bg-[var(--accent)] text-white ring-1 ring-[var(--accent-hover)]",
+  };
+}
+
+function formatMoney(value: string | number | null | undefined) {
+  const n = Number(value ?? 0);
+  if (!Number.isFinite(n)) return "$0";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(n);
+}
+
+function IconPlus({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.25"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function IconCancel({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.25"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
+}
+
+function IconCheck({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.25"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+function IconSpinner({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={`animate-spin ${className}`}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <circle
+        cx="12"
+        cy="12"
+        r="9"
+        stroke="currentColor"
+        strokeOpacity="0.25"
+        strokeWidth="2.5"
+      />
+      <path
+        d="M21 12a9 9 0 0 0-9-9"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function formatPreferredStartLabel(value: string) {
+  if (!value) return "Pick a start time";
+  const d = parseLocalDateTime(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleString([], {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+const VEHICLE_OPTIONS = [
+  { id: "sedan", label: "Sedan" },
+  { id: "suv", label: "SUV" },
+  { id: "truck", label: "Truck" },
+  { id: "van", label: "Van" },
+  { id: "ev", label: "EV" },
+] as const;
+
+const PRIORITY_OPTIONS = ["low", "normal", "high", "emergency"] as const;
+
+function IconCalendar({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="4" width="18" height="18" rx="2" />
+      <path d="M16 2v4M8 2v4M3 10h18" />
+    </svg>
+  );
+}
+
+function IconChevron({
+  dir,
+  className = "h-4 w-4",
+}: {
+  dir: "left" | "right";
+  className?: string;
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {dir === "left" ? <path d="m15 18-6-6 6-6" /> : <path d="m9 18 6-6-6-6" />}
+    </svg>
+  );
+}
+
+function IconReschedule({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+      <path d="M21 3v6h-6" />
+    </svg>
+  );
+}
+
+function IconTrash({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4h8v2" />
+      <path d="M19 6l-1 14H6L5 6" />
+      <path d="M10 11v6M14 11v6" />
+    </svg>
+  );
 }
 
 export default function AppointmentsPage() {
@@ -688,42 +925,60 @@ export default function AppointmentsPage() {
     }
   }
 
+  // Prefer wall-clock order within the shop day (stable across browser TZ).
+  const todayAppointments = useMemo(() => {
+    return [...(calendar?.appointments ?? [])].sort((a, b) => {
+      const da = wallClockParts(a.start);
+      const db = wallClockParts(b.start);
+      return da.hour * 60 + da.minute - (db.hour * 60 + db.minute);
+    });
+  }, [calendar?.appointments]);
+
   if (loading) {
     return (
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:h-full">
-        <p className="text-sm text-[var(--muted)]">Loading appointments…</p>
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:h-full">
+        <div className="flex shrink-0 items-end justify-between gap-3">
+          <div className="h-7 w-36 animate-pulse rounded-md bg-[var(--panel)]" />
+          <div className="h-10 w-24 animate-pulse rounded-full bg-[var(--panel)]" />
+        </div>
+        <div className="surface-panel min-h-0 flex-1 animate-pulse" />
       </div>
     );
   }
 
-  // Prefer wall-clock order within the shop day (stable across browser TZ).
-  const todayAppointments = [...(calendar?.appointments ?? [])].sort((a, b) => {
-    const da = wallClockParts(a.start);
-    const db = wallClockParts(b.start);
-    return da.hour * 60 + da.minute - (db.hour * 60 + db.minute);
-  });
+  const isViewingToday = Boolean(shopToday && dayAnchor && dayAnchor === shopToday);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:h-full">
-      <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
+      <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="page-title">Schedule</h1>
         </div>
         <button
           type="button"
           onClick={openCreate}
-          className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white"
+          className="btn-primary gap-1.5 px-4 py-2.5 shadow-[0_14px_32px_-16px_rgba(240,90,36,0.85)]"
         >
+          <IconPlus />
           Add
         </button>
       </div>
+
+      {error && !selected && !createOpen && (
+        <p
+          className="shrink-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+          role="alert"
+        >
+          {error}
+        </p>
+      )}
 
       <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <DaySchedule
           appointments={todayAppointments}
           hours={hours}
           dayAnchor={dayAnchor}
-          isToday={Boolean(shopToday && dayAnchor && dayAnchor === shopToday)}
+          isToday={isViewingToday}
           closed={dayWindow.closed}
           mechanics={assigneeOptions}
           mechanicRoleMap={mechanicRoleMap}
@@ -765,14 +1020,14 @@ export default function AppointmentsPage() {
         createOpen &&
         createPortal(
           <div
-            className="fixed inset-0 z-[100] flex items-center justify-center overflow-hidden overscroll-none bg-black/50 p-4"
+            className="fixed inset-0 z-[100] flex items-center justify-center overflow-hidden overscroll-none bg-black/50 p-4 backdrop-blur-[3px]"
             role="dialog"
             aria-modal="true"
             aria-labelledby="create-appointment-title"
             onClick={closeCreate}
           >
             <div
-              className="flex max-h-[min(90dvh,40rem)] w-full max-w-md flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-xl"
+              className="flex max-h-[min(92dvh,46rem)] w-full max-w-lg flex-col overflow-hidden rounded-[1.35rem] border border-[var(--line)] bg-[var(--panel)] shadow-[0_32px_100px_-36px_rgba(0,0,0,0.55)]"
               onClick={(e) => e.stopPropagation()}
             >
               <BookForm
@@ -861,36 +1116,60 @@ function DaySchedule({
       : [{ id: "__unassigned__", name: "Unassigned" }];
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)]">
-      <header className="shrink-0 border-b border-[var(--line)] px-4 py-3 text-sm font-medium">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span>
-            {isToday ? "Today" : "Schedule"} ·{" "}
-            {dayAnchor ? formatDay(dayAnchor) : "…"}
-          </span>
-          <div className="flex flex-wrap items-center gap-1">
+    <div className="surface-panel flex min-h-0 flex-1 flex-col overflow-hidden">
+      <header className="shrink-0 border-b border-[var(--line)] px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)]">
+                <IconCalendar />
+              </span>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold tracking-tight">
+                  {isToday ? "Today" : "Day board"}
+                  <span className="font-normal text-[var(--muted)]">
+                    {" "}
+                    · {dayAnchor ? formatDay(dayAnchor) : "…"}
+                  </span>
+                </p>
+                <p className="text-[11px] text-[var(--muted)]">
+                  {appointments.length} appointment{appointments.length === 1 ? "" : "s"}
+                  {selectedAssigneeId
+                    ? ` · Assigning to ${
+                        mechanics.find((m) => m.id === selectedAssigneeId)?.name ?? "teammate"
+                      }`
+                    : " · Auto-assign ready"}
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
               onClick={onPrevDay}
-              className="rounded-md border border-[var(--line)] px-2 py-1 text-xs font-normal hover:bg-[var(--background)]"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[var(--line)] bg-white text-[var(--foreground)] transition hover:bg-[var(--background)]"
               aria-label="Previous day"
             >
-              ←
+              <IconChevron dir="left" className="h-3.5 w-3.5" />
             </button>
             <button
               type="button"
               onClick={onToday}
-              className="rounded-md border border-[var(--line)] px-2 py-1 text-xs font-normal hover:bg-[var(--background)]"
+              className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                isToday
+                  ? "bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--accent)]/30"
+                  : "border border-[var(--line)] bg-white hover:bg-[var(--background)]"
+              }`}
             >
               Today
             </button>
             <button
               type="button"
               onClick={onNextDay}
-              className="rounded-md border border-[var(--line)] px-2 py-1 text-xs font-normal hover:bg-[var(--background)]"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[var(--line)] bg-white text-[var(--foreground)] transition hover:bg-[var(--background)]"
               aria-label="Next day"
             >
-              →
+              <IconChevron dir="right" className="h-3.5 w-3.5" />
             </button>
             <label className="sr-only" htmlFor="schedule-day-picker">
               Pick a date
@@ -903,31 +1182,49 @@ function DaySchedule({
                 const next = e.target.value;
                 if (next) onSelectDay(next);
               }}
-              className="rounded-md border border-[var(--line)] bg-[var(--panel)] px-2 py-1 text-xs font-normal text-[var(--foreground)] hover:bg-[var(--background)]"
+              className="h-8 rounded-full border border-[var(--line)] bg-white px-2.5 text-xs font-medium text-[var(--foreground)] hover:bg-[var(--background)]"
               aria-label="Pick a schedule date"
             />
           </div>
         </div>
-        {closed ? (
-          <span className="mt-0.5 block text-xs font-normal text-[var(--muted)]">
-            Closed this day (Settings → Business hours).
-          </span>
-        ) : null}
       </header>
 
       {/* Day grid (all breakpoints) — scrolls vertically + horizontally on narrow screens */}
-      <div className="asa-scroll min-h-0 flex-1 overflow-auto overscroll-contain p-3 sm:p-4 [-webkit-overflow-scrolling:touch]">
+      {closed ? (
+        <div className="flex min-h-0 flex-1 items-center justify-center bg-[linear-gradient(180deg,#fafafa_0%,#f2f2f2_100%)] p-6">
+          <div
+            className="w-full max-w-sm rounded-2xl border border-[var(--line)] bg-white px-6 py-8 text-center shadow-[var(--shadow-soft)]"
+            role="status"
+          >
+            <span className="mx-auto inline-flex h-11 w-11 items-center justify-center rounded-full bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)]">
+              <IconCalendar className="h-5 w-5" />
+            </span>
+            <p className="mt-4 font-display text-lg font-semibold tracking-tight">
+              Closed
+            </p>
+            <p className="mt-1.5 text-sm text-[var(--muted)]">
+              {dayAnchor ? formatDay(dayAnchor) : "This day"} is not a business day.
+            </p>
+          </div>
+        </div>
+      ) : (
+      <div className="asa-scroll min-h-0 flex-1 overflow-auto overscroll-contain bg-[linear-gradient(180deg,#fafafa_0%,#f2f2f2_100%)] p-3 sm:p-4 [-webkit-overflow-scrolling:touch]">
         <div
           className="grid gap-2"
           style={{
-            gridTemplateColumns: `48px repeat(${columns.length}, minmax(108px, 1fr))`,
-            minWidth: `${48 + Math.max(columns.length, 1) * 108}px`,
+            gridTemplateColumns: `52px repeat(${columns.length}, minmax(120px, 1fr))`,
+            minWidth: `${52 + Math.max(columns.length, 1) * 120}px`,
           }}
         >
-          <div className="sticky left-0 top-0 z-20 bg-[var(--panel)]" />
+          <div className="sticky left-0 top-0 z-20 bg-transparent" />
           {columns.map((m) => {
             const role = mechanicRoleMap.get(m.id);
             const active = selectedAssigneeId !== "" && selectedAssigneeId === m.id;
+            const count = appointments.filter((a) =>
+              m.id === "__unassigned__"
+                ? !a.mechanic_id || !knownIds.has(a.mechanic_id)
+                : a.mechanic_id === m.id,
+            ).length;
             return (
               <button
                 key={m.id}
@@ -936,10 +1233,10 @@ function DaySchedule({
                   if (m.id === "__unassigned__") return;
                   onPickAssignee(active ? "" : m.id);
                 }}
-                className={`sticky top-0 z-10 rounded-md px-1 py-1 text-center transition-colors ${
+                className={`sticky top-0 z-10 rounded-xl px-2 py-2 text-left transition ${
                   active
-                    ? "bg-[var(--accent-soft)] ring-1 ring-[var(--accent)]"
-                    : "bg-[var(--panel)] hover:bg-[var(--background)]"
+                    ? "bg-[var(--accent-soft)] shadow-sm ring-1 ring-[var(--accent)]"
+                    : "bg-white/95 shadow-sm ring-1 ring-[var(--line)] hover:bg-white"
                 }`}
                 title={
                   m.id === "__unassigned__"
@@ -949,8 +1246,17 @@ function DaySchedule({
                       : `Assign next booking to ${m.name}`
                 }
               >
-                <p className="truncate text-xs font-medium text-[var(--foreground)]">{m.name}</p>
-                <p className="truncate text-[10px] text-[var(--muted)]">{role ?? "Staff"}</p>
+                <div className="flex items-start justify-between gap-1">
+                  <p className="truncate text-xs font-semibold text-[var(--foreground)]">
+                    {m.name}
+                  </p>
+                  <span className="rounded-full bg-[var(--background)] px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-[var(--muted)]">
+                    {count}
+                  </span>
+                </div>
+                <p className="mt-0.5 truncate text-[10px] text-[var(--muted)]">
+                  {role ?? (m.id === "__unassigned__" ? "Needs owner" : "Staff")}
+                </p>
               </button>
             );
           })}
@@ -959,6 +1265,7 @@ function DaySchedule({
               key={h}
               hour={h}
               dayAnchor={dayAnchor}
+              isToday={isToday}
               columns={columns}
               appointments={appointments}
               onSelect={onSelect}
@@ -968,6 +1275,7 @@ function DaySchedule({
           ))}
         </div>
       </div>
+      )}
     </div>
   );
 }
@@ -1050,6 +1358,18 @@ function BookForm({
   const selectedOptionRef = useRef<HTMLLIElement | null>(null);
 
   const listItems = filtering ? filteredCustomers : customers;
+  const selectedService = services.find((s) => s.id === serviceId);
+  const selectedCustomer = customers.find((c) => c.id === selectedCustomerId);
+  const summaryCustomer =
+    customerMode === "existing"
+      ? selectedCustomer?.name || "Select customer"
+      : newCustomerName.trim() || "New customer";
+  const summaryAssignee = mechanicId
+    ? assigneeOptions.find((m) => m.id === mechanicId)?.name || "Teammate"
+    : "Auto-assign";
+  const canSubmit = Boolean(serviceId && preferredStart && customerReady && !booking);
+  const fieldClass =
+    "mt-1.5 w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2.5 text-sm text-[var(--foreground)] outline-none transition-[box-shadow,border-color] focus:border-[var(--accent)]/40 focus:ring-2 focus:ring-[var(--accent)]/20 disabled:opacity-60";
 
   function openList(showFull = true) {
     if (showFull) setFiltering(false);
@@ -1111,297 +1431,420 @@ function BookForm({
       noValidate
       className="flex min-h-0 flex-1 flex-col overflow-hidden"
     >
-      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[var(--line)] px-4 py-3">
-        <h2 id="create-appointment-title" className="text-sm font-medium">
-          Create appointment
-        </h2>
-        <button
-          type="button"
-          onClick={onClose}
-          disabled={booking}
-          className="rounded-md border border-[var(--line)] px-2.5 py-1 text-xs disabled:opacity-60"
-          aria-label="Close create appointment"
-        >
-          Close
-        </button>
+      <div className="relative shrink-0 overflow-hidden border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white px-5 pb-5 pt-6">
+        <div
+          className="pointer-events-none absolute right-0 top-0 h-40 w-40 translate-x-1/4 -translate-y-1/4 rounded-full bg-[var(--accent-glow)] blur-2xl"
+          aria-hidden="true"
+        />
+        <div className="relative flex min-w-0 items-center gap-3">
+          <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-white shadow-md shadow-[var(--accent-glow)]">
+            <IconCalendar className="h-4 w-4" />
+          </span>
+          <p
+            id="create-appointment-title"
+            className="text-lg font-semibold tracking-tight text-[var(--ink)]"
+          >
+            Booking
+          </p>
+        </div>
       </div>
 
-      <div className="asa-scroll min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-4">
-      {error && (
-        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
-          {error}
-        </p>
-      )}
-
-      <div className="space-y-2">
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            disabled={booking}
-            onClick={() => setCustomerMode("existing")}
-            className={`rounded-md border px-2 py-2 text-xs font-medium transition-colors ${
-              customerMode === "existing"
-                ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
-                : "border-[var(--line)] text-[var(--foreground)] hover:bg-[var(--background)]"
-            }`}
+      <div className="asa-scroll min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-5 py-4">
+        {error && (
+          <p
+            className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700"
+            role="alert"
           >
-            Existing customer
-          </button>
-          <button
-            type="button"
-            disabled={booking}
-            onClick={() => setCustomerMode("new")}
-            className={`rounded-md border px-2 py-2 text-xs font-medium transition-colors ${
-              customerMode === "new"
-                ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
-                : "border-[var(--line)] text-[var(--foreground)] hover:bg-[var(--background)]"
-            }`}
-          >
-            New customer
-          </button>
-        </div>
+            {error}
+          </p>
+        )}
 
-        {customerMode === "existing" ? (
-          <div className="space-y-1.5">
-            <span className="block text-xs text-[var(--muted)]">Search customer</span>
-            <div ref={comboRef} className="relative">
-              <div className="flex overflow-hidden rounded-md border border-[var(--line)] bg-white focus-within:ring-2 focus-within:ring-[var(--accent)]">
-                <input
-                  ref={inputRef}
-                  type="text"
-                  role="combobox"
-                  aria-expanded={listOpen}
-                  aria-controls="customer-search-listbox"
-                  aria-autocomplete="list"
-                  value={customerQuery}
-                  onChange={(e) => {
-                    setFiltering(true);
-                    setListOpen(true);
-                    setCustomerQuery(e.target.value);
-                  }}
-                  onFocus={() => openList(true)}
-                  placeholder="Name, phone, or email"
-                  disabled={booking}
-                  autoComplete="off"
-                  className="min-w-0 flex-1 border-0 bg-transparent px-2.5 py-2.5 text-sm text-[var(--foreground)] outline-none"
-                />
-                <button
-                  type="button"
-                  disabled={booking}
-                  aria-label={listOpen ? "Hide customer list" : "Show customer list"}
-                  aria-expanded={listOpen}
-                  aria-controls="customer-search-listbox"
-                  onMouseDown={(e) => {
-                    // Prevent input blur race; keep full list on open.
-                    e.preventDefault();
-                    e.stopPropagation();
-                    toggleList();
-                  }}
-                  className="flex shrink-0 items-center justify-center border-l border-[var(--line)] px-2.5 text-[var(--muted)] hover:bg-[var(--background)] disabled:opacity-60"
-                >
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 20 20"
-                    fill="none"
-                    aria-hidden="true"
-                    className={`transition-transform ${listOpen ? "rotate-180" : ""}`}
-                  >
-                    <path
-                      d="M5 7.5L10 12.5L15 7.5"
-                      stroke="currentColor"
-                      strokeWidth="1.75"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
+        <section className="space-y-3">
+          <div className="flex items-baseline justify-between gap-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+              Customer
+            </h3>
+            <span className="text-[11px] text-[var(--muted)]">1 of 3</span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-1 rounded-2xl bg-[var(--background)] p-1 ring-1 ring-[var(--line)]">
+            <button
+              type="button"
+              disabled={booking}
+              onClick={() => setCustomerMode("existing")}
+              className={`rounded-xl px-2 py-2.5 text-xs font-semibold transition-all ${
+                customerMode === "existing"
+                  ? "bg-white text-[var(--foreground)] shadow-[0_8px_20px_-14px_rgba(0,0,0,0.45)] ring-1 ring-black/5"
+                  : "text-[var(--muted)] hover:text-[var(--foreground)]"
+              }`}
+            >
+              Existing
+            </button>
+            <button
+              type="button"
+              disabled={booking}
+              onClick={() => setCustomerMode("new")}
+              className={`rounded-xl px-2 py-2.5 text-xs font-semibold transition-all ${
+                customerMode === "new"
+                  ? "bg-white text-[var(--foreground)] shadow-[0_8px_20px_-14px_rgba(0,0,0,0.45)] ring-1 ring-black/5"
+                  : "text-[var(--muted)] hover:text-[var(--foreground)]"
+              }`}
+            >
+              New customer
+            </button>
+          </div>
+
+          {customerMode === "existing" ? (
+            <div className="space-y-2.5">
+              <label className="block text-xs font-medium text-[var(--muted)]">
+                Search customer
+                <div ref={comboRef} className="relative mt-1.5">
+                  <div className="flex overflow-hidden rounded-xl border border-[var(--line)] bg-white focus-within:border-[var(--accent)]/40 focus-within:ring-2 focus-within:ring-[var(--accent)]/20">
+                    <input
+                      ref={inputRef}
+                      type="text"
+                      role="combobox"
+                      aria-expanded={listOpen}
+                      aria-controls="customer-search-listbox"
+                      aria-autocomplete="list"
+                      value={customerQuery}
+                      onChange={(e) => {
+                        setFiltering(true);
+                        setListOpen(true);
+                        setCustomerQuery(e.target.value);
+                      }}
+                      onFocus={() => openList(true)}
+                      placeholder="Name, phone, or email"
+                      disabled={booking}
+                      autoComplete="off"
+                      className="min-w-0 flex-1 border-0 bg-transparent px-3 py-2.5 text-sm text-[var(--foreground)] outline-none"
                     />
-                  </svg>
-                </button>
-              </div>
+                    <button
+                      type="button"
+                      disabled={booking}
+                      aria-label={listOpen ? "Hide customer list" : "Show customer list"}
+                      aria-expanded={listOpen}
+                      aria-controls="customer-search-listbox"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        toggleList();
+                      }}
+                      className="flex shrink-0 items-center justify-center border-l border-[var(--line)] px-3 text-[var(--muted)] hover:bg-[var(--background)] disabled:opacity-60"
+                    >
+                      <svg
+                        width="16"
+                        height="16"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        aria-hidden="true"
+                        className={`transition-transform ${listOpen ? "rotate-180" : ""}`}
+                      >
+                        <path
+                          d="M5 7.5L10 12.5L15 7.5"
+                          stroke="currentColor"
+                          strokeWidth="1.75"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </button>
+                  </div>
 
-              {listOpen && (
-                <ul
-                  ref={listRef}
-                  id="customer-search-listbox"
-                  role="listbox"
-                  aria-label="Customer list"
-                  className="asa-scroll absolute left-0 right-0 z-20 mt-1 max-h-44 overflow-y-auto overscroll-contain rounded-md border border-[var(--line)] bg-white shadow-lg"
-                >
-                  {listItems.length === 0 ? (
-                    <li className="px-2.5 py-3 text-xs text-[var(--muted)]">
-                      {filtering && customerQuery.trim()
-                        ? "No matching customers. Switch to New customer or clear search."
-                        : "No customers yet. Switch to New customer."}
-                    </li>
-                  ) : (
-                    listItems.map((c) => {
-                      const active = c.id === selectedCustomerId;
-                      return (
-                        <li
-                          key={c.id}
-                          role="option"
-                          aria-selected={active}
-                          ref={active ? selectedOptionRef : undefined}
-                        >
-                          <button
-                            type="button"
-                            disabled={booking}
-                            onMouseDown={(e) => e.preventDefault()}
-                            onClick={() => {
-                              onSelectCustomer(c);
-                              closeList();
-                            }}
-                            className={`flex w-full flex-col items-start gap-0.5 px-2.5 py-2 text-left text-sm transition-colors disabled:opacity-60 ${
-                              active
-                                ? "bg-[var(--accent-soft)] font-medium text-[var(--accent)]"
-                                : "text-[var(--foreground)] hover:bg-[var(--background)]"
-                            }`}
-                          >
-                            <span>{c.name}</span>
-                            <span
-                              className={`text-xs ${
-                                active ? "text-[var(--accent)]/80" : "text-[var(--muted)]"
-                              }`}
-                            >
-                              {c.phone || c.email || "No contact info"}
-                            </span>
-                          </button>
+                  {listOpen && (
+                    <ul
+                      ref={listRef}
+                      id="customer-search-listbox"
+                      role="listbox"
+                      aria-label="Customer list"
+                      className="asa-scroll absolute left-0 right-0 z-20 mt-1.5 max-h-44 overflow-y-auto overscroll-contain rounded-xl border border-[var(--line)] bg-white shadow-[0_18px_40px_-24px_rgba(0,0,0,0.45)]"
+                    >
+                      {listItems.length === 0 ? (
+                        <li className="px-3 py-3 text-xs text-[var(--muted)]">
+                          {filtering && customerQuery.trim()
+                            ? "No matching customers. Switch to New customer or clear search."
+                            : "No customers yet. Switch to New customer."}
                         </li>
-                      );
-                    })
+                      ) : (
+                        listItems.map((c) => {
+                          const active = c.id === selectedCustomerId;
+                          return (
+                            <li
+                              key={c.id}
+                              role="option"
+                              aria-selected={active}
+                              ref={active ? selectedOptionRef : undefined}
+                            >
+                              <button
+                                type="button"
+                                disabled={booking}
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => {
+                                  onSelectCustomer(c);
+                                  closeList();
+                                }}
+                                className={`flex w-full flex-col items-start gap-0.5 px-3 py-2.5 text-left text-sm transition-colors disabled:opacity-60 ${
+                                  active
+                                    ? "bg-[var(--accent-soft)] font-medium text-[var(--accent)]"
+                                    : "text-[var(--foreground)] hover:bg-[var(--background)]"
+                                }`}
+                              >
+                                <span>{c.name}</span>
+                                <span
+                                  className={`text-xs ${
+                                    active ? "text-[var(--accent)]/80" : "text-[var(--muted)]"
+                                  }`}
+                                >
+                                  {c.phone || c.email || "No contact info"}
+                                </span>
+                              </button>
+                            </li>
+                          );
+                        })
+                      )}
+                    </ul>
                   )}
-                </ul>
+                </div>
+              </label>
+
+              {selectedCustomer && (
+                <div className="rounded-2xl bg-[var(--background)] px-3.5 py-3 ring-1 ring-[var(--line)]">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+                    Selected
+                  </p>
+                  <p className="mt-1 font-medium">{selectedCustomer.name}</p>
+                  <p className="mt-0.5 text-xs text-[var(--muted)]">
+                    {selectedCustomer.phone || selectedCustomer.email || "No contact info"}
+                  </p>
+                </div>
               )}
             </div>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <div className="grid grid-cols-2 gap-2">
-              <label className="block min-w-0 text-xs text-[var(--muted)]">
-                Name
+          ) : (
+            <div className="space-y-2.5">
+              <div className="grid grid-cols-2 gap-2.5">
+                <label className="block min-w-0 text-xs font-medium text-[var(--muted)]">
+                  Name
+                  <input
+                    type="text"
+                    value={newCustomerName}
+                    onChange={(e) => setNewCustomerName(e.target.value)}
+                    required={customerMode === "new"}
+                    disabled={booking}
+                    autoComplete="name"
+                    className={fieldClass}
+                  />
+                </label>
+                <label className="block min-w-0 text-xs font-medium text-[var(--muted)]">
+                  Phone
+                  <input
+                    type="tel"
+                    value={newCustomerPhone}
+                    onChange={(e) => setNewCustomerPhone(formatPhoneInput(e.target.value))}
+                    placeholder={PHONE_PLACEHOLDER}
+                    disabled={booking}
+                    autoComplete="tel"
+                    className={fieldClass}
+                  />
+                </label>
+              </div>
+              <label className="block text-xs font-medium text-[var(--muted)]">
+                Email <span className="font-normal">(optional)</span>
                 <input
-                  type="text"
-                  value={newCustomerName}
-                  onChange={(e) => setNewCustomerName(e.target.value)}
-                  required={customerMode === "new"}
+                  type="email"
+                  value={newCustomerEmail}
+                  onChange={(e) => setNewCustomerEmail(e.target.value)}
                   disabled={booking}
-                  autoComplete="name"
-                  className="mt-1 w-full rounded-md border border-[var(--line)] px-2 py-2.5 text-sm text-[var(--foreground)]"
-                />
-              </label>
-              <label className="block min-w-0 text-xs text-[var(--muted)]">
-                Phone
-                <input
-                  type="tel"
-                  value={newCustomerPhone}
-                  onChange={(e) => setNewCustomerPhone(formatPhoneInput(e.target.value))}
-                  placeholder={PHONE_PLACEHOLDER}
-                  disabled={booking}
-                  autoComplete="tel"
-                  className="mt-1 w-full rounded-md border border-[var(--line)] px-2 py-2.5 text-sm text-[var(--foreground)]"
+                  autoComplete="email"
+                  className={fieldClass}
                 />
               </label>
             </div>
-            <label className="block text-xs text-[var(--muted)]">
-              Email (optional)
-              <input
-                type="email"
-                value={newCustomerEmail}
-                onChange={(e) => setNewCustomerEmail(e.target.value)}
+          )}
+        </section>
+
+        <section className="space-y-3">
+          <div className="flex items-baseline justify-between gap-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+              Service &amp; timing
+            </h3>
+            <span className="text-[11px] text-[var(--muted)]">2 of 3</span>
+          </div>
+
+          <label className="block text-xs font-medium text-[var(--muted)]">
+            Service
+            <select
+              className={fieldClass}
+              value={serviceId}
+              onChange={(e) => setServiceId(e.target.value)}
+              required
+              disabled={booking}
+            >
+              {services.length === 0 ? (
+                <option value="">No active services — add in Service Catalog</option>
+              ) : (
+                services.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({s.duration_minutes} min)
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
+
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+            <label className="block text-xs font-medium text-[var(--muted)]">
+              Assign to
+              <select
+                className={fieldClass}
+                value={mechanicId}
+                onChange={(e) => setMechanicId(e.target.value)}
                 disabled={booking}
-                autoComplete="email"
-                className="mt-1 w-full rounded-md border border-[var(--line)] px-2 py-2.5 text-sm text-[var(--foreground)]"
+              >
+                <option value="">Auto — next free teammate</option>
+                {assigneeOptions.map((m) => {
+                  const role = mechanicRoleMap.get(m.id);
+                  return (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                      {role ? ` (${role})` : ""}
+                    </option>
+                  );
+                })}
+              </select>
+            </label>
+            <label className="block text-xs font-medium text-[var(--muted)]">
+              Preferred start
+              <input
+                type="datetime-local"
+                value={preferredStart}
+                onChange={(e) => setPreferredStart(e.target.value)}
+                required
+                disabled={booking}
+                className={fieldClass}
               />
             </label>
           </div>
-        )}
+        </section>
+
+        <section className="space-y-3">
+          <div className="flex items-baseline justify-between gap-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+              Details
+            </h3>
+            <span className="text-[11px] text-[var(--muted)]">3 of 3</span>
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-[var(--muted)]">Vehicle</p>
+            <div className="flex flex-wrap gap-1.5">
+              {VEHICLE_OPTIONS.map((v) => {
+                const active = vehicleType === v.id;
+                return (
+                  <button
+                    key={v.id}
+                    type="button"
+                    disabled={booking}
+                    onClick={() => setVehicleType(v.id)}
+                    className={`rounded-full px-3 py-1.5 text-xs font-semibold capitalize transition-all disabled:opacity-60 ${
+                      active
+                        ? "bg-[var(--ink)] text-white shadow-sm"
+                        : "bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)] hover:text-[var(--foreground)]"
+                    }`}
+                  >
+                    {v.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-[var(--muted)]">Priority</p>
+            <div className="flex flex-wrap gap-1.5">
+              {PRIORITY_OPTIONS.map((p) => {
+                const active = priority === p;
+                const tone = priorityTone(p);
+                return (
+                  <button
+                    key={p}
+                    type="button"
+                    disabled={booking}
+                    onClick={() => setPriority(p)}
+                    className={`rounded-full px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide transition-all disabled:opacity-60 ${
+                      active
+                        ? `ring-1 ${tone.chip} shadow-sm`
+                        : "bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)] hover:text-[var(--foreground)]"
+                    }`}
+                  >
+                    {p}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </section>
       </div>
 
-      <label className="block text-xs text-[var(--muted)]">
-        Service
-        <select
-          className="mt-1 w-full rounded-md border border-[var(--line)] px-2 py-2.5 text-sm"
-          value={serviceId}
-          onChange={(e) => setServiceId(e.target.value)}
-          required
-        >
-          {services.length === 0 ? (
-            <option value="">No active services — add in Service Catalog</option>
-          ) : (
-            services.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name} ({s.duration_minutes} min)
-              </option>
-            ))
-          )}
-        </select>
-      </label>
-      <label className="block text-xs text-[var(--muted)]">
-        Assign to
-        <select
-          className="mt-1 w-full rounded-md border border-[var(--line)] px-2 py-2.5 text-sm"
-          value={mechanicId}
-          onChange={(e) => setMechanicId(e.target.value)}
-        >
-          <option value="">Auto — next free teammate</option>
-          {assigneeOptions.map((m) => {
-            const role = mechanicRoleMap.get(m.id);
-            return (
-              <option key={m.id} value={m.id}>
-                {m.name}
-                {role ? ` (${role})` : ""}
-              </option>
-            );
-          })}
-        </select>
-      </label>
-      <label className="block text-xs text-[var(--muted)]">
-        Preferred start
-        <input
-          type="datetime-local"
-          value={preferredStart}
-          onChange={(e) => setPreferredStart(e.target.value)}
-          required
-          className="mt-1 w-full rounded-md border border-[var(--line)] px-2 py-2.5 text-sm text-[var(--foreground)]"
-        />
-      </label>
-      <label className="block text-xs text-[var(--muted)]">
-        Vehicle
-        <select
-          className="mt-1 w-full rounded-md border border-[var(--line)] px-2 py-2.5 text-sm"
-          value={vehicleType}
-          onChange={(e) => setVehicleType(e.target.value)}
-        >
-          {["sedan", "suv", "truck", "van", "ev"].map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="block text-xs text-[var(--muted)]">
-        Priority
-        <select
-          className="mt-1 w-full rounded-md border border-[var(--line)] px-2 py-2.5 text-sm"
-          value={priority}
-          onChange={(e) => setPriority(e.target.value)}
-        >
-          {["low", "normal", "high", "emergency"].map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </select>
-      </label>
-      </div>
+      <div className="shrink-0 space-y-3 border-t border-[var(--line)] bg-[color-mix(in_srgb,var(--panel)_92%,var(--background))] px-5 py-4">
+        <div className="rounded-2xl bg-[var(--background)] px-3.5 py-3 ring-1 ring-[var(--line)]">
+          <div className="flex items-start gap-2.5">
+            <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-white text-[var(--accent)] ring-1 ring-[var(--line)]">
+              <IconCalendar className="h-4 w-4" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-medium leading-tight">{summaryCustomer}</p>
+              <p className="mt-0.5 truncate text-xs text-[var(--muted)]">
+                {selectedService?.name || "Choose a service"}
+                {selectedService ? ` · ${selectedService.duration_minutes} min` : ""}
+                {" · "}
+                {summaryAssignee}
+              </p>
+              <p className="mt-1 text-xs font-medium text-[var(--foreground)]">
+                {formatPreferredStartLabel(preferredStart)}
+              </p>
+            </div>
+            <span
+              className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ${priorityTone(priority).chip}`}
+            >
+              {priority}
+            </span>
+          </div>
+        </div>
 
-      <div className="shrink-0 border-t border-[var(--line)] p-4">
-        <button
-          type="submit"
-          disabled={!serviceId || !preferredStart || !customerReady || booking}
-          className="min-h-10 w-full rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
-        >
-          {booking ? "Booking…" : "Optimize & book"}
-        </button>
+        <div className="grid grid-cols-2 gap-2.5">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={booking}
+            className="btn-ghost inline-flex min-h-11 items-center justify-center gap-2 overflow-hidden px-3.5 text-sm transition-colors disabled:opacity-60"
+          >
+            <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)]">
+              <IconCancel className="h-3 w-3" />
+            </span>
+            <span>Cancel</span>
+          </button>
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            className="btn-primary inline-flex min-h-11 items-center justify-center gap-2 overflow-hidden px-3.5 text-sm shadow-[0_14px_28px_-16px_rgba(240,90,36,0.9)] transition-[background,box-shadow,opacity] disabled:opacity-60"
+          >
+            {booking ? (
+              <>
+                <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/20">
+                  <IconSpinner className="h-3 w-3" />
+                </span>
+                <span>Booking…</span>
+              </>
+            ) : (
+              <>
+                <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/20">
+                  <IconCheck className="h-3 w-3" />
+                </span>
+                <span>Book</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
     </form>
   );
@@ -1461,7 +1904,7 @@ function AppointmentDetail({
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]"
       role="dialog"
       aria-modal="true"
       aria-labelledby="appointment-detail-title"
@@ -1469,40 +1912,84 @@ function AppointmentDetail({
     >
       <div
         id="appointment-detail"
-        className="asa-scroll max-h-[min(90dvh,40rem)] w-full max-w-md overflow-y-auto overscroll-contain rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 shadow-xl ring-2 ring-[var(--accent)]/25"
+        className="flex max-h-[min(90dvh,42rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_80px_-28px_rgba(0,0,0,0.45)]"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-start justify-between gap-3">
-          <h2 id="appointment-detail-title" className="text-sm font-medium">
-            Appointment detail
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md border border-[var(--line)] px-2.5 py-1 text-xs"
-            aria-label="Close appointment detail"
-          >
-            Close
-          </button>
+        <div className="relative shrink-0 overflow-hidden border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white px-5 pb-5 pt-6">
+          <div
+            className="pointer-events-none absolute -right-8 -top-10 h-44 w-44 rounded-full bg-[var(--accent-glow)] blur-2xl"
+            aria-hidden="true"
+          />
+          <div className="relative flex items-start justify-between gap-3">
+            <div className="flex min-w-0 items-start gap-4">
+              <span className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[var(--accent)] text-white shadow-lg shadow-[var(--accent-glow)]">
+                <IconCalendar className="h-5 w-5" />
+              </span>
+              <div className="min-w-0 pt-0.5">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--accent)]">
+                  Appointment
+                </p>
+                <h2
+                  id="appointment-detail-title"
+                  className="mt-1 truncate text-lg font-semibold tracking-tight text-slate-900"
+                >
+                  {appointmentLabel(selected)}
+                </h2>
+                <p className="mt-1 text-sm leading-relaxed text-[var(--muted)]">
+                  {formatDay(selected.start)} · {formatTime(selected.start)}–{formatTime(selected.end)}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--line)] bg-white/80 text-[var(--muted)] backdrop-blur-sm transition-colors hover:bg-white hover:text-[var(--foreground)]"
+              aria-label="Close appointment detail"
+            >
+              <IconCancel className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div className="relative mt-4 flex flex-wrap gap-1.5">
+            <span
+              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ${priorityTone(selected.priority).chip}`}
+            >
+              {selected.priority}
+            </span>
+            <span className="rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-semibold text-[var(--muted)] ring-1 ring-[var(--line)] backdrop-blur-sm">
+              {selected.estimated_duration_min} min
+            </span>
+            <span className="rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-semibold text-[var(--muted)] ring-1 ring-[var(--line)] backdrop-blur-sm">
+              {formatMoney(selected.estimated_revenue)}
+            </span>
+          </div>
         </div>
-        <div className="mt-3 space-y-2 text-sm">
+
+        <div className="asa-scroll min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-4 text-sm">
           {error && (
-            <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
               {error}
             </p>
           )}
-          <p className="break-words">
-            <span className="text-[var(--muted)]">Customer: </span>
-            {customerLabel}
-          </p>
-          <p className="break-words">
-            <span className="text-[var(--muted)]">When: </span>
-            {formatDay(selected.start)} {formatTime(selected.start)}–{formatTime(selected.end)}
-          </p>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-xl bg-[var(--background)] px-3 py-2.5 ring-1 ring-[var(--line)]">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+                Customer
+              </p>
+              <p className="mt-1 break-words font-medium">{customerLabel}</p>
+            </div>
+            <div className="rounded-xl bg-[var(--background)] px-3 py-2.5 ring-1 ring-[var(--line)]">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+                {assigneeRole ?? "Staff"}
+              </p>
+              <p className="mt-1 break-words font-medium">{assigneeName}</p>
+            </div>
+          </div>
+
           <label className="block text-xs text-[var(--muted)]">
             Service
             <select
-              className="mt-1 w-full rounded-md border border-[var(--line)] px-2 py-2 text-sm text-[var(--foreground)]"
+              className="mt-1 w-full rounded-lg border border-[var(--line)] px-2.5 py-2.5 text-sm text-[var(--foreground)]"
               value={detailServiceId}
               onChange={(e) => setDetailServiceId(e.target.value)}
               disabled={rescheduling}
@@ -1528,50 +2015,40 @@ function AppointmentDetail({
               )}
             </select>
           </label>
-          <p className="text-xs text-[var(--muted)]">
-            {selected.estimated_duration_min} min · {selected.priority}
-            {serviceChanged ? " · duration/revenue update on reschedule" : ""}
-          </p>
-          <p className="break-words">
-            <span className="text-[var(--muted)]">{assigneeRole ?? "Staff"}: </span>
-            {assigneeName}
-          </p>
-          <p>
-            <span className="text-[var(--muted)]">Duration: </span>
-            {selected.estimated_duration_min} min
-          </p>
-          <p>
-            <span className="text-[var(--muted)]">Wait: </span>
-            {selected.wait_time_min ?? 0} min
-          </p>
-          <p>
-            <span className="text-[var(--muted)]">Revenue: </span>${selected.estimated_revenue}
-          </p>
-          <label className="block pt-1 text-xs text-[var(--muted)]">
+          {serviceChanged ? (
+            <p className="text-[11px] text-[var(--muted)]">
+              Duration and revenue update when you reschedule.
+            </p>
+          ) : null}
+
+          <label className="block text-xs text-[var(--muted)]">
             New time
             <input
               type="datetime-local"
               value={rescheduleAt}
               onChange={(e) => setRescheduleAt(e.target.value)}
-              className="mt-1 w-full rounded-md border border-[var(--line)] px-2 py-2 text-sm text-[var(--foreground)]"
+              className="mt-1 w-full rounded-lg border border-[var(--line)] px-2.5 py-2.5 text-sm text-[var(--foreground)]"
               disabled={rescheduling}
             />
           </label>
-          <div className="flex flex-wrap gap-2 pt-2">
+
+          <div className="flex flex-wrap gap-2 pt-1">
             <button
               type="button"
               onClick={onReschedule}
               disabled={rescheduling || !canReschedule}
-              className="min-h-9 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60"
+              className="btn-primary inline-flex min-h-9 items-center gap-1.5 px-4 py-2 text-xs disabled:opacity-60"
             >
+              {!rescheduling ? <IconReschedule /> : null}
               {rescheduling ? "Rescheduling…" : "Reschedule"}
             </button>
             <button
               type="button"
               onClick={onCancel}
               disabled={rescheduling}
-              className="min-h-9 rounded-md border border-[var(--line)] px-3 py-1.5 text-xs disabled:opacity-60"
+              className="btn-ghost inline-flex min-h-9 items-center gap-1.5 px-4 py-2 text-xs disabled:opacity-60"
             >
+              <IconTrash />
               Remove
             </button>
           </div>
@@ -1584,6 +2061,7 @@ function AppointmentDetail({
 function HourRow({
   hour,
   dayAnchor,
+  isToday,
   columns,
   appointments,
   onSelect,
@@ -1592,15 +2070,23 @@ function HourRow({
 }: {
   hour: number;
   dayAnchor: string;
+  isToday: boolean;
   columns: { id: string; name: string }[];
   appointments: Appointment[];
   onSelect: (a: Appointment) => void;
   selectedId?: string;
   onPickAssignee: (mechanicId: string) => void;
 }) {
+  const now = wallClockParts(new Date().toISOString());
+  const isCurrentHour = isToday && now.date === dayAnchor && now.hour === hour;
+
   return (
     <>
-      <div className="sticky left-0 z-[5] bg-[var(--panel)] py-2 pr-1 text-right text-[10px] text-[var(--muted)]">
+      <div
+        className={`sticky left-0 z-[5] bg-[linear-gradient(90deg,#f7f7f7_70%,transparent)] py-2 pr-1 text-right text-[10px] font-medium tabular-nums ${
+          isCurrentHour ? "text-[var(--accent)]" : "text-[var(--muted)]"
+        }`}
+      >
         {hourLabel(hour)}
       </div>
       {columns.map((col) => {
@@ -1616,28 +2102,48 @@ function HourRow({
         return (
           <div
             key={`${col.id}-${hour}`}
-            className="min-h-[52px] rounded-md border border-[var(--line)] bg-[var(--background)] p-1"
+            className={`min-h-[58px] rounded-xl border p-1.5 transition-colors ${
+              isCurrentHour
+                ? "border-[var(--accent)]/30 bg-white shadow-[inset_3px_0_0_0_var(--accent)]"
+                : "border-[var(--line)] bg-white/70 hover:bg-white"
+            }`}
             onDoubleClick={() => {
               if (col.id !== "__unassigned__") onPickAssignee(col.id);
             }}
           >
-            {cellAppts.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                onClick={() => onSelect(a)}
-                className={`mb-1 w-full rounded px-1.5 py-1 text-left text-[10px] ${
-                  selectedId === a.id
-                    ? "bg-[var(--accent)] text-white"
-                    : "bg-[var(--accent-soft)] text-[var(--accent)]"
-                }`}
-              >
-                <span className="font-medium">{appointmentLabel(a)}</span>
-                <span className="block truncate opacity-80">
-                  {formatTime(a.start)}–{formatTime(a.end)}
-                </span>
-              </button>
-            ))}
+            {cellAppts.map((a) => {
+              const tone = priorityTone(a.priority || "normal");
+              const selected = selectedId === a.id;
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  onClick={() => onSelect(a)}
+                  className={`mb-1.5 flex w-full gap-1.5 overflow-hidden rounded-lg px-1.5 py-1.5 text-left text-[10px] transition ${
+                    selected ? tone.cardSelected : tone.card
+                  } last:mb-0`}
+                >
+                  <span
+                    className={`mt-0.5 h-7 w-0.5 shrink-0 rounded-full ${
+                      selected ? "bg-white/70" : tone.bar
+                    }`}
+                    aria-hidden="true"
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-semibold leading-tight">
+                      {appointmentLabel(a)}
+                    </span>
+                    <span
+                      className={`mt-0.5 block truncate tabular-nums ${
+                        selected ? "opacity-90" : "opacity-75"
+                      }`}
+                    >
+                      {formatTime(a.start)}–{formatTime(a.end)}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
         );
       })}

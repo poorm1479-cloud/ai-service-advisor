@@ -222,6 +222,119 @@ async def test_admin_organization_detail_actions(admin_email: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_admin_organization_twilio_number_lifecycle(
+    admin_email: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "twilio_auto_provision_numbers", True)
+    monkeypatch.setattr(settings, "twilio_provider", "fake")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        shop = await register_shop_via_otp(
+            client, email=f"twilio-admin-{uuid4().hex[:10]}@example.com"
+        )
+        shop_id = shop["shop_id"]
+        headers = _admin_headers(admin_email)
+
+        # Clear any signup-provisioned number so assign path is testable end-to-end.
+        existing = await client.get("/v1/tenant/shop", headers={
+            "Authorization": f"Bearer {shop['access_token']}",
+        })
+        if existing.status_code == 200 and existing.json().get("sms_phone_e164"):
+            cleared = await client.delete(
+                f"/v1/admin/organizations/{shop_id}/twilio-number",
+                headers=headers,
+            )
+            assert cleared.status_code == 200, cleared.text
+            assert cleared.json()["twilio_phone_e164"] is None
+
+        empty_delete = await client.delete(
+            f"/v1/admin/organizations/{shop_id}/twilio-number",
+            headers=headers,
+        )
+        assert empty_delete.status_code == 400
+
+        assign = await client.post(
+            f"/v1/admin/organizations/{shop_id}/twilio-number",
+            headers=headers,
+            json={},
+        )
+        assert assign.status_code == 200, assign.text
+        assign_body = assign.json()
+        assert assign_body["ok"] is True
+        assert assign_body["twilio_phone_e164"]
+        assert assign_body["sms_phone_e164"] == assign_body["voice_phone_e164"]
+        first = assign_body["twilio_phone_e164"]
+
+        # Already assigned → reject second auto-assign.
+        again = await client.post(
+            f"/v1/admin/organizations/{shop_id}/twilio-number",
+            headers=headers,
+            json={},
+        )
+        assert again.status_code == 400
+
+        reset = await client.post(
+            f"/v1/admin/organizations/{shop_id}/twilio-number/reset",
+            headers=headers,
+        )
+        assert reset.status_code == 200, reset.text
+        reset_body = reset.json()
+        assert reset_body["ok"] is True
+        assert reset_body["twilio_phone_e164"]
+        assert reset_body["previous_twilio_phone_e164"] == first
+
+        manual_phone = f"+1206555{uuid4().int % 10_000:04d}"
+        # Manual assign while held → reject
+        blocked = await client.post(
+            f"/v1/admin/organizations/{shop_id}/twilio-number",
+            headers=headers,
+            json={"phone_e164": manual_phone},
+        )
+        assert blocked.status_code == 400
+
+        deleted = await client.delete(
+            f"/v1/admin/organizations/{shop_id}/twilio-number",
+            headers=headers,
+        )
+        assert deleted.status_code == 200, deleted.text
+        assert deleted.json()["twilio_phone_e164"] is None
+        assert deleted.json()["released_from_provider"] is False
+        assert deleted.json()["kept_on_twilio"] is True
+        assert deleted.json()["action"] == "unassigned"
+        assert "webhooks_cleared" not in deleted.json() or deleted.json().get("webhooks_cleared") is None
+
+        manual = await client.post(
+            f"/v1/admin/organizations/{shop_id}/twilio-number",
+            headers=headers,
+            json={"phone_e164": manual_phone},
+        )
+        assert manual.status_code == 200, manual.text
+        assert manual.json()["twilio_phone_e164"] == manual_phone
+        assert manual.json()["provider"] == "manual"
+
+        users = await client.get("/v1/admin/users", headers=headers)
+        assert users.status_code == 200
+        row = next(
+            (u for u in users.json()["users"] if u["shop_id"] == shop_id),
+            None,
+        )
+        assert row is not None
+        assert row["twilio_phone_e164"] == manual_phone
+
+        orgs = await client.get("/v1/admin/organizations", headers=headers)
+        assert orgs.status_code == 200
+        org_row = next(
+            (s for s in orgs.json()["shops"] if s["shop_id"] == shop_id),
+            None,
+        )
+        assert org_row is not None
+        assert org_row["twilio_phone_e164"] == manual_phone
+        assert org_row["sms_phone_e164"] == manual_phone
+        assert org_row["voice_phone_e164"] == manual_phone
+
+
+@pytest.mark.asyncio
 async def test_admin_billing_shape(admin_email: str) -> None:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

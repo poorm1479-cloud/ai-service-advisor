@@ -18,6 +18,7 @@ from app.domain.enums import UserRole
 from app.infrastructure.models import (
     RefreshTokenModel,
     ShopMembershipModel,
+    ShopModel,
     SmsConversationModel,
     SmsMessageModel,
     UserModel,
@@ -402,6 +403,221 @@ class AdminConsoleService:
             "shop_id": shop_id,
             "user_id": user_id,
             "temporary_password": password,
+        }
+
+    async def assign_organization_twilio_number(
+        self,
+        shop_id: str,
+        *,
+        phone_e164: str | None = None,
+    ) -> dict:
+        """Assign a Twilio channel number to a shop (manual E.164 or auto-provision)."""
+        from sqlalchemy import or_
+
+        from app.domain.exceptions import ConflictError, NotFoundError, ValidationError
+        from app.sms.store import normalize_phone
+        from app.telephony.numbers import configure_shop_number_webhooks, provision_shop_number
+
+        try:
+            shop_uuid = UUID(shop_id)
+        except ValueError as exc:
+            raise NotFoundError("Shop not found") from exc
+
+        manual = (phone_e164 or "").strip()
+        if manual:
+            phone = normalize_phone(manual)
+            if not phone or not phone.startswith("+") or len(phone) < 10:
+                raise ValidationError("Invalid phone number (use E.164, e.g. +12065550100)")
+        else:
+            phone = None
+
+        provider = "manual"
+        webhook_status: dict | None = None
+
+        async with SessionLocal() as session:
+            shop = await session.get(ShopModel, shop_uuid)
+            if shop is None:
+                raise NotFoundError("Shop not found")
+
+            if phone is None:
+                if shop.sms_phone_e164 or shop.voice_phone_e164:
+                    raise ValidationError(
+                        "Shop already has a Twilio number — delete or reset it first"
+                    )
+                provisioned = await provision_shop_number(
+                    shop_id=shop_uuid,
+                    shop_name=shop.name,
+                    force=True,
+                    unique=True,
+                )
+                if provisioned is None or not provisioned.phone_e164:
+                    raise ValidationError(
+                        "Could not provision a Twilio number "
+                        "(check Twilio credentials / number availability)"
+                    )
+                phone = provisioned.phone_e164
+                provider = provisioned.provider
+            else:
+                if shop.sms_phone_e164 or shop.voice_phone_e164:
+                    raise ValidationError(
+                        "Shop already has a Twilio number — delete or reset it first"
+                    )
+                provider = "manual"
+                # Manual assign: number must exist on this Twilio account and get
+                # Voice/SMS webhooks pointed at this API (DB alone cannot receive calls).
+                webhook_status = await configure_shop_number_webhooks(phone)
+                if not webhook_status.get("skipped"):
+                    if not webhook_status.get("found"):
+                        raise ValidationError(
+                            f"{phone} is not an Incoming Phone Number on this Twilio "
+                            "account. Buy/port the number in Twilio Console, or Set a "
+                            "number that already belongs to the account."
+                        )
+                    if not webhook_status.get("ok"):
+                        err = webhook_status.get("error") or "unknown"
+                        raise ValidationError(
+                            f"Could not configure Twilio webhooks for {phone}: {err}. "
+                            "Check TWILIO_WEBHOOK_PUBLIC_URL and Twilio credentials."
+                        )
+
+            taken = await session.scalar(
+                select(ShopModel.id).where(
+                    ShopModel.id != shop_uuid,
+                    or_(
+                        ShopModel.sms_phone_e164 == phone,
+                        ShopModel.voice_phone_e164 == phone,
+                    ),
+                )
+            )
+            if taken is not None:
+                raise ConflictError("This Twilio number is already assigned to another shop")
+
+            shop.sms_phone_e164 = phone
+            shop.voice_phone_e164 = phone
+            await session.commit()
+
+        # Auto-provision already wired webhooks at purchase; re-apply for consistency.
+        if webhook_status is None:
+            webhook_status = await configure_shop_number_webhooks(phone)
+        return {
+            "ok": True,
+            "shop_id": shop_id,
+            "sms_phone_e164": phone,
+            "voice_phone_e164": phone,
+            "twilio_phone_e164": phone,
+            "action": "assigned",
+            "provider": provider,
+            "webhooks_configured": bool(webhook_status.get("ok")),
+            "webhooks_error": webhook_status.get("error"),
+        }
+
+    async def clear_organization_twilio_number(self, shop_id: str) -> dict:
+        """Unassign the shop number in the database only.
+
+        Makes the shop unable to use the number for SMS/Voice.
+        Makes **zero** Twilio API calls — does not delete, release, or
+        reconfigure the IncomingPhoneNumber on the Twilio account.
+        """
+        from app.domain.exceptions import NotFoundError, ValidationError
+
+        try:
+            shop_uuid = UUID(shop_id)
+        except ValueError as exc:
+            raise NotFoundError("Shop not found") from exc
+
+        async with SessionLocal() as session:
+            shop = await session.get(ShopModel, shop_uuid)
+            if shop is None:
+                raise NotFoundError("Shop not found")
+            previous_sms = shop.sms_phone_e164
+            previous_voice = shop.voice_phone_e164
+            previous = previous_sms or previous_voice
+            if not previous:
+                raise ValidationError("Shop has no Twilio number to unassign")
+            shop.sms_phone_e164 = None
+            shop.voice_phone_e164 = None
+            await session.commit()
+
+        return {
+            "ok": True,
+            "shop_id": shop_id,
+            "sms_phone_e164": None,
+            "voice_phone_e164": None,
+            "twilio_phone_e164": None,
+            "previous_twilio_phone_e164": previous,
+            "released_from_provider": False,
+            "kept_on_twilio": True,
+            "action": "unassigned",
+        }
+
+    async def reset_organization_twilio_number(self, shop_id: str) -> dict:
+        """Provision a new channel number; keep the previous one on the Twilio account."""
+        from sqlalchemy import or_
+
+        from app.domain.exceptions import ConflictError, NotFoundError, ValidationError
+        from app.telephony.numbers import provision_shop_number
+
+        try:
+            shop_uuid = UUID(shop_id)
+        except ValueError as exc:
+            raise NotFoundError("Shop not found") from exc
+
+        async with SessionLocal() as session:
+            shop = await session.get(ShopModel, shop_uuid)
+            if shop is None:
+                raise NotFoundError("Shop not found")
+            previous_sms = shop.sms_phone_e164
+            previous_voice = shop.voice_phone_e164
+            previous = previous_sms or previous_voice
+            shop_name = shop.name
+
+        # Provision first so a failure leaves the existing assignment intact.
+        provisioned = await provision_shop_number(
+            shop_id=shop_uuid,
+            shop_name=shop_name,
+            force=True,
+            unique=True,
+        )
+        if provisioned is None or not provisioned.phone_e164:
+            raise ValidationError(
+                "Could not provision a new Twilio number "
+                "(check Twilio credentials / number availability)"
+            )
+        phone = provisioned.phone_e164
+
+        async with SessionLocal() as session:
+            shop = await session.get(ShopModel, shop_uuid)
+            if shop is None:
+                raise NotFoundError("Shop not found")
+            taken = await session.scalar(
+                select(ShopModel.id).where(
+                    ShopModel.id != shop_uuid,
+                    or_(
+                        ShopModel.sms_phone_e164 == phone,
+                        ShopModel.voice_phone_e164 == phone,
+                    ),
+                )
+            )
+            if taken is not None:
+                raise ConflictError("Provisioned number collides with another shop")
+            shop.sms_phone_e164 = phone
+            shop.voice_phone_e164 = phone
+            await session.commit()
+
+        # Previous number is intentionally kept on the Twilio account.
+        _ = (previous_sms, previous_voice)
+
+        return {
+            "ok": True,
+            "shop_id": shop_id,
+            "sms_phone_e164": phone,
+            "voice_phone_e164": phone,
+            "twilio_phone_e164": phone,
+            "previous_twilio_phone_e164": previous,
+            "released_from_provider": False,
+            "kept_on_twilio": True,
+            "provider": provisioned.provider,
+            "action": "reset",
         }
 
     async def billing_monitor(self) -> dict:

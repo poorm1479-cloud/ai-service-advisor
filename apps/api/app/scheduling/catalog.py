@@ -298,8 +298,21 @@ def build_booking_request(
     bay_id: UUID | None = None,
     estimated_revenue: Decimal | None = None,
     source: str = "dashboard",
+    additional_services: list[ServiceOut] | None = None,
 ) -> BookingRequest:
-    """Map catalog service → booking fields (duration drives end time)."""
+    """Map catalog service → booking fields (duration drives end time).
+
+    When ``additional_services`` is provided, duration/revenue/name are
+    combined so multi-service walk-ins book as one visit block.
+    """
+    extras = [s for s in (additional_services or []) if s.id != service.id]
+    bundled = [service, *extras]
+    duration = sum(int(s.duration_minutes or 0) for s in bundled)
+    if estimated_revenue is not None:
+        revenue = estimated_revenue
+    else:
+        revenue = sum((Decimal(str(s.price)) for s in bundled), Decimal("0"))
+    service_name = " + ".join(s.name for s in bundled)
     return BookingRequest(
         shop_id=shop_id,
         preferred_start=preferred_start,
@@ -310,17 +323,38 @@ def build_booking_request(
         required_bay=(service.bay or "general").strip().lower() or "general",
         vehicle_type=vehicle_type,
         priority=priority,
-        estimated_duration_min=service.duration_minutes,
+        estimated_duration_min=duration,
         source=source,
         notes=notes,
         walk_in_id=walk_in_id,
         mechanic_id=mechanic_id,
         bay_id=bay_id,
-        estimated_revenue=estimated_revenue
-        if estimated_revenue is not None
-        else Decimal(str(service.price)),
-        service_name=service.name,
+        estimated_revenue=revenue,
+        service_name=service_name,
     )
+
+
+async def resolve_extra_services_for_booking(
+    session: AsyncSession,
+    *,
+    shop_id: UUID,
+    primary_id: UUID,
+    extra_service_ids: list[UUID],
+) -> list[ServiceOut]:
+    """Resolve additional catalog services (skip duplicates / primary)."""
+    seen: set[UUID] = {primary_id}
+    extras: list[ServiceOut] = []
+    for sid in extra_service_ids:
+        if sid in seen:
+            continue
+        seen.add(sid)
+        try:
+            extras.append(
+                await resolve_bookable_service(session, shop_id=shop_id, service_id=sid)
+            )
+        except NotFoundError as exc:
+            raise ValidationError(str(exc)) from exc
+    return extras
 
 
 async def require_service_for_booking(

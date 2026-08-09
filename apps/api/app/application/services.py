@@ -217,6 +217,21 @@ class AuthService:
                 capabilities=default_capabilities_for_role(UserRole.OWNER),
             )
         )
+        # Auto-assign Twilio SMS/Voice number (fake provider in local/dev).
+        provisioned_phone: str | None = None
+        try:
+            from app.telephony.numbers import provision_shop_number
+
+            provisioned = await provision_shop_number(shop_id=shop.id, shop_name=shop.name)
+            if provisioned and provisioned.phone_e164:
+                provisioned_phone = provisioned.phone_e164
+                await self._uow.shops.set_channel_phones(
+                    shop.id,
+                    sms_phone_e164=provisioned_phone,
+                    voice_phone_e164=provisioned_phone,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("auth.register.phone_provision_failed shop=%s err=%s", shop.slug, exc)
         # Seed shop contact from owner so Settings/Setup do not require re-entry.
         try:
             from app.shop_setup.models import ShopSetupProfileModel
@@ -257,6 +272,7 @@ class AuthService:
             "user_id": str(user.id),
             "role": UserRole.OWNER.value,
             "plan_id": "free",
+            "twilio_phone_e164": provisioned_phone,
         }
         contact = user.email or user.phone or ""
         signup_message = (

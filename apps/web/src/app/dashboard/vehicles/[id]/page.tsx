@@ -49,7 +49,7 @@ export default function VehicleDetailPage() {
     try {
       await deleteVehicle(vehicleId);
       router.push(
-        v.customer_id ? `/dashboard/customers/${v.customer_id}` : "/dashboard/customers",
+        v.customer_id ? `/dashboard/customer/${v.customer_id}` : "/dashboard/customer",
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete vehicle");
@@ -72,7 +72,7 @@ export default function VehicleDetailPage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <Link
-            href={`/dashboard/customers/${v.customer_id}`}
+            href={`/dashboard/customer/${v.customer_id}`}
             className="text-sm text-[var(--muted)] hover:text-[var(--accent)]"
           >
             ← Back to customer

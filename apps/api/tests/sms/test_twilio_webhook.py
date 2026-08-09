@@ -19,6 +19,7 @@ def _sms_env(monkeypatch):
     monkeypatch.setattr(settings, "twilio_provider", "fake")
     monkeypatch.setattr(settings, "twilio_validate_signature", False)
     monkeypatch.setattr(settings, "twilio_from_number", "+15550001111")
+    monkeypatch.setattr(settings, "sms_store_backend", "memory")
 
     async def _noop_consume(*_args, **_kwargs) -> None:
         return None
