@@ -1640,6 +1640,7 @@ class DecisionExecutor:
                     duration_minutes=duration,
                     repair_type=decision.required_skill,
                     required_bay=decision.required_bay,
+                    estimated_revenue=decision.estimated_revenue,
                 )
             except Exception as exc:  # noqa: BLE001 — surface capacity race as unavailable
                 return _unavailable(str(exc) or "Unable to book requested slot")
@@ -1800,6 +1801,7 @@ class DecisionExecutor:
                     duration_minutes=duration,
                     repair_type=decision.required_skill,
                     required_bay=decision.required_bay,
+                    estimated_revenue=decision.estimated_revenue,
                 )
             except Exception as exc:  # noqa: BLE001 — capacity / hours rejection
                 return _reschedule_unavailable(str(exc) or "Unable to reschedule")

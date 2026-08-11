@@ -410,6 +410,11 @@ async def test_delete_call_removes_history_and_turns(runtime, shop_id):
     assert await runtime.store.get_call(shop_id, call_id) is None
     assert await runtime.store.list_turns(shop_id, call_id) == []
     assert all(c.id != call_id for c in await runtime.store.list_calls(shop_id))
+    # Soft-delete: row remains so dashboard "AI calls handled" does not shrink.
+    kept = runtime.store.calls.get(call_id)
+    assert kept is not None
+    assert kept.deleted_at is not None
+    assert call_id in runtime.store.turns  # transcript retained for audit/metrics
 
 
 @pytest.mark.asyncio

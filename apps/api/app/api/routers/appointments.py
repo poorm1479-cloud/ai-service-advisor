@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -12,9 +13,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentUser, get_current_user
-from app.domain.exceptions import ValidationError
+from app.api.deps import CurrentUser, get_current_user, get_uow
+from app.application.walkin_service import WalkInService
+from app.domain.exceptions import NotFoundError, ValidationError
 from app.infrastructure.database import get_session
+from app.infrastructure.unit_of_work import SqlAlchemyUnitOfWork
 from app.scheduling.catalog import (
     build_booking_request,
     require_service_for_booking,
@@ -23,6 +26,8 @@ from app.scheduling.catalog import (
 )
 from app.scheduling.engines.availability import DEFAULT_SHOP_TZ
 from app.scheduling.factory import SchedulingRuntime, get_scheduling_runtime
+
+logger = logging.getLogger("asa.api.appointments")
 
 router = APIRouter(prefix="/v1/appointments", tags=["appointments"])
 
@@ -36,6 +41,54 @@ async def _bind_shop(session: AsyncSession, shop_id: UUID) -> None:
         text("SELECT set_config('app.shop_id', :sid, true)"),
         {"sid": str(shop_id)},
     )
+
+
+async def _refresh_executive_dashboard(shop_id: UUID) -> None:
+    """Recalculate Today's Revenue / KPIs after work completion."""
+    try:
+        from app.executive.factory import get_executive_runtime
+
+        await get_executive_runtime().service.get_dashboard(shop_id, force=True)
+    except Exception:  # noqa: BLE001
+        logger.exception("executive dashboard refresh failed shop=%s", shop_id)
+
+
+async def _auto_complete_elapsed(
+    runtime: SchedulingRuntime,
+    shop_id: UUID,
+    *,
+    uow: SqlAlchemyUnitOfWork | None = None,
+) -> None:
+    """Mark past-end appointments completed; close linked walk-ins when idle."""
+    try:
+        completed = await runtime.service.complete_elapsed(shop_id=shop_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("auto_complete_elapsed failed shop=%s", shop_id)
+        return
+
+    for appt in completed:
+        runtime.monitor.record_complete()
+        if uow is None or appt.walk_in_id is None:
+            continue
+        try:
+            still_active = await runtime.service.walk_in_has_active_work(
+                shop_id=shop_id, walk_in_id=appt.walk_in_id
+            )
+            if not still_active:
+                await WalkInService(uow).close(
+                    shop_id=shop_id, visit_id=appt.walk_in_id
+                )
+        except NotFoundError:
+            pass
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "walk_in.close_after_auto_complete failed appointment=%s walk_in=%s",
+                appt.id,
+                appt.walk_in_id,
+            )
+
+    if completed:
+        await _refresh_executive_dashboard(shop_id)
 
 
 class BookRequest(BaseModel):
@@ -58,6 +111,7 @@ class BookRequest(BaseModel):
 
 class RescheduleRequest(BaseModel):
     preferred_start: datetime | None = None
+    mechanic_id: UUID | None = None
 
 
 class ChangeServiceRequest(BaseModel):
@@ -66,6 +120,10 @@ class ChangeServiceRequest(BaseModel):
 
 class CancelRequest(BaseModel):
     reason: str | None = None
+
+
+class CompleteRequest(BaseModel):
+    notes: str | None = None
 
 
 class AppointmentOut(BaseModel):
@@ -178,7 +236,9 @@ async def list_appointments(
     end: datetime | None = None,
     user: CurrentUser = Depends(get_current_user),
     runtime: SchedulingRuntime = Depends(_runtime),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
 ) -> list[AppointmentOut]:
+    await _auto_complete_elapsed(runtime, user.shop_id, uow=uow)
     items = await runtime.service.list_appointments(user.shop_id, start=start, end=end)
     return [_appt_out(a) for a in items]
 
@@ -190,9 +250,11 @@ async def calendar_view(
     user: CurrentUser = Depends(get_current_user),
     runtime: SchedulingRuntime = Depends(_runtime),
     session: AsyncSession = Depends(get_session),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
 ) -> dict[str, Any]:
     await _bind_shop(session, user.shop_id)
     await sync_shop_resources(session, shop_id=user.shop_id, store=runtime.store)
+    await _auto_complete_elapsed(runtime, user.shop_id, uow=uow)
 
     availability = runtime.service._availability
     day = anchor or availability.today()
@@ -515,6 +577,7 @@ async def reschedule_appointment(
         shop_id=user.shop_id,
         appointment_id=appointment_id,
         preferred_start=body.preferred_start,
+        mechanic_id=body.mechanic_id,
     )
     if result.success:
         runtime.monitor.record_reschedule()
@@ -576,10 +639,54 @@ async def cancel_appointment(
     user: CurrentUser = Depends(get_current_user),
     runtime: SchedulingRuntime = Depends(_runtime),
 ) -> AppointmentOut:
-    appt = await runtime.service.cancel(
-        shop_id=user.shop_id, appointment_id=appointment_id, reason=body.reason
-    )
+    try:
+        appt = await runtime.service.cancel(
+            shop_id=user.shop_id, appointment_id=appointment_id, reason=body.reason
+        )
+    except ValidationError as exc:
+        raise _http_validation(exc) from exc
     if appt is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Appointment not found")
     runtime.monitor.record_cancel()
+    return _appt_out(appt)
+
+
+@router.post("/{appointment_id}/complete", response_model=AppointmentOut)
+async def complete_appointment(
+    appointment_id: UUID,
+    body: CompleteRequest = CompleteRequest(),
+    user: CurrentUser = Depends(get_current_user),
+    runtime: SchedulingRuntime = Depends(_runtime),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> AppointmentOut:
+    """Finish reserved work; close linked walk-in when no active jobs remain."""
+    try:
+        appt = await runtime.service.complete(
+            shop_id=user.shop_id, appointment_id=appointment_id, notes=body.notes
+        )
+    except ValidationError as exc:
+        raise _http_validation(exc) from exc
+    if appt is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Appointment not found")
+    runtime.monitor.record_complete()
+
+    if appt.walk_in_id is not None:
+        try:
+            still_active = await runtime.service.walk_in_has_active_work(
+                shop_id=user.shop_id, walk_in_id=appt.walk_in_id
+            )
+            if not still_active:
+                await WalkInService(uow).close(
+                    shop_id=user.shop_id, visit_id=appt.walk_in_id
+                )
+        except NotFoundError:
+            pass
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "walk_in.close_after_complete failed appointment=%s walk_in=%s",
+                appointment_id,
+                appt.walk_in_id,
+            )
+
+    await _refresh_executive_dashboard(user.shop_id)
     return _appt_out(appt)

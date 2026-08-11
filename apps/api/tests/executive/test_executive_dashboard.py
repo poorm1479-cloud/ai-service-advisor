@@ -136,6 +136,109 @@ def test_apply_sources_wires_crm_new_customers(runtime, shop_id):
     assert live2.customers_total == 0
 
 
+def test_apply_sources_follow_up_customers_from_marketing(runtime, shop_id):
+    """Follow-up Customers KPI prefers marketing audiences over revenue opps."""
+    from types import SimpleNamespace
+
+    from app.executive.models import ShopLiveState
+
+    live = ShopLiveState(shop_id=shop_id)
+    runtime.aggregator._apply_sources(
+        live,
+        {
+            "revenue": {
+                "dashboard": SimpleNamespace(
+                    expected_revenue_daily=0,
+                    open_opportunities=99,
+                    avg_customer_health=0,
+                )
+            },
+            "marketing": {"summary": {}, "follow_up_customers": 7},
+        },
+    )
+    assert live.revenue_opportunities == 7
+
+    # Fall back to revenue open opportunities when marketing count missing.
+    live2 = ShopLiveState(shop_id=shop_id)
+    runtime.aggregator._apply_sources(
+        live2,
+        {
+            "revenue": {
+                "dashboard": SimpleNamespace(
+                    expected_revenue_daily=0,
+                    open_opportunities=12,
+                    avg_customer_health=0,
+                )
+            },
+            "marketing": {"summary": {}},
+        },
+    )
+    assert live2.revenue_opportunities == 12
+
+    # Marketing error should not wipe with a bogus zero follow_up field alone —
+    # prefer revenue fallback when error is set.
+    live3 = ShopLiveState(shop_id=shop_id)
+    runtime.aggregator._apply_sources(
+        live3,
+        {
+            "revenue": {
+                "dashboard": SimpleNamespace(
+                    expected_revenue_daily=0,
+                    open_opportunities=5,
+                    avg_customer_health=0,
+                )
+            },
+            "marketing": {"error": "boom", "follow_up_customers": 0},
+        },
+    )
+    assert live3.revenue_opportunities == 5
+
+
+def test_apply_sources_todays_revenue_from_completed_work(runtime, shop_id):
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from app.executive.models import ShopLiveState
+
+    live = ShopLiveState(shop_id=shop_id, todays_revenue=Decimal("999.00"))
+    runtime.aggregator._apply_sources(
+        live,
+        {
+            "scheduling": {
+                "appointments_today": 3,
+                "expected_daily_revenue": "450.00",
+                "completed_revenue_today": "275.50",
+            },
+            "revenue": {},
+            "marketing": {"summary": {"revenue": "1000"}},
+        },
+    )
+    assert live.todays_revenue == Decimal("275.50")
+    assert live.expected_revenue == Decimal("450.00")
+
+    # Fallback: sum completed appointments when aggregate field missing.
+    live2 = ShopLiveState(shop_id=shop_id)
+    runtime.aggregator._apply_sources(
+        live2,
+        {
+            "scheduling": {
+                "appointments": [
+                    SimpleNamespace(status="completed", estimated_revenue=Decimal("120.00")),
+                    SimpleNamespace(status="booked", estimated_revenue=Decimal("200.00")),
+                    SimpleNamespace(status="completed", estimated_revenue=Decimal("80.25")),
+                    SimpleNamespace(status="cancelled", estimated_revenue=Decimal("50.00")),
+                ]
+            }
+        },
+    )
+    assert live2.todays_revenue == Decimal("200.25")
+
+    # Cold scheduling source clears stale revenue.
+    live3 = ShopLiveState(shop_id=shop_id, todays_revenue=Decimal("50.00"))
+    runtime.aggregator._apply_sources(live3, {"scheduling": {"appointments_today": 0}})
+    assert live3.todays_revenue == Decimal("0")
+
+
 def test_repair_status_includes_open_walk_ins(runtime, shop_id):
     from datetime import datetime, timezone
 
@@ -261,6 +364,11 @@ def test_repair_status_walk_in_follows_linked_appointment(runtime, shop_id):
     assert str(scheduled_appt_id) not in items
     assert "active" in (items[active_id].subtitle or "")
     assert "scheduled" in (items[scheduled_id].subtitle or "")
+    # Active stays on visit detail; scheduled deep-links to the day board.
+    assert items[active_id].href == f"/dashboard/walk-ins/{active_id}"
+    assert items[scheduled_id].href == (
+        f"/dashboard/appointments?date=2026-08-02&appointment={scheduled_appt_id}"
+    )
 
 
 def test_repair_status_leaves_active_after_appointment_end(runtime, shop_id):
@@ -316,6 +424,128 @@ def test_repair_status_leaves_active_after_appointment_end(runtime, shop_id):
 
     assert items[visit_id].status == "waiting"
     assert "waiting" in (items[visit_id].subtitle or "")
+
+
+def test_repair_status_appointment_deep_links_to_schedule_day(runtime, shop_id):
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    from app.executive.models import ShopLiveState
+
+    now = datetime(2026, 8, 2, 16, 0, tzinfo=timezone.utc)
+    appt_id = uuid4()
+    live = ShopLiveState(shop_id=shop_id)
+    widgets = runtime.aggregator._build_widgets(
+        live,
+        {
+            "crm": {"open_walk_ins": []},
+            "scheduling": {
+                "appointments": [
+                    SimpleNamespace(
+                        id=appt_id,
+                        walk_in_id=None,
+                        vehicle_id=None,
+                        status="booked",
+                        start=now + timedelta(hours=3),
+                        end=now + timedelta(hours=4),
+                        repair_type="tire_rotation",
+                        priority="normal",
+                    ),
+                ]
+            },
+            "revenue": {},
+            "advisor": {},
+        },
+        now=now,
+    )
+    by_id = {w.id: w for w in widgets}
+    items = {i.id: i for i in by_id["repair_status"].items}
+    assert str(appt_id) in items
+    assert items[str(appt_id)].status == "scheduled"
+    assert items[str(appt_id)].href == (
+        f"/dashboard/appointments?date=2026-08-02&appointment={appt_id}"
+    )
+
+
+def test_ai_performance_appts_booked_uses_scheduling_created_count(runtime, shop_id):
+    from datetime import datetime, timezone
+
+    from app.executive.models import ShopLiveState
+
+    now = datetime(2026, 8, 11, 18, 0, tzinfo=timezone.utc)
+    live = ShopLiveState(shop_id=shop_id, appointments_today=5, human_escalations=0)
+    charts = runtime.aggregator._build_charts(
+        live,
+        {
+            "scheduling": {"ai_appointments_created_today": 3, "appointments_today": 5},
+            "sms": {"monitor": {"appointments_booked": 99, "inbound_received": 2}},
+            "voice": {"monitor": {"turns": 1}},
+            "revenue": {},
+        },
+        now=now,
+    )
+    by_id = {c.id: c for c in charts}
+    points = {p.label: p.value for p in by_id["ai_performance"].points}
+    assert points["Appts booked"] == 3.0
+
+
+def test_ai_conversations_prefer_durable_voice_calls(runtime, shop_id):
+    from datetime import datetime, timezone
+
+    from app.executive.models import ShopLiveState
+
+    live = ShopLiveState(shop_id=shop_id)
+    runtime.aggregator._apply_sources(
+        live,
+        {
+            "sms": {"monitor": {"inbound_received": 4, "escalations": 1}},
+            "voice": {"monitor": {"calls_started": 7, "turns": 40, "escalations": 0}},
+        },
+    )
+    assert live.ai_conversations == 11  # inbound SMS + voice calls (not turns)
+    assert live.human_escalations == 1
+
+    charts = runtime.aggregator._build_charts(
+        live,
+        {
+            "sms": {"monitor": {"inbound_received": 4}},
+            "voice": {"monitor": {"calls_started": 7, "turns": 40}},
+            "scheduling": {},
+            "revenue": {},
+        },
+        now=datetime.now(timezone.utc),
+    )
+    points = {p.label: p.value for p in next(c for c in charts if c.id == "ai_performance").points}
+    assert points["SMS handled"] == 4.0
+    assert points["Voice turns"] == 7.0
+
+
+def test_ai_appointment_created_helpers():
+    from datetime import datetime, timezone
+
+    from app.plugins.scheduling.plugin import (
+        _created_in_day_bounds,
+        _is_ai_appointment_source,
+    )
+
+    assert _is_ai_appointment_source("agent")
+    assert _is_ai_appointment_source("sms")
+    assert _is_ai_appointment_source("phone")
+    assert not _is_ai_appointment_source("dashboard")
+    assert not _is_ai_appointment_source("walk_in")
+
+    day_start = datetime(2026, 8, 11, 7, 0, tzinfo=timezone.utc)  # midnight LA PDT
+    day_end = datetime(2026, 8, 12, 7, 0, tzinfo=timezone.utc)
+    assert _created_in_day_bounds(
+        datetime(2026, 8, 11, 15, 0, tzinfo=timezone.utc),
+        day_start=day_start,
+        day_end=day_end,
+    )
+    assert not _created_in_day_bounds(
+        datetime(2026, 8, 10, 15, 0, tzinfo=timezone.utc),
+        day_start=day_start,
+        day_end=day_end,
+    )
 
 
 @pytest.mark.asyncio

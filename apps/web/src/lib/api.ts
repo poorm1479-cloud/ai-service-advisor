@@ -1,3 +1,5 @@
+import { getLocalTimezone } from "@/lib/timezone";
+
 export type UserRole = "owner" | "staff" | "ai_agent";
 
 export type SessionRole = UserRole | "platform_admin";
@@ -545,6 +547,7 @@ export async function registerShop(input: {
   password: string;
   ownerPhone?: string;
   ownerEmail?: string;
+  timezone?: string;
 }): Promise<AuthSession> {
   const payload = {
     shop_name: input.shopName,
@@ -553,6 +556,7 @@ export async function registerShop(input: {
     password: input.password,
     owner_phone: input.ownerPhone || null,
     owner_email: input.ownerEmail || null,
+    timezone: input.timezone || getLocalTimezone(),
   };
 
   async function post(path: string): Promise<Response> {

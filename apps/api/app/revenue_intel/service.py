@@ -51,6 +51,11 @@ class RevenueIntelService:
         await self._store.save_job(job)
 
         try:
+            # Prefer durable CRM customers so analysis survives API restarts
+            # (in-memory revenue store is empty after process restart).
+            from app.revenue_intel.crm_sync import sync_revenue_intel_customers_from_crm
+
+            await sync_revenue_intel_customers_from_crm(self._store, shop_id, force=False)
             customers = await self._store.list_customers(shop_id)
             await self._store.clear_open_opportunities(shop_id)
 

@@ -252,6 +252,8 @@ class RepairHistoryCreate(BaseModel):
     description: str = Field(default="", max_length=5000)
     cost: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
     recommendation: str | None = Field(default=None, max_length=5000)
+    # Optional service/repair date (stored as created_at). Defaults to now when omitted.
+    created_at: datetime | None = None
 
 
 class RepairHistoryOut(BaseModel):

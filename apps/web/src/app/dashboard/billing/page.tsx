@@ -226,9 +226,9 @@ export default function BillingPage() {
       <div className="mx-auto max-w-5xl space-y-6 p-1">
         <div className="h-8 w-48 animate-pulse rounded-lg bg-black/5" />
         <div className="h-56 animate-pulse rounded-2xl bg-black/5" />
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid gap-3 sm:gap-5 md:grid-cols-3">
           {[0, 1, 2].map((i) => (
-            <div key={i} className="h-72 animate-pulse rounded-2xl bg-black/5" />
+            <div key={i} className="h-36 animate-pulse rounded-lg bg-black/5 sm:h-72 sm:rounded-2xl" />
           ))}
         </div>
       </div>
@@ -242,13 +242,12 @@ export default function BillingPage() {
   const price = data ? formatMoney(data.subscription.plan.price_cents_monthly) : null;
 
   return (
-    <div className="mx-auto max-w-5xl space-y-10">
+    <div className="mx-auto max-w-5xl space-y-4">
       <header className="hero-motion">
-        <p className="section-label">Billing</p>
-        <h1 className="page-title mt-2">Subscription & usage</h1>
-        <p className="mt-1.5 max-w-xl text-sm text-[var(--muted)]">
-          Manage your plan, track quotas, and upgrade when your shop needs more capacity.
-        </p>
+        <div className="flex items-center gap-2">
+          <IconCard className="h-5 w-5 shrink-0 text-[var(--muted)]" />
+          <h1 className="page-title">Billing</h1>
+        </div>
       </header>
 
       {error && (
@@ -261,103 +260,88 @@ export default function BillingPage() {
       )}
 
       {data && status && (
-        <section className="hero-motion-delay relative overflow-hidden rounded-2xl border border-black/10 bg-[var(--ink)] text-white shadow-[0_28px_60px_-40px_rgba(0,0,0,0.65)]">
+        <section className="hero-motion-delay relative overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] text-[var(--ink)] shadow-[var(--shadow-soft)]">
           <div
-            className="pointer-events-none absolute inset-0 opacity-90"
+            className="pointer-events-none absolute inset-0 bg-gradient-to-br from-[var(--accent-soft)] via-transparent to-transparent"
             aria-hidden
-            style={{
-              background:
-                "radial-gradient(720px 320px at 12% -10%, rgba(240,90,36,0.45), transparent 55%), radial-gradient(520px 280px at 100% 0%, rgba(255,133,65,0.18), transparent 50%)",
-            }}
-          />
-          <div
-            className="pointer-events-none absolute inset-0 opacity-[0.07]"
-            aria-hidden
-            style={{
-              backgroundImage:
-                "linear-gradient(rgba(255,255,255,0.55) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.55) 1px, transparent 1px)",
-              backgroundSize: "28px 28px",
-            }}
           />
 
-          <div className="relative grid gap-8 p-6 sm:p-8 lg:grid-cols-[1.2fr_1fr] lg:items-end">
+          <div className="relative grid gap-5 p-4 sm:grid-cols-[1.15fr_1fr] sm:items-center sm:gap-6 sm:p-5">
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <span
-                  className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] ring-1 ring-inset ${status.tone}`}
+                  className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ring-1 ring-inset ${status.tone}`}
                 >
                   {status.label}
                 </span>
                 {data.subscription.cancel_at_period_end && (
-                  <span className="inline-flex items-center rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-white/80 ring-1 ring-inset ring-white/15">
+                  <span className="inline-flex items-center rounded-full bg-black/[0.04] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)] ring-1 ring-inset ring-black/10">
                     Cancels at period end
                   </span>
                 )}
               </div>
 
-              <p className="mt-5 text-xs font-semibold uppercase tracking-[0.18em] text-white/55">
+              <p className="mt-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">
                 Current plan
               </p>
-              <h2 className="font-display mt-2 text-3xl font-extrabold tracking-tight sm:text-4xl">
-                {data.subscription.plan.name}
-              </h2>
-              <p className="mt-3 flex items-baseline gap-1.5">
-                <span className="font-display text-5xl font-extrabold tracking-tight">{price}</span>
-                <span className="text-sm font-medium text-white/55">/ month</span>
-              </p>
-              <p className="mt-3 max-w-md text-sm leading-relaxed text-white/65">
-                {data.subscription.plan.description ||
-                  "Your shop’s AI advisor capacity for the current billing period."}
-              </p>
+              <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <h2 className="font-display text-xl font-extrabold tracking-tight sm:text-2xl">
+                  {data.subscription.plan.name}
+                </h2>
+                <p className="flex items-baseline gap-1">
+                  <span className="font-display text-2xl font-extrabold tracking-tight sm:text-3xl">
+                    {price}
+                  </span>
+                  <span className="text-xs font-medium text-[var(--muted)]">/ mo</span>
+                </p>
+              </div>
 
-              <div className="mt-6 flex flex-wrap gap-x-6 gap-y-2 text-xs text-white/55">
+              <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[var(--muted)]">
                 {trialEnds && data.subscription.status.toLowerCase() === "trialing" && (
                   <span>
-                    Trial ends <span className="font-semibold text-white/85">{trialEnds}</span>
+                    Trial ends <span className="font-semibold text-[var(--ink)]">{trialEnds}</span>
                   </span>
                 )}
                 {periodEnds && (
                   <span>
-                    Period ends <span className="font-semibold text-white/85">{periodEnds}</span>
+                    Period ends <span className="font-semibold text-[var(--ink)]">{periodEnds}</span>
                   </span>
                 )}
                 <span>
                   Usage period{" "}
-                  <span className="font-semibold text-white/85">{data.usage.period}</span>
+                  <span className="font-semibold text-[var(--ink)]">{data.usage.period}</span>
                 </span>
               </div>
 
-              <div className="mt-7 flex flex-wrap gap-2.5">
+              <div className="mt-4 flex flex-wrap gap-2">
                 <button
                   type="button"
                   onClick={() => void onManageBilling()}
                   disabled={portalBusy}
-                  className="inline-flex items-center justify-center rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-black transition hover:bg-white/90 disabled:opacity-50"
+                  className="inline-flex items-center justify-center rounded-full bg-[var(--accent)] px-3.5 py-1.5 text-xs font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-50"
                 >
                   {portalBusy ? "Opening…" : "Manage billing"}
                 </button>
                 <a
                   href="#plans"
-                  className="inline-flex items-center justify-center rounded-full border border-white/20 bg-white/5 px-5 py-2.5 text-sm font-semibold text-white backdrop-blur-sm transition hover:bg-white/10"
+                  className="inline-flex items-center justify-center rounded-full border border-[var(--line)] bg-white px-3.5 py-1.5 text-xs font-semibold text-[var(--ink)] transition hover:bg-black/[0.03]"
                 >
                   Compare plans
                 </a>
               </div>
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-white/[0.06] p-5 backdrop-blur-md sm:p-6">
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-white/50">
+            <div className="rounded-lg border border-[var(--line)] bg-[#f7f7f7] p-3.5 sm:p-4">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
                 This period
               </p>
-              <div className="mt-5 space-y-5">
+              <div className="mt-3 space-y-3.5">
                 <UsageMeter
-                  tone="dark"
                   label="AI calls"
                   used={data.usage.usage.ai_calls}
                   limit={data.usage.limits.ai_calls}
                 />
                 <UsageMeter
-                  tone="dark"
                   label="Seats"
                   used={data.usage.usage.seats}
                   limit={data.usage.limits.seats}
@@ -368,20 +352,13 @@ export default function BillingPage() {
         </section>
       )}
 
-      <section id="plans" className="hero-motion-late space-y-6">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <p className="section-label">Plans</p>
-            <h2 className="font-display mt-2 text-2xl font-extrabold tracking-tight sm:text-3xl">
-              Scale with your shop.
-            </h2>
-            <p className="mt-2 max-w-xl text-sm text-[var(--muted)]">
-              Same packages as public pricing — upgrade anytime for more AI and seats.
-            </p>
-          </div>
+      <section id="plans" className="hero-motion-late space-y-4 sm:space-y-6">
+        <div className="flex items-center gap-2">
+          <IconPlans className="h-5 w-5 shrink-0 text-[var(--muted)]" />
+          <h2 className="page-title">Plans</h2>
         </div>
 
-        <div className="grid gap-5 md:grid-cols-3">
+        <div className="grid grid-cols-3 gap-1.5 sm:gap-5">
           {plans.map((plan, index) => {
             const isCurrent = currentPlanId === plan.id;
             const isPro = plan.id === "pro";
@@ -406,9 +383,9 @@ export default function BillingPage() {
             return (
               <div
                 key={plan.id}
-                className={`group relative flex flex-col overflow-hidden rounded-2xl border bg-[var(--panel)] p-7 transition duration-300 hover:-translate-y-1 ${
+                className={`group relative flex min-w-0 flex-col overflow-hidden rounded-md border bg-[var(--panel)] p-1.5 transition duration-300 sm:rounded-xl sm:p-4 sm:hover:-translate-y-1 ${
                   isPro
-                    ? "border-[var(--accent)] shadow-[0_24px_60px_-36px_rgba(240,90,36,0.55)] ring-2 ring-[var(--accent)]/20"
+                    ? "border-[var(--accent)] shadow-[0_24px_60px_-36px_rgba(240,90,36,0.55)] ring-1 ring-[var(--accent)]/20 sm:ring-2"
                     : isCurrent
                       ? "border-black/12 shadow-[var(--shadow-soft)]"
                       : "border-[var(--line)] shadow-[0_20px_50px_-36px_rgba(0,0,0,0.28)] hover:border-black/15"
@@ -417,47 +394,41 @@ export default function BillingPage() {
               >
                 {isPro && (
                   <div
-                    className="pointer-events-none absolute -right-8 -top-10 h-36 w-36 rounded-full bg-[var(--accent-glow)] blur-2xl"
+                    className="pointer-events-none absolute -right-8 -top-10 hidden h-28 w-28 rounded-full bg-[var(--accent-glow)] blur-2xl sm:block"
                     aria-hidden
                   />
                 )}
 
-                <div className="relative flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-semibold text-[var(--accent)]">{plan.name}</p>
-                    {isPro && (
-                      <span className="mt-2 inline-flex rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em] text-[var(--accent)]">
-                        Most popular
-                      </span>
-                    )}
-                  </div>
-                  {isCurrent && (
-                    <span className="shrink-0 rounded-full bg-black px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-white">
-                      Yours
-                    </span>
-                  )}
+                <div className="relative">
+                  <p className="truncate text-[11px] font-semibold leading-tight text-[var(--accent)] sm:text-sm">
+                    {plan.name}
+                  </p>
                 </div>
 
-                <p className="font-display relative mt-4 text-5xl font-extrabold tracking-tight">
-                  {planPrice}
-                  <span className="text-base font-medium text-[var(--muted)]">/mo</span>
-                </p>
-                <p className="relative mt-3 text-sm leading-relaxed text-[var(--muted)]">
-                  {plan.description ||
-                    (plan.id === "free"
-                      ? "14-day trial for independent shops"
-                      : plan.id === "pro"
-                        ? "For growing repair shops"
-                        : "Multi-location and custom limits")}
-                </p>
+                <div className="relative mt-0.5 sm:mt-2">
+                  <p className="font-display text-sm font-extrabold leading-none tracking-tight sm:text-3xl">
+                    {planPrice}
+                    <span className="text-[9px] font-medium text-[var(--muted)] sm:text-sm">
+                      /mo
+                    </span>
+                  </p>
+                  <p className="mt-1.5 hidden text-xs leading-snug text-[var(--muted)] sm:block">
+                    {plan.description ||
+                      (plan.id === "free"
+                        ? "14-day trial for independent shops"
+                        : plan.id === "pro"
+                          ? "For growing repair shops"
+                          : "Multi-location and custom limits")}
+                  </p>
+                </div>
 
-                <ul className="relative mt-7 flex-1 space-y-3 text-sm text-[var(--muted)]">
+                <ul className="relative mt-1 space-y-0 text-[9px] leading-tight text-[var(--muted)] sm:mt-3 sm:space-y-1.5 sm:text-sm sm:leading-normal">
                   {features.map((f) => (
-                    <li key={f} className="flex gap-2.5">
-                      <span className="mt-1.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[var(--accent-soft)]">
+                    <li key={f} className="flex gap-1 sm:gap-2">
+                      <span className="mt-0.5 hidden h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-[var(--accent-soft)] sm:mt-1 sm:flex">
                         <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />
                       </span>
-                      <span>{f}</span>
+                      <span className="min-w-0 truncate sm:whitespace-normal">{f}</span>
                     </li>
                   ))}
                 </ul>
@@ -466,12 +437,10 @@ export default function BillingPage() {
                   type="button"
                   disabled={disabled}
                   onClick={() => void onCheckout(plan.id)}
-                  className={`relative mt-8 inline-flex w-full items-center justify-center rounded-full px-4 py-3 text-sm font-semibold transition disabled:opacity-50 ${
+                  className={`relative mt-1.5 inline-flex w-full items-center justify-center rounded-full px-1 py-0.5 text-[10px] font-semibold leading-tight transition disabled:opacity-50 sm:mt-4 sm:px-4 sm:py-2 sm:text-sm sm:leading-normal ${
                     isCurrent
-                      ? "border border-black/12 bg-[#f2f2f2] text-[var(--muted)]"
-                      : isPro
-                        ? "bg-[var(--accent)] text-white shadow-[0_14px_32px_-16px_rgba(240,90,36,0.9)] hover:bg-[var(--accent-hover)]"
-                        : "bg-black text-white hover:bg-[#1a1a1a]"
+                      ? "border border-[var(--accent)]/25 bg-[var(--accent-soft)] text-[var(--accent)]"
+                      : "bg-[var(--accent)] text-white shadow-[0_14px_32px_-16px_rgba(240,90,36,0.9)] hover:bg-[var(--accent-hover)]"
                   }`}
                 >
                   {ctaLabel}
@@ -482,5 +451,42 @@ export default function BillingPage() {
         </div>
       </section>
     </div>
+  );
+}
+
+function IconCard({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="2" y="5" width="20" height="14" rx="2" />
+      <path d="M2 10h20" />
+    </svg>
+  );
+}
+
+function IconPlans({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3 3.5 7.5 12 12l8.5-4.5L12 3Z" />
+      <path d="M3.5 12 12 16.5 20.5 12" />
+      <path d="M3.5 16.5 12 21l8.5-4.5" />
+    </svg>
   );
 }

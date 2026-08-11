@@ -30,7 +30,7 @@ export default function ResetPasswordPage() {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.detail || res.statusText);
-      router.replace("/login");
+      router.replace("/?login=1");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Reset failed");
     } finally {
@@ -64,7 +64,7 @@ export default function ResetPasswordPage() {
           </button>
         </form>
         <p className="mt-6 text-center text-sm text-[var(--muted)]">
-          <Link href="/login" className="text-[var(--accent)]">
+          <Link href="/?login=1" className="text-[var(--accent)]">
             Back to sign in
           </Link>
         </p>

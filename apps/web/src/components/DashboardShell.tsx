@@ -2,12 +2,16 @@
 
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
+import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { SetupGate } from "@/components/SetupGate";
 import { Sidebar } from "@/components/Sidebar";
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
+  const isHomeDashboard = pathname === "/dashboard";
+  const isSetup =
+    pathname === "/dashboard/setup" || pathname.startsWith("/dashboard/setup/");
   const lockPageScroll =
     pathname.startsWith("/dashboard/conversations") ||
     pathname.startsWith("/dashboard/customer") ||
@@ -28,9 +32,8 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     };
   }, [menuOpen]);
 
-  // Prevent document/body scroll on locked dashboard pages (inner panes scroll only).
+  // Prevent document/body scroll — shell owns the viewport; panes scroll inside.
   useEffect(() => {
-    if (!lockPageScroll && !menuOpen) return;
     const prevHtml = document.documentElement.style.overflow;
     const prevBody = document.body.style.overflow;
     document.documentElement.style.overflow = "hidden";
@@ -39,7 +42,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       document.documentElement.style.overflow = prevHtml;
       document.body.style.overflow = prevBody;
     };
-  }, [lockPageScroll, menuOpen]);
+  }, []);
 
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 768px)");
@@ -50,30 +53,29 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     return () => mq.removeEventListener("change", onChange);
   }, []);
 
+  // Close drawer when navigating via primary bottom tabs.
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [pathname]);
+
   return (
-    <div
-      className={
-        lockPageScroll
-          ? "flex h-dvh overflow-hidden"
-          : "min-h-dvh md:flex md:h-dvh md:overflow-hidden"
-      }
-    >
+    <div className="flex h-dvh min-h-0 w-full overflow-hidden">
       {menuOpen && (
         <button
           type="button"
           aria-label="Close navigation"
-          className="fixed inset-0 z-40 bg-[rgba(8,14,18,0.48)] backdrop-blur-[2px] md:hidden"
+          className="fixed inset-0 z-[48] bg-[rgba(8,14,18,0.48)] backdrop-blur-[2px] md:hidden"
           onClick={() => setMenuOpen(false)}
         />
       )}
 
-      <Sidebar mobileOpen={menuOpen} onNavigate={() => setMenuOpen(false)} />
+      <Sidebar
+        mobileOpen={menuOpen}
+        onNavigate={() => setMenuOpen(false)}
+        navLocked={isSetup}
+      />
 
-      <div
-        className={`flex min-w-0 flex-1 flex-col ${
-          lockPageScroll ? "h-full min-h-0 overflow-hidden" : "md:h-full md:min-h-0 md:overflow-hidden"
-        }`}
-      >
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <header className="sticky top-0 z-30 flex shrink-0 items-center gap-3 border-b border-[var(--line)] bg-[rgba(251,252,253,0.78)] px-4 py-3 backdrop-blur-xl sm:px-5 md:static md:bg-[rgba(251,252,253,0.55)] md:px-6 md:py-4">
           <button
             type="button"
@@ -116,14 +118,19 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
         <main
-          className={`asa-scroll flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-5 sm:py-5 md:px-7 md:py-7 [scrollbar-gutter:stable] ${
+          className={`asa-scroll flex min-h-0 flex-1 flex-col px-4 sm:px-5 md:px-7 [scrollbar-gutter:stable] ${
+            isHomeDashboard
+              ? "pt-2 pb-4 sm:pt-2.5 sm:pb-5 md:pt-3 md:pb-7"
+              : "py-4 sm:py-5 md:py-7"
+          } ${
             lockPageScroll
               ? "overflow-hidden overscroll-none"
-              : "md:overflow-y-auto md:overscroll-contain"
+              : "overflow-y-auto overscroll-contain"
           }`}
         >
           <SetupGate>{children}</SetupGate>
         </main>
+        {!isSetup && <MobileBottomNav hidden={menuOpen} />}
       </div>
     </div>
   );

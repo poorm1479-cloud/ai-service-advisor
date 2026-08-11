@@ -179,14 +179,17 @@ async def test_vehicle_history_and_communication_timeline(client: AsyncClient):
             "description": "Full synthetic oil change",
             "cost": "89.99",
             "recommendation": "Return in 5,000 miles",
+            "created_at": "2024-06-15T12:00:00Z",
         },
     )
     assert repair.status_code == 201, repair.text
+    assert repair.json()["created_at"].startswith("2024-06-15")
 
     history = await client.get(f"/v1/vehicles/{vehicle_id}/history", headers=headers)
     assert history.status_code == 200
     assert len(history.json()) == 1
     assert history.json()[0]["service_type"] == "Oil Change"
+    assert history.json()[0]["created_at"].startswith("2024-06-15")
 
     detail = await client.get(f"/v1/vehicles/{vehicle_id}", headers=headers)
     assert detail.status_code == 200

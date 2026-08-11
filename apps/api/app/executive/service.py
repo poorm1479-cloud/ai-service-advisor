@@ -27,6 +27,9 @@ class ExecutiveDashboardService:
     ) -> ExecutiveSnapshot:
         """Realtime snapshot — refresh if stale or forced."""
         async with self._lock(shop_id):
+            hydrate = getattr(self._store, "ensure_hydrated", None)
+            if callable(hydrate):
+                await hydrate(shop_id)
             existing = self._store.get_snapshot(shop_id)
             now = datetime.now(timezone.utc)
             if (

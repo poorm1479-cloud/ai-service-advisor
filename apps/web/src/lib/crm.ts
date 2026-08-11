@@ -247,6 +247,8 @@ export async function addRepairHistory(
     description: string;
     cost: number;
     recommendation?: string;
+    /** ISO datetime for when the repair was performed (defaults to now on server). */
+    created_at?: string;
   },
 ): Promise<RepairHistory> {
   const res = await authFetch(`/v1/vehicles/${vehicleId}/history`, {

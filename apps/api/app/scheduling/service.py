@@ -1,4 +1,4 @@
-"""Appointment Intelligence Service — book/reschedule/cancel + AI optimization."""
+"""Appointment Intelligence Service — book/reschedule/cancel/complete + AI optimization."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
+from app.domain.exceptions import ValidationError
 from app.scheduling.engines.availability import AvailabilityEngine
 from app.scheduling.engines.conflict import ConflictEngine
 from app.scheduling.engines.optimization import OptimizationEngine
@@ -44,6 +45,103 @@ class AppointmentIntelligenceService:
         self._optimization = optimization or OptimizationEngine(
             self._availability, self._conflict
         )
+
+    async def _catalog_list_price(
+        self,
+        shop_id: UUID,
+        service_id: UUID | None = None,
+        *,
+        skill: str | None = None,
+        service_name: str | None = None,
+    ) -> Decimal | None:
+        """Load shop catalog list price (id → name → skill). Prefer shop settings over DEFAULT_REVENUE."""
+        try:
+            from sqlalchemy import text
+
+            from app.infrastructure.database import SessionLocal
+            from app.scheduling.catalog import resolve_bookable_service
+            from app.shop_setup.service import ShopSetupService
+
+            async with SessionLocal() as session:
+                await session.execute(
+                    text("SELECT set_config('app.shop_id', :sid, true)"),
+                    {"sid": str(shop_id)},
+                )
+                if service_id is not None:
+                    try:
+                        service = await resolve_bookable_service(
+                            session, shop_id=shop_id, service_id=service_id
+                        )
+                        return Decimal(str(service.price))
+                    except Exception:  # noqa: BLE001 — fall through to name/skill
+                        logger.debug(
+                            "scheduling.catalog_price_by_id_failed shop=%s service=%s",
+                            shop_id,
+                            service_id,
+                            exc_info=True,
+                        )
+
+                services = await ShopSetupService(session).list_services(
+                    shop_id, active_only=True
+                )
+                if not services:
+                    return None
+
+                name_key = (service_name or "").strip().casefold()
+                if name_key:
+                    for row in services:
+                        if str(row.name or "").strip().casefold() == name_key:
+                            return Decimal(str(row.price))
+                    for row in services:
+                        row_name = str(row.name or "").strip().casefold()
+                        if name_key in row_name or row_name in name_key:
+                            return Decimal(str(row.price))
+
+                skill_key = (skill or "").strip().casefold()
+                if skill_key and skill_key not in {"", "general", "walk_in"}:
+                    skill_hits = [
+                        row
+                        for row in services
+                        if str(row.skill or "").strip().casefold() == skill_key
+                    ]
+                    if len(skill_hits) == 1:
+                        return Decimal(str(skill_hits[0].price))
+                    if skill_hits:
+                        # Prefer the cheapest active skill match (list price, not upsell).
+                        return min(
+                            (Decimal(str(row.price)) for row in skill_hits),
+                            default=None,
+                        )
+        except Exception:  # noqa: BLE001 — offline / tests → DEFAULT_REVENUE
+            logger.debug(
+                "scheduling.catalog_price_lookup_failed shop=%s service=%s skill=%s name=%s",
+                shop_id,
+                service_id,
+                skill,
+                service_name,
+                exc_info=True,
+            )
+        return None
+
+    async def _resolve_booking_revenue(
+        self,
+        *,
+        shop_id: UUID,
+        repair_type: str,
+        estimated_revenue: Decimal | None,
+        service_id: UUID | None = None,
+        service_name: str | None = None,
+    ) -> Decimal:
+        """Prefer explicit/catalog list price; DEFAULT_REVENUE only as last resort."""
+        override = estimated_revenue
+        if override is None:
+            override = await self._catalog_list_price(
+                shop_id,
+                service_id,
+                skill=repair_type,
+                service_name=service_name,
+            )
+        return self._optimization.estimate_revenue(repair_type, override)
 
     async def recommend_slots(
         self,
@@ -284,8 +382,12 @@ class AppointmentIntelligenceService:
                 message="Conflict detected — see alternatives",
             )
 
-        revenue = self._optimization.estimate_revenue(
-            request.repair_type, request.estimated_revenue
+        revenue = await self._resolve_booking_revenue(
+            shop_id=request.shop_id,
+            repair_type=request.repair_type,
+            estimated_revenue=request.estimated_revenue,
+            service_id=request.service_id,
+            service_name=request.service_name,
         )
         meta: dict = {
             "ai_reasons": chosen.reasons,
@@ -475,8 +577,12 @@ class AppointmentIntelligenceService:
             bay = bays[0]
             b_reasons = ["Walk-in assigned first available bay"]
 
-        revenue = self._optimization.estimate_revenue(
-            request.repair_type, request.estimated_revenue
+        revenue = await self._resolve_booking_revenue(
+            shop_id=request.shop_id,
+            repair_type=request.repair_type,
+            estimated_revenue=request.estimated_revenue,
+            service_id=request.service_id,
+            service_name=request.service_name,
         )
         reasons = list(m_reasons) + list(b_reasons) + ["Walk-in service started now"]
         meta: dict = {
@@ -600,10 +706,16 @@ class AppointmentIntelligenceService:
         repair_type: str | None = None,
         required_bay: str | None = None,
         estimated_revenue: Decimal | None = None,
+        mechanic_id: UUID | None = None,
     ) -> BookingResult:
         existing = await self._store.get_appointment(shop_id, appointment_id)
         if existing is None:
             return BookingResult(success=False, message="Appointment not found")
+        if existing.status not in self._ACTIVE_STATUSES:
+            return BookingResult(
+                success=False,
+                message=f"Cannot reschedule {existing.status} appointment",
+            )
 
         # Free the current slot only while we attempt rebook; restore on failure.
         original_status = existing.status
@@ -634,6 +746,14 @@ class AppointmentIntelligenceService:
             if estimated_revenue is not None
             else existing.estimated_revenue
         )
+        if estimated_revenue is None and service_id is not None and service_id != existing.service_id:
+            looked_up = await self._catalog_list_price(shop_id, service_id)
+            if looked_up is not None:
+                next_revenue = looked_up
+        # Drag-drop / explicit assignee wins; otherwise keep the current mechanic.
+        next_mechanic = (
+            mechanic_id if mechanic_id is not None else existing.mechanic_id
+        )
         booking = BookingRequest(
             shop_id=shop_id,
             preferred_start=target_start,
@@ -651,6 +771,7 @@ class AppointmentIntelligenceService:
             notes=f"Rescheduled from {existing.id}",
             walk_in_id=existing.walk_in_id,
             estimated_revenue=next_revenue,
+            mechanic_id=next_mechanic,
         )
         result = await self.book(booking)
         # Catalog bay types may have changed since original book — retry soft.
@@ -687,12 +808,7 @@ class AppointmentIntelligenceService:
         if existing is None:
             return BookingResult(success=False, message="Appointment not found")
 
-        active = {
-            AppointmentStatus.BOOKED.value,
-            AppointmentStatus.CONFIRMED.value,
-            AppointmentStatus.IN_PROGRESS.value,
-        }
-        if existing.status not in active:
+        if existing.status not in self._ACTIVE_STATUSES:
             return BookingResult(
                 success=False,
                 message=f"Cannot change service on {existing.status} appointment",
@@ -777,6 +893,10 @@ class AppointmentIntelligenceService:
         appt = await self._store.get_appointment(shop_id, appointment_id)
         if appt is None:
             return None
+        if appt.status not in self._ACTIVE_STATUSES:
+            raise ValidationError(
+                f"Cannot cancel appointment with status '{appt.status}'"
+            )
         appt.status = AppointmentStatus.CANCELLED.value
         if reason:
             appt.notes = f"{appt.notes or ''} | Cancelled: {reason}".strip(" |")
@@ -800,6 +920,99 @@ class AppointmentIntelligenceService:
         except Exception:  # noqa: BLE001
             logger.exception("workflow.emit appointment.cancelled failed")
         return updated
+
+    async def complete(
+        self, *, shop_id: UUID, appointment_id: UUID, notes: str | None = None
+    ) -> Appointment | None:
+        """Mark reserved work finished. Idempotent when already completed."""
+        appt = await self._store.get_appointment(shop_id, appointment_id)
+        if appt is None:
+            return None
+        if appt.status == AppointmentStatus.COMPLETED.value:
+            return appt
+        if appt.status in {
+            AppointmentStatus.CANCELLED.value,
+            AppointmentStatus.RESCHEDULED.value,
+            AppointmentStatus.NO_SHOW.value,
+        }:
+            raise ValidationError(
+                f"Cannot complete appointment with status '{appt.status}'"
+            )
+        appt.status = AppointmentStatus.COMPLETED.value
+        if notes:
+            appt.notes = f"{appt.notes or ''} | Completed: {notes}".strip(" |")
+        updated = await self._store.update_appointment(appt)
+        try:
+            from app.workflows.emitter import emit_domain_event
+            from app.workflows.enums import DomainEventType
+
+            await emit_domain_event(
+                shop_id=shop_id,
+                event_type=DomainEventType.APPOINTMENT_COMPLETED,
+                payload={
+                    "appointment_id": str(appt.id),
+                    "customer_id": str(appt.customer_id) if appt.customer_id else None,
+                    "vehicle_id": str(appt.vehicle_id) if appt.vehicle_id else None,
+                    "walk_in_id": str(appt.walk_in_id) if appt.walk_in_id else None,
+                    "estimated_revenue": str(appt.estimated_revenue),
+                },
+                source="scheduling",
+                correlation_id=str(appt.id),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("workflow.emit appointment.completed failed")
+        return updated
+
+    _ACTIVE_STATUSES = frozenset(
+        {
+            AppointmentStatus.BOOKED.value,
+            AppointmentStatus.CONFIRMED.value,
+            AppointmentStatus.IN_PROGRESS.value,
+        }
+    )
+
+    async def complete_elapsed(
+        self,
+        *,
+        shop_id: UUID,
+        now: datetime | None = None,
+    ) -> list[Appointment]:
+        """Auto-complete active appointments whose scheduled end time has passed."""
+        cursor = now or datetime.now(timezone.utc)
+        if cursor.tzinfo is None:
+            cursor = cursor.replace(tzinfo=timezone.utc)
+        else:
+            cursor = cursor.astimezone(timezone.utc)
+
+        appts = await self._store.list_appointments(shop_id)
+        done: list[Appointment] = []
+        for appt in appts:
+            if appt.status not in self._ACTIVE_STATUSES:
+                continue
+            end = appt.end
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=timezone.utc)
+            else:
+                end = end.astimezone(timezone.utc)
+            if end > cursor:
+                continue
+            updated = await self.complete(
+                shop_id=shop_id,
+                appointment_id=appt.id,
+                notes="Auto-completed after scheduled end",
+            )
+            if updated is not None:
+                done.append(updated)
+        return done
+
+    async def walk_in_has_active_work(
+        self, *, shop_id: UUID, walk_in_id: UUID
+    ) -> bool:
+        """True when the walk-in still has booked/confirmed/in-progress appointments."""
+        appts = await self._store.list_appointments(shop_id)
+        return any(
+            a.walk_in_id == walk_in_id and a.status in self._ACTIVE_STATUSES for a in appts
+        )
 
     async def get_appointment(self, shop_id: UUID, appointment_id: UUID) -> Appointment | None:
         return await self._store.get_appointment(shop_id, appointment_id)

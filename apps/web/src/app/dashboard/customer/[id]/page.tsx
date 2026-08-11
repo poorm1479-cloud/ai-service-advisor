@@ -3,6 +3,7 @@
 import Link from "next/link";
 import {
   FormEvent,
+  PointerEvent as ReactPointerEvent,
   ReactNode,
   Suspense,
   useCallback,
@@ -29,9 +30,14 @@ import {
   Vehicle,
 } from "@/lib/crm";
 import { useAuth } from "@/lib/auth";
-import { VinInput } from "@/components/VinInput";
-import { formatPhoneInput, PHONE_PLACEHOLDER } from "@/lib/phone";
+import dynamic from "next/dynamic";
+import { formatPhoneInput, PHONE_PLACEHOLDER, phonesMatch } from "@/lib/phone";
 import { deleteVoiceCall, listVoiceCalls, VoiceCall } from "@/lib/calls";
+import {
+  deleteSmsConversation,
+  listSmsConversations,
+  SmsConversation,
+} from "@/lib/sms";
 import {
   formatPrice,
   listShopServices,
@@ -39,11 +45,27 @@ import {
 } from "@/lib/shopSetup";
 import { vinAssist } from "@/lib/walkin";
 
+/** VIN scanner pulls zxing/tesseract — load only when Add/Edit vehicle opens. */
+const VinInput = dynamic(
+  () => import("@/components/VinInput").then((m) => m.VinInput),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="space-y-2 sm:col-span-2 lg:col-span-2">
+        <div className="h-10 animate-pulse rounded-lg bg-[var(--background)]" />
+      </div>
+    ),
+  },
+);
+
 const DETAIL_TABS = [
   { id: "profile", label: "Profile" },
   { id: "repairs", label: "Repair history" },
   { id: "conversations", label: "Conversations" },
 ] as const;
+
+/** Minimum horizontal drag distance (px) to change detail tabs. */
+const TAB_SWIPE_THRESHOLD_PX = 56;
 
 type DetailTab = (typeof DETAIL_TABS)[number]["id"];
 
@@ -94,6 +116,29 @@ function IconCar({ className = "h-4 w-4" }: { className?: string }) {
       <path d="M21 17h-2v-2" />
       <circle cx="7.5" cy="17.5" r="1.5" />
       <circle cx="16.5" cy="17.5" r="1.5" />
+    </svg>
+  );
+}
+
+function IconCarPlus({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {/* Car left, vertically centered with + (same + as IconUserPlus) */}
+      <path d="M1.5 13.5h12v-3.2L12.3 7A1.5 1.5 0 0 0 10.9 6H5.1A1.5 1.5 0 0 0 3.7 7L2.3 10.3v3.2Z" />
+      <path d="M1.5 13.5H.25v-1.4" />
+      <path d="M13.5 13.5h-1.25v-1.4" />
+      <circle cx="4.25" cy="14" r="1.2" />
+      <circle cx="10.75" cy="14" r="1.2" />
+      <path d="M19 8v6M16 11h6" />
     </svg>
   );
 }
@@ -241,6 +286,25 @@ function IconWrench({ className = "h-4 w-4" }: { className?: string }) {
   );
 }
 
+function IconWrenchPlus({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {/* Wrench left, + right — extra gap between glyph and plus */}
+      <path d="M8.8 7.2a.7.7 0 0 0 0 1l1.05 1.05a.7.7 0 0 0 1 0l2.05-2.05a3.5 3.5 0 0 1-4.6 4.6L3.25 16a1.2 1.2 0 0 1-1.7-1.7l4.05-4.05a3.5 3.5 0 0 1 4.6-4.6L8.8 7.2Z" />
+      <path d="M20 8v6M17 11h6" />
+    </svg>
+  );
+}
+
 function IconTrash({ className = "h-4 w-4" }: { className?: string }) {
   return (
     <svg
@@ -367,6 +431,7 @@ type RepairWithVehicle = RepairHistory & { vehicle_label: string };
 
 type DeleteConversationTarget =
   | { kind: "call"; call: VoiceCall }
+  | { kind: "sms"; sms: SmsConversation }
   | { kind: "comm"; comm: Communication };
 
 type RepairServiceLine = {
@@ -390,6 +455,22 @@ function emptyRepairLine(partial?: Partial<RepairServiceLine>): RepairServiceLin
   };
 }
 
+/** Local calendar date as YYYY-MM-DD for `<input type="date">`. */
+function todayDateInputValue(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** Convert YYYY-MM-DD to ISO using local noon (stable across timezones when shown as a date). */
+function dateInputToIso(dateStr: string): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  if (!y || !m || !d) return new Date().toISOString();
+  return new Date(y, m - 1, d, 12, 0, 0).toISOString();
+}
+
 export function CustomerDetailContent({
   customerId: customerIdProp,
   embedded = false,
@@ -410,6 +491,8 @@ export function CustomerDetailContent({
   const [detail, setDetail] = useState<CustomerDetail | null>(null);
   const [repairs, setRepairs] = useState<RepairWithVehicle[]>([]);
   const [voiceCalls, setVoiceCalls] = useState<VoiceCall[]>([]);
+  const [smsConversations, setSmsConversations] = useState<SmsConversation[]>([]);
+  const [conversationsLoading, setConversationsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -438,10 +521,71 @@ export function CustomerDetailContent({
     [pathname, router, searchParams],
   );
 
+  /** Horizontal click-drag / swipe switches adjacent detail tabs. */
+  const swipeRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+
+  const onSwipePointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const el = e.target as HTMLElement | null;
+    if (
+      el?.closest(
+        "input, textarea, select, button, a, label, [role='tab'], [role='dialog'], [aria-modal='true'], [contenteditable='true']",
+      )
+    ) {
+      return;
+    }
+    // Avoid highlighting body copy while click-dragging to change tabs.
+    window.getSelection()?.removeAllRanges();
+    swipeRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, []);
+
+  const onSwipePointerUp = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      const start = swipeRef.current;
+      swipeRef.current = null;
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+      if (!start || start.pointerId !== e.pointerId) return;
+
+      const dx = e.clientX - start.startX;
+      const dy = e.clientY - start.startY;
+      if (Math.abs(dx) < TAB_SWIPE_THRESHOLD_PX) return;
+      // Prefer vertical scroll when the gesture is mostly vertical.
+      if (Math.abs(dx) < Math.abs(dy) * 1.15) return;
+
+      const idx = DETAIL_TABS.findIndex((t) => t.id === tab);
+      if (idx < 0) return;
+      if (dx < 0 && idx < DETAIL_TABS.length - 1) {
+        selectTab(DETAIL_TABS[idx + 1].id);
+      } else if (dx > 0 && idx > 0) {
+        selectTab(DETAIL_TABS[idx - 1].id);
+      }
+    },
+    [selectTab, tab],
+  );
+
+  const onSwipePointerCancel = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    swipeRef.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  }, []);
+
   const [editName, setEditName] = useState("");
   const [editPhone, setEditPhone] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [editAddress, setEditAddress] = useState("");
+  const [profileEditing, setProfileEditing] = useState(false);
 
   const [vin, setVin] = useState("");
   const [plate, setPlate] = useState("");
@@ -467,6 +611,8 @@ export function CustomerDetailContent({
     emptyRepairLine(),
   ]);
   const [repairDescription, setRepairDescription] = useState("");
+  const [repairRecommendation, setRepairRecommendation] = useState("");
+  const [repairDate, setRepairDate] = useState(todayDateInputValue);
   /** After adding a vehicle from the Repair tab, open the repair modal. */
   const [openRepairAfterVehicle, setOpenRepairAfterVehicle] = useState(false);
   const [vinStatus, setVinStatus] = useState<string | null>(null);
@@ -476,6 +622,8 @@ export function CustomerDetailContent({
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setVoiceCalls([]);
+    setSmsConversations([]);
     try {
       const data = await getCustomerDetail(customerId);
       const vehicleById = new Map(data.vehicles.map((v) => [v.id, v]));
@@ -500,21 +648,61 @@ export function CustomerDetailContent({
       setEditEmail(data.customer.email ?? "");
       setEditAddress(data.customer.address ?? "");
       setLoading(false);
-
-      // Secondary tabs — do not block first paint
-      const callsAll = await listVoiceCalls().catch(() => [] as VoiceCall[]);
-      setVoiceCalls(callsAll.filter((c) => c.customer_id === customerId));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load customer");
       setLoading(false);
     }
   }, [customerId]);
 
+  const loadConversations = useCallback(async () => {
+    if (!detail) return;
+    setConversationsLoading(true);
+    // Match Conversations by customer_id OR phone (many calls/SMS lack customer_id).
+    const customerPhone = detail.customer.phone;
+    const belongsToCustomer = (opts: {
+      customer_id: string | null;
+      phone: string | null | undefined;
+    }) =>
+      opts.customer_id === customerId ||
+      (!!customerPhone && phonesMatch(opts.phone, customerPhone));
+
+    try {
+      const [callsAll, smsAll] = await Promise.all([
+        listVoiceCalls().catch(() => [] as VoiceCall[]),
+        listSmsConversations().catch(() => [] as SmsConversation[]),
+      ]);
+      setVoiceCalls(
+        callsAll.filter((c) =>
+          belongsToCustomer({
+            customer_id: c.customer_id,
+            phone: c.caller_phone,
+          }),
+        ),
+      );
+      setSmsConversations(
+        smsAll.filter((c) =>
+          belongsToCustomer({
+            customer_id: c.customer_id,
+            phone: c.customer_phone,
+          }),
+        ),
+      );
+    } finally {
+      setConversationsLoading(false);
+    }
+  }, [customerId, detail]);
+
   useEffect(() => {
     if (!authLoading && session && customerId) {
       void load();
     }
   }, [authLoading, session, customerId, load]);
+
+  // Conversations tab only — avoid listing all calls/SMS on every profile open.
+  useEffect(() => {
+    if (tab !== "conversations" || !detail || authLoading || !session) return;
+    void loadConversations();
+  }, [tab, detail, authLoading, session, loadConversations]);
 
   useEffect(() => {
     if (authLoading || !session) return;
@@ -571,6 +759,7 @@ export function CustomerDetailContent({
   const conversationTimeline = useMemo(() => {
     type Item =
       | { kind: "call"; id: string; at: number; call: VoiceCall }
+      | { kind: "sms"; id: string; at: number; sms: SmsConversation }
       | { kind: "comm"; id: string; at: number; comm: Communication };
 
     const items: Item[] = [];
@@ -584,7 +773,24 @@ export function CustomerDetailContent({
         call,
       });
     }
+    for (const sms of smsConversations) {
+      const raw = sms.last_message_at || sms.created_at;
+      const at = raw ? new Date(raw).getTime() : 0;
+      items.push({
+        kind: "sms",
+        id: `sms-${sms.id}`,
+        at: Number.isFinite(at) ? at : 0,
+        sms,
+      });
+    }
     for (const comm of detail?.communications ?? []) {
+      // Skip SMS CRM rows when the thread already appears as an SmsConversation
+      if (
+        comm.channel === "sms" &&
+        smsConversations.length > 0
+      ) {
+        continue;
+      }
       const at = comm.created_at ? new Date(comm.created_at).getTime() : 0;
       items.push({
         kind: "comm",
@@ -595,15 +801,37 @@ export function CustomerDetailContent({
     }
     items.sort((a, b) => b.at - a.at);
     return items;
-  }, [voiceCalls, detail?.communications]);
+  }, [voiceCalls, smsConversations, detail?.communications]);
+
+  const otherMessageCount = useMemo(() => {
+    const comms = detail?.communications ?? [];
+    if (smsConversations.length > 0) {
+      return comms.filter((c) => c.channel !== "sms").length;
+    }
+    return comms.length;
+  }, [detail?.communications, smsConversations.length]);
 
   useEffect(() => {
     if (profileDirty) setSuccess(null);
   }, [profileDirty]);
 
+  function resetProfileFields() {
+    if (!detail) return;
+    setEditName(detail.customer.name);
+    setEditPhone(formatPhoneInput(detail.customer.phone ?? ""));
+    setEditEmail(detail.customer.email ?? "");
+    setEditAddress(detail.customer.address ?? "");
+  }
+
+  function cancelProfileEdit() {
+    resetProfileFields();
+    setProfileEditing(false);
+    setError(null);
+  }
+
   async function onSaveCustomer(e: FormEvent) {
     e.preventDefault();
-    if (!profileDirty) return;
+    if (!profileEditing || !profileDirty) return;
     setError(null);
     setSuccess(null);
     try {
@@ -614,6 +842,7 @@ export function CustomerDetailContent({
         address: editAddress.trim() || null,
       });
       await load();
+      setProfileEditing(false);
       setSuccess("Customer profile updated.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Update failed");
@@ -722,6 +951,30 @@ export function CustomerDetailContent({
     // do not linger on the customer detail page after close.
     setError(null);
   }
+
+  useEffect(() => {
+    if (!vehicleModal) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (vehicleSaving || deletingVehicleId) return;
+      e.preventDefault();
+      setVehicleModal(null);
+      setOpenRepairAfterVehicle(false);
+      vinAssistSeq.current += 1;
+      setVin("");
+      setPlate("");
+      setYear("");
+      setMake("");
+      setModel("");
+      setMileage("");
+      setEditingVehicleId(null);
+      setVinStatus(null);
+      setVinLooking(false);
+      setError(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [vehicleModal, vehicleSaving, deletingVehicleId]);
 
   async function onSaveVehicle(e: FormEvent) {
     e.preventDefault();
@@ -857,7 +1110,13 @@ export function CustomerDetailContent({
       if (target.kind === "call") {
         await deleteVoiceCall(target.call.id);
         setVoiceCalls((prev) => prev.filter((c) => c.id !== target.call.id));
-        setSuccess("Call deleted.");
+        setSuccess("Call history deleted.");
+      } else if (target.kind === "sms") {
+        await deleteSmsConversation(target.sms.id);
+        setSmsConversations((prev) =>
+          prev.filter((c) => c.id !== target.sms.id),
+        );
+        setSuccess("SMS conversation deleted.");
       } else {
         await deleteCommunication(customerId, target.comm.id);
         setDetail((prev) =>
@@ -887,6 +1146,8 @@ export function CustomerDetailContent({
     setRepairVehicleId(list[0]?.id ?? "");
     setRepairLines([emptyRepairLine()]);
     setRepairDescription("");
+    setRepairRecommendation("");
+    setRepairDate(todayDateInputValue());
   }
 
   function openAddRepairModal() {
@@ -964,17 +1225,25 @@ export function CustomerDetailContent({
         return;
       }
     }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(repairDate)) {
+      setError("Select a valid repair date.");
+      return;
+    }
 
     setRepairSaving(true);
     setError(null);
     setSuccess(null);
     try {
       const description = repairDescription.trim();
+      const recommendation = repairRecommendation.trim() || undefined;
+      const created_at = dateInputToIso(repairDate);
       for (const line of lines) {
         await addRepairHistory(repairVehicleId, {
           service_type: line.service_type,
           description,
           cost: line.cost,
+          recommendation,
+          created_at,
         });
       }
       setRepairModalOpen(false);
@@ -1047,14 +1316,17 @@ export function CustomerDetailContent({
 
   return (
     <div
-      className={`flex min-h-0 flex-1 flex-col overflow-hidden md:h-full ${
+      className={`flex min-h-0 flex-1 flex-col overflow-hidden touch-pan-y select-none md:h-full [&_input]:select-text [&_textarea]:select-text ${
         embedded ? "surface-panel" : "gap-4"
       }`}
+      onPointerDown={onSwipePointerDown}
+      onPointerUp={onSwipePointerUp}
+      onPointerCancel={onSwipePointerCancel}
     >
       <div
         className={`shrink-0 ${
           embedded
-            ? "border-b border-[var(--line)] bg-gradient-to-br from-white via-white to-[var(--accent-soft)]/40 px-4 py-4 sm:px-5"
+            ? "border-b border-[var(--line)] bg-gradient-to-br from-white via-white to-[var(--accent-soft)]/40 px-3 py-3 sm:px-4"
             : ""
         }`}
       >
@@ -1062,7 +1334,7 @@ export function CustomerDetailContent({
           <button
             type="button"
             onClick={() => onBack?.()}
-            className="mb-2 text-xs font-medium text-[var(--accent)] lg:hidden"
+            className="mb-1.5 text-xs font-medium text-[var(--accent)] lg:hidden"
           >
             ← list
           </button>
@@ -1075,21 +1347,33 @@ export function CustomerDetailContent({
           </Link>
         )}
 
-        <div className={`flex flex-wrap items-center justify-between gap-4 ${embedded ? "" : "mt-2"}`}>
-          <div className="flex min-w-0 items-center gap-3">
+        <div className={`flex flex-wrap items-center justify-between gap-3 ${embedded ? "" : "mt-2"}`}>
+          <div className="flex min-w-0 items-center gap-2.5">
             <span
-              className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-sm font-semibold tracking-wide text-white shadow-sm"
+              className={`inline-flex shrink-0 items-center justify-center rounded-full bg-[var(--accent)] font-semibold tracking-wide text-white shadow-sm ${
+                embedded
+                  ? "h-9 w-9 text-xs"
+                  : "h-12 w-12 text-sm"
+              }`}
               aria-hidden="true"
             >
               {customerInitials(detail.customer.name)}
             </span>
             <div className="min-w-0">
-              <h1 className="page-title truncate">{detail.customer.name}</h1>
+              <h1
+                className={`truncate ${
+                  embedded ? "page-title text-lg sm:text-xl" : "page-title"
+                }`}
+              >
+                {detail.customer.name}
+              </h1>
             </div>
           </div>
 
           <div
-            className="inline-flex rounded-full border border-[var(--line)] bg-white/80 p-1 shadow-sm backdrop-blur-sm"
+            className={`inline-flex rounded-full border border-[var(--line)] bg-white/80 shadow-sm backdrop-blur-sm ${
+              embedded ? "p-0.5" : "p-1"
+            }`}
             role="tablist"
             aria-label="Customer detail sections"
           >
@@ -1100,7 +1384,11 @@ export function CustomerDetailContent({
                 role="tab"
                 aria-selected={tab === t.id}
                 onClick={() => selectTab(t.id)}
-                className={`rounded-full px-3.5 py-1.5 text-sm font-medium transition ${
+                className={`rounded-full font-medium transition ${
+                  embedded
+                    ? "px-2.5 py-1 text-xs"
+                    : "px-3.5 py-1.5 text-sm"
+                } ${
                   tab === t.id
                     ? "bg-[var(--accent)] text-white shadow-sm"
                     : "text-[var(--muted)] hover:text-[var(--foreground)]"
@@ -1122,7 +1410,7 @@ export function CustomerDetailContent({
         !deleteConversationTarget && (
         <p
           className={`shrink-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 ${
-            embedded ? "mx-4 mt-4 sm:mx-5" : ""
+            embedded ? "mx-3 mt-3 sm:mx-4" : ""
           }`}
           role="alert"
         >
@@ -1138,7 +1426,7 @@ export function CustomerDetailContent({
         !deleteConversationTarget && (
         <p
           className={`shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800 ${
-            embedded ? "mx-4 mt-4 sm:mx-5" : ""
+            embedded ? "mx-3 mt-3 sm:mx-4" : ""
           }`}
           role="status"
         >
@@ -1147,13 +1435,27 @@ export function CustomerDetailContent({
       )}
 
       <div
-        className={`asa-scroll min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain [scrollbar-gutter:auto] ${
-          embedded ? "px-4 py-4 sm:px-5 sm:py-5" : ""
+        className={`min-h-0 flex-1 overscroll-contain [scrollbar-gutter:auto] ${
+          tab === "profile" || tab === "repairs"
+            ? "flex flex-col overflow-hidden"
+            : "asa-scroll overflow-y-auto"
+        } ${
+          embedded
+            ? tab === "profile"
+              ? "gap-4 px-3 py-3 sm:px-4 sm:py-4"
+              : tab === "repairs"
+                ? ""
+                : "space-y-4 px-3 py-3 sm:px-4 sm:py-4"
+            : tab === "profile"
+              ? "gap-6"
+              : tab === "repairs"
+                ? ""
+                : "space-y-6"
         }`}
       >
       {tab === "profile" && (
-        <div className="space-y-6">
-          <section className={embedded ? "space-y-3" : "surface-panel p-4 sm:p-5"}>
+        <div className={`flex min-h-0 flex-1 flex-col ${embedded ? "gap-4" : "gap-6"}`}>
+          <section className={`shrink-0 ${embedded ? "space-y-3" : "surface-panel p-4 sm:p-5"}`}>
             <form
               onSubmit={onSaveCustomer}
               className="grid gap-3 sm:grid-cols-2"
@@ -1164,6 +1466,7 @@ export function CustomerDetailContent({
                 value={editName}
                 onChange={setEditName}
                 required
+                disabled={!profileEditing}
               />
               <Field
                 label="Phone"
@@ -1172,6 +1475,7 @@ export function CustomerDetailContent({
                 value={editPhone}
                 onChange={(v) => setEditPhone(formatPhoneInput(v))}
                 placeholder={PHONE_PLACEHOLDER}
+                disabled={!profileEditing}
               />
               <Field
                 label="Email"
@@ -1179,22 +1483,48 @@ export function CustomerDetailContent({
                 type="email"
                 value={editEmail}
                 onChange={setEditEmail}
+                disabled={!profileEditing}
               />
               <Field
                 label="Address"
                 icon={<IconMapPin />}
                 value={editAddress}
                 onChange={setEditAddress}
+                disabled={!profileEditing}
               />
               <div className="sm:col-span-2 flex flex-wrap items-center gap-3">
-                <button
-                  type="submit"
-                  disabled={!profileDirty}
-                  className="btn-primary inline-flex items-center gap-1.5 px-4 py-2 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <IconSave />
-                  Save
-                </button>
+                {profileEditing ? (
+                  <>
+                    <button
+                      type="submit"
+                      disabled={!profileDirty}
+                      className="btn-primary inline-flex items-center gap-1.5 px-4 py-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <IconSave />
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={cancelProfileEdit}
+                      className="btn-ghost inline-flex items-center gap-1.5 px-4 py-2 text-sm"
+                    >
+                      <IconCancel />
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSuccess(null);
+                      setProfileEditing(true);
+                    }}
+                    className="btn-primary inline-flex items-center gap-1.5 px-4 py-2"
+                  >
+                    <IconPencil className="h-4 w-4" />
+                    Edit
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -1211,9 +1541,9 @@ export function CustomerDetailContent({
             </form>
           </section>
 
-          <section className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
+          <section className="flex flex-col gap-2 max-md:shrink-0 md:min-h-0 md:flex-1">
+            <div className="flex shrink-0 items-start justify-between gap-3">
+              <div className="min-w-0">
                 <h2 className="text-sm font-semibold">Vehicles</h2>
                 <p className="mt-0.5 text-xs text-[var(--muted)]">
                   VIN, plate, and mileage for this customer
@@ -1222,99 +1552,103 @@ export function CustomerDetailContent({
               <button
                 type="button"
                 onClick={openAddVehicleModal}
-                className="btn-primary inline-flex items-center gap-1.5 px-4 py-2"
+                aria-label="Add vehicle"
+                className="btn-primary mr-3 inline-flex h-10 w-10 shrink-0 items-center justify-center p-0 sm:mr-4"
               >
-                <IconPlus className="h-3.5 w-3.5" />
-                Add
+                <IconCarPlus className="h-5 w-5" />
               </button>
             </div>
 
-            {detail.vehicles.length === 0 ? (
-              <div className="flex flex-col items-center rounded-xl border border-dashed border-[var(--line)] bg-[var(--background)]/50 px-6 py-10 text-center">
-                <span className="mb-3 inline-flex h-11 w-11 items-center justify-center rounded-full bg-white text-[var(--muted)] ring-1 ring-[var(--line)]">
-                  <IconCar className="h-5 w-5" />
-                </span>
-                <p className="text-sm font-medium">No vehicles yet</p>
-                <p className="mt-1 text-xs text-[var(--muted)]">
-                  Add a vehicle to log repair history and service visits.
-                </p>
-              </div>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2">
-                {detail.vehicles.map((v) => (
-                  <article
-                    key={v.id}
-                    className="group rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 shadow-[var(--shadow-soft)] transition hover:border-[var(--accent)]/35"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex min-w-0 items-start gap-3">
-                        <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)]">
-                          <IconCar />
-                        </span>
-                        <div className="min-w-0">
-                          <h3 className="truncate text-sm font-semibold">
-                            {vehicleLabel(v)}
-                          </h3>
-                          <p className="mt-0.5 font-mono text-[11px] text-[var(--muted)]">
-                            {v.vin}
-                          </p>
+            <div className="overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--background)]/30 p-2.5 md:flex md:min-h-0 md:flex-1 md:flex-col">
+              <div className="asa-scroll max-h-[9.5rem] overflow-y-auto overscroll-contain [scrollbar-gutter:auto] md:max-h-none md:min-h-0 md:flex-1">
+                {detail.vehicles.length === 0 ? (
+                  <div className="flex h-[9.5rem] flex-col items-center justify-center px-3 text-center md:h-full md:min-h-[9.5rem]">
+                    <span className="mb-2 inline-flex h-9 w-9 items-center justify-center rounded-full bg-white text-[var(--muted)] ring-1 ring-[var(--line)]">
+                      <IconCar className="h-4 w-4" />
+                    </span>
+                    <p className="text-sm font-medium">No vehicles yet</p>
+                    <p className="mt-0.5 text-xs text-[var(--muted)]">
+                      Add a vehicle to log repair history and service visits.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {detail.vehicles.map((v) => (
+                      <article
+                        key={v.id}
+                        className="group rounded-xl border border-[var(--line)] bg-[var(--panel)] p-3 shadow-[var(--shadow-soft)] transition hover:border-[var(--accent)]/35"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex min-w-0 items-start gap-2.5">
+                            <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)]">
+                              <IconCar className="h-3.5 w-3.5" />
+                            </span>
+                            <div className="min-w-0">
+                              <h3 className="truncate text-sm font-semibold">
+                                {vehicleLabel(v)}
+                              </h3>
+                              <p className="mt-0.5 font-mono text-[11px] text-[var(--muted)]">
+                                {v.vin}
+                              </p>
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    </div>
-                    <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                      <div className="rounded-lg bg-[var(--background)]/70 px-2.5 py-2">
-                        <dt className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--muted)]">
-                          Plate
-                        </dt>
-                        <dd className="mt-0.5 font-medium">
-                          {v.license_plate ?? "—"}
-                        </dd>
-                      </div>
-                      <div className="rounded-lg bg-[var(--background)]/70 px-2.5 py-2">
-                        <dt className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--muted)]">
-                          Mileage
-                        </dt>
-                        <dd className="mt-0.5 font-medium tabular-nums">
-                          {v.mileage.toLocaleString()}
-                        </dd>
-                      </div>
-                    </dl>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => openEditVehicleModal(v)}
-                        disabled={deletingVehicleId === v.id}
-                        className="inline-flex items-center gap-1.5 rounded-full border border-[var(--line)] px-3 py-1 text-xs font-medium hover:border-[var(--accent)]/40 disabled:opacity-60"
-                      >
-                        <IconPencil />
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setError(null);
-                          setDeleteVehicleTarget(v);
-                        }}
-                        disabled={deletingVehicleId === v.id}
-                        className="inline-flex items-center gap-1.5 rounded-full border border-red-200 px-3 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60"
-                      >
-                        <IconTrash className="h-3.5 w-3.5" />
-                        {deletingVehicleId === v.id ? "Deleting…" : "Delete"}
-                      </button>
-                    </div>
-                  </article>
-                ))}
+                        <dl className="mt-2 grid grid-cols-2 gap-1.5 text-xs">
+                          <div className="rounded-lg bg-[var(--background)]/70 px-2 py-1.5">
+                            <dt className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--muted)]">
+                              Plate
+                            </dt>
+                            <dd className="mt-0.5 font-medium">
+                              {v.license_plate ?? "—"}
+                            </dd>
+                          </div>
+                          <div className="rounded-lg bg-[var(--background)]/70 px-2 py-1.5">
+                            <dt className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--muted)]">
+                              Mileage
+                            </dt>
+                            <dd className="mt-0.5 font-medium tabular-nums">
+                              {v.mileage.toLocaleString()}
+                            </dd>
+                          </div>
+                        </dl>
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => openEditVehicleModal(v)}
+                            disabled={deletingVehicleId === v.id}
+                            className="inline-flex items-center gap-1.5 rounded-full border border-[var(--line)] px-2.5 py-0.5 text-xs font-medium hover:border-[var(--accent)]/40 disabled:opacity-60"
+                          >
+                            <IconPencil />
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setError(null);
+                              setDeleteVehicleTarget(v);
+                            }}
+                            disabled={deletingVehicleId === v.id}
+                            className="inline-flex items-center gap-1.5 rounded-full border border-red-200 px-2.5 py-0.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60"
+                          >
+                            <IconTrash className="h-3.5 w-3.5" />
+                            {deletingVehicleId === v.id ? "Deleting…" : "Delete"}
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
               </div>
-            )}
+            </div>
           </section>
         </div>
       )}
 
       {tab === "repairs" && (
-        <section className={embedded ? "-mx-4 sm:-mx-5" : "space-y-4"}>
+        <section className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
           <div
-            className={`table-scroll [scrollbar-gutter:auto] ${
-              embedded ? "rounded-none border-x-0 shadow-none" : ""
+            className={`table-scroll asa-scroll min-h-0 flex-1 overflow-auto overscroll-contain pb-16 [scrollbar-gutter:auto] ${
+              embedded ? "rounded-none border-0 shadow-none" : ""
             }`}
           >
             <table>
@@ -1325,16 +1659,8 @@ export function CustomerDetailContent({
                   <th className="px-4 py-3 sm:px-5">Service</th>
                   <th className="px-4 py-3 sm:px-5">Description</th>
                   <th className="px-4 py-3 sm:px-5">Cost</th>
-                  <th className="px-4 py-3 sm:px-5">
-                    <button
-                      type="button"
-                      onClick={openAddRepairModal}
-                      aria-label="Add repair"
-                      title="Add repair"
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[var(--line)] text-[var(--foreground)] shadow-[var(--shadow-soft)] transition hover:border-[var(--accent)]/40 hover:bg-[var(--accent)] hover:text-white"
-                    >
-                      <IconPlus className="h-3.5 w-3.5" />
-                    </button>
+                  <th className="w-14 px-4 py-3 sm:px-5">
+                    <span className="sr-only">Actions</span>
                   </th>
                 </tr>
               </thead>
@@ -1403,24 +1729,46 @@ export function CustomerDetailContent({
               </tbody>
             </table>
           </div>
+          <button
+            type="button"
+            onClick={openAddRepairModal}
+            aria-label="Add repair"
+            className="btn-primary absolute bottom-3 right-3 z-10 inline-flex h-11 w-11 items-center justify-center p-0 shadow-md"
+          >
+            <IconWrenchPlus className="h-5 w-5" />
+          </button>
         </section>
       )}
 
       {tab === "conversations" && (
         <section className="space-y-5">
+          {conversationsLoading && conversationTimeline.length === 0 ? (
+            <div className="animate-pulse space-y-3 rounded-xl border border-[var(--line)] bg-[var(--background)]/50 p-5">
+              <div className="h-4 w-40 rounded bg-[var(--background)]" />
+              <div className="h-16 rounded-xl bg-[var(--background)]" />
+              <div className="h-16 rounded-xl bg-[var(--background)]" />
+            </div>
+          ) : (
+            <>
           {conversationTimeline.length > 0 && (
             <div className="flex flex-wrap gap-2">
               {voiceCalls.length > 0 && (
                 <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--line)] bg-white/80 px-3 py-1 text-xs font-medium text-[var(--muted)] shadow-sm">
                   <IconPhone className="h-3 w-3" />
-                  {voiceCalls.length} call{voiceCalls.length === 1 ? "" : "s"}
+                  {voiceCalls.length} call history
                 </span>
               )}
-              {detail.communications.length > 0 && (
+              {smsConversations.length > 0 && (
                 <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--line)] bg-white/80 px-3 py-1 text-xs font-medium text-[var(--muted)] shadow-sm">
                   <IconMessage className="h-3 w-3" />
-                  {detail.communications.length} message
-                  {detail.communications.length === 1 ? "" : "s"}
+                  {smsConversations.length} SMS
+                </span>
+              )}
+              {otherMessageCount > 0 && (
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--line)] bg-white/80 px-3 py-1 text-xs font-medium text-[var(--muted)] shadow-sm">
+                  <IconMessage className="h-3 w-3" />
+                  {otherMessageCount} message
+                  {otherMessageCount === 1 ? "" : "s"}
                 </span>
               )}
             </div>
@@ -1433,7 +1781,7 @@ export function CustomerDetailContent({
               </span>
               <p className="text-sm font-medium">No conversations yet</p>
               <p className="mt-1 max-w-xs text-xs text-[var(--muted)]">
-                Calls and messages will appear here once this customer starts contacting the shop.
+                Call history and messages will appear here once this customer starts contacting the shop.
               </p>
               <Link
                 href="/dashboard/conversations?tab=calls"
@@ -1444,23 +1792,23 @@ export function CustomerDetailContent({
               </Link>
             </div>
           ) : (
-            <ol className="relative space-y-3 before:absolute before:bottom-3 before:left-[1.15rem] before:top-3 before:w-px before:bg-[var(--line)]">
+            <ol className="relative space-y-3 before:absolute before:bottom-4 before:left-[1.125rem] before:top-4 before:w-px before:bg-[var(--line)]">
               {conversationTimeline.map((item) => {
                 if (item.kind === "call") {
                   const c = item.call;
                   const when = formatConversationWhen(c.started_at || c.created_at);
                   const duration = formatCallDuration(c);
                   return (
-                    <li key={item.id} className="relative pl-12">
-                      <span className="absolute left-0 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full bg-[var(--accent)] text-white shadow-sm ring-4 ring-[var(--panel)]">
+                    <li key={item.id} className="relative flex items-center gap-3">
+                      <span className="relative z-10 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-white shadow-sm ring-4 ring-[var(--panel)]">
                         <IconPhone className="h-3.5 w-3.5" />
                       </span>
-                      <div className="group relative rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-[var(--shadow-soft)] transition hover:border-[var(--accent)]/40 hover:shadow-md">
+                      <div className="group relative min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-[var(--shadow-soft)] transition hover:border-[var(--accent)]/40 hover:shadow-md">
                         <Link
                           href={`/dashboard/conversations?tab=calls&id=${encodeURIComponent(c.id)}`}
-                          className="block cursor-pointer px-4 py-3.5 pr-14"
+                          className="flex min-h-9 items-center px-4 py-2.5 pr-14"
                         >
-                          <p className="text-sm font-medium tabular-nums">
+                          <p className="text-sm font-medium tabular-nums leading-none">
                             {when}
                             {duration ? (
                               <span className="font-normal text-[var(--muted)]">
@@ -1479,9 +1827,59 @@ export function CustomerDetailContent({
                             setDeleteConversationTarget({ kind: "call", call: c });
                           }}
                           disabled={deletingConversation}
-                          aria-label="Delete call"
+                          aria-label="Delete call history"
                           title="Delete"
                           className="absolute right-3 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-60"
+                        >
+                          <IconTrash className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </li>
+                  );
+                }
+
+                if (item.kind === "sms") {
+                  const s = item.sms;
+                  const when = formatConversationWhen(
+                    s.last_message_at || s.created_at,
+                  );
+                  const preview =
+                    s.reply_preview ||
+                    s.owner_summary ||
+                    s.last_intent ||
+                    "SMS conversation";
+                  return (
+                    <li key={item.id} className="relative flex items-start gap-3">
+                      <span className="relative z-10 mt-2.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-white shadow-sm ring-4 ring-[var(--panel)]">
+                        <IconMessage className="h-3.5 w-3.5" />
+                      </span>
+                      <div className="group relative min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-[var(--shadow-soft)] transition hover:border-[var(--accent)]/40 hover:shadow-md">
+                        <Link
+                          href={`/dashboard/conversations?tab=sms&id=${encodeURIComponent(s.id)}`}
+                          className="block cursor-pointer px-4 py-2.5 pr-14"
+                        >
+                          <p className="flex min-h-9 items-center text-sm font-medium tabular-nums leading-none">
+                            {when}
+                            <span className="font-normal text-[var(--muted)]">
+                              &nbsp;· SMS
+                            </span>
+                          </p>
+                          <p className="mt-1 line-clamp-2 text-xs text-[var(--muted)]">
+                            {preview}
+                          </p>
+                        </Link>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setError(null);
+                            setDeleteConversationTarget({ kind: "sms", sms: s });
+                          }}
+                          disabled={deletingConversation}
+                          aria-label="Delete SMS conversation"
+                          title="Delete"
+                          className="absolute right-3 top-3 inline-flex h-8 w-8 items-center justify-center rounded-full border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-60"
                         >
                           <IconTrash className="h-3.5 w-3.5" />
                         </button>
@@ -1499,13 +1897,16 @@ export function CustomerDetailContent({
                       : IconMessage;
                 const when = formatConversationWhen(m.created_at);
                 return (
-                  <li key={item.id} className="relative pl-12">
-                    <span className="absolute left-0 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--line)] bg-[var(--background)] text-[var(--muted)] shadow-sm ring-4 ring-[var(--panel)]">
+                  <li key={item.id} className="relative flex items-start gap-3">
+                    <span className="relative z-10 mt-2.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--line)] bg-[var(--background)] text-[var(--muted)] shadow-sm ring-4 ring-[var(--panel)]">
                       <ChannelIcon className="h-3.5 w-3.5" />
                     </span>
-                    <article className="flex items-start gap-2 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 shadow-[var(--shadow-soft)]">
+                    <article className="flex min-w-0 flex-1 items-start gap-2 rounded-xl border border-[var(--line)] bg-[var(--panel)] px-4 py-2.5 shadow-[var(--shadow-soft)]">
                       <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
+                        <div className="flex min-h-9 flex-wrap items-center gap-x-2 gap-y-1">
+                          <p className="text-sm font-medium tabular-nums leading-none">
+                            {when}
+                          </p>
                           <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
                             {channelLabel(m.channel)}
                           </span>
@@ -1522,7 +1923,6 @@ export function CustomerDetailContent({
                         <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed">
                           {m.message}
                         </p>
-                        <p className="mt-2 text-xs text-[var(--muted)]">{when}</p>
                       </div>
                       <button
                         type="button"
@@ -1533,7 +1933,7 @@ export function CustomerDetailContent({
                         disabled={deletingConversation}
                         aria-label="Delete message"
                         title="Delete"
-                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-60"
+                        className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-60"
                       >
                         <IconTrash className="h-3.5 w-3.5" />
                       </button>
@@ -1542,6 +1942,8 @@ export function CustomerDetailContent({
                 );
               })}
             </ol>
+          )}
+            </>
           )}
         </section>
       )}
@@ -1576,21 +1978,21 @@ export function CustomerDetailContent({
                 }}
               >
                 <div
-                  className="flex max-h-[min(90dvh,46rem)] w-full max-w-[34rem] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]"
+                  className="flex max-h-[min(82dvh,36rem)] w-full max-w-[28rem] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <div className="relative shrink-0 overflow-hidden border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white px-5 pb-5 pt-6">
+                  <div className="relative shrink-0 overflow-hidden border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white px-4 pb-3.5 pt-4">
                     <div
-                      className="pointer-events-none absolute right-0 top-0 h-40 w-40 translate-x-1/4 -translate-y-1/4 rounded-full bg-[var(--accent-glow)] blur-2xl"
+                      className="pointer-events-none absolute right-0 top-0 h-28 w-28 translate-x-1/4 -translate-y-1/4 rounded-full bg-[var(--accent-glow)] blur-2xl"
                       aria-hidden="true"
                     />
-                    <div className="relative flex min-w-0 items-center gap-3">
-                      <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-white shadow-md shadow-[var(--accent-glow)]">
-                        <IconWrench className="h-4 w-4" />
+                    <div className="relative flex min-w-0 items-center gap-2.5">
+                      <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] text-white shadow-md shadow-[var(--accent-glow)]">
+                        <IconWrench className="h-3.5 w-3.5" />
                       </span>
                       <h2
                         id="add-repair-title"
-                        className="text-lg font-semibold tracking-tight text-[var(--ink)]"
+                        className="text-base font-semibold tracking-tight text-[var(--ink)]"
                       >
                         Add repair history
                       </h2>
@@ -1599,20 +2001,20 @@ export function CustomerDetailContent({
 
                   {detail.vehicles.length === 0 ? (
                     <>
-                      <div className="space-y-4 px-5 py-5">
-                        <div className="rounded-xl border border-dashed border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-4 py-8 text-center">
-                          <span className="mx-auto inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-900 text-white">
-                            <IconCar className="h-5 w-5" />
+                      <div className="space-y-3 px-4 py-4">
+                        <div className="rounded-xl border border-dashed border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-4 py-6 text-center">
+                          <span className="mx-auto inline-flex h-10 w-10 items-center justify-center rounded-xl bg-slate-900 text-white">
+                            <IconCar className="h-4 w-4" />
                           </span>
-                          <p className="mt-3 text-sm font-semibold text-slate-900">
+                          <p className="mt-2.5 text-sm font-semibold text-slate-900">
                             Add a vehicle first
                           </p>
-                          <p className="mt-1 text-sm text-[var(--muted)]">
+                          <p className="mt-1 text-xs text-[var(--muted)]">
                             Repair history is logged per vehicle.
                           </p>
                         </div>
                       </div>
-                      <div className="flex shrink-0 flex-col-reverse gap-2 border-t border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-5 py-4 sm:flex-row sm:justify-end">
+                      <div className="flex shrink-0 flex-col-reverse gap-2 border-t border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-4 py-3 sm:flex-row sm:justify-end">
                         <button
                           type="button"
                           onClick={closeRepairModal}
@@ -1628,10 +2030,10 @@ export function CustomerDetailContent({
                       onSubmit={onAddRepair}
                       className="flex min-h-0 flex-1 flex-col"
                     >
-                      <div className="asa-scroll min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-5">
-                        <div className="flex items-start gap-3 rounded-xl border border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-3.5 py-3">
-                          <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-900 text-white">
-                            <IconCar className="h-4 w-4" />
+                      <div className="asa-scroll min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-4 py-4">
+                        <div className="flex items-start gap-2.5 rounded-xl border border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-3 py-2.5">
+                          <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white">
+                            <IconCar className="h-3.5 w-3.5" />
                           </span>
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-semibold text-slate-900">
@@ -1645,6 +2047,13 @@ export function CustomerDetailContent({
                               ) : (
                                 <span>No plate on file</span>
                               )}
+                              {repairDate ? (
+                                <span>
+                                  {new Date(
+                                    dateInputToIso(repairDate),
+                                  ).toLocaleDateString()}
+                                </span>
+                              ) : null}
                               <span>
                                 {filledLines.length} service
                                 {filledLines.length === 1 ? "" : "s"}
@@ -1690,6 +2099,17 @@ export function CustomerDetailContent({
                                 </option>
                               ))}
                             </select>
+                          </label>
+                          <label className="block space-y-1.5">
+                            <span className="text-sm font-medium">Repair date</span>
+                            <input
+                              type="date"
+                              value={repairDate}
+                              required
+                              max={todayDateInputValue()}
+                              onChange={(e) => setRepairDate(e.target.value)}
+                              className="w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2.5 text-sm outline-none ring-[var(--accent)] focus:ring-2"
+                            />
                           </label>
                         </div>
 
@@ -1889,15 +2309,28 @@ export function CustomerDetailContent({
                             <textarea
                               value={repairDescription}
                               onChange={(e) => setRepairDescription(e.target.value)}
-                              rows={3}
+                              rows={2}
                               placeholder="What was done (applies to all services above)"
-                              className="w-full resize-y rounded-xl border border-[var(--line)] bg-white px-3 py-2.5 text-sm outline-none ring-[var(--accent)] focus:ring-2"
+                              className="w-full resize-y rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm outline-none ring-[var(--accent)] focus:ring-2"
+                            />
+                          </label>
+                          <label className="block space-y-1.5">
+                            <span className="text-sm font-medium">
+                              Follow-up recommendation{" "}
+                              <span className="font-normal text-[var(--muted)]">(optional)</span>
+                            </span>
+                            <textarea
+                              value={repairRecommendation}
+                              onChange={(e) => setRepairRecommendation(e.target.value)}
+                              rows={2}
+                              placeholder="e.g. Replace pads within 6 months — used in Marketing"
+                              className="w-full resize-y rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm outline-none ring-[var(--accent)] focus:ring-2"
                             />
                           </label>
                         </div>
                       </div>
 
-                      <div className="flex shrink-0 flex-col-reverse gap-2 border-t border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex shrink-0 flex-col-reverse gap-2 border-t border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                         <p className="text-center text-xs text-[var(--muted)] sm:text-left">
                           {filledLines.length > 0 ? (
                             <>
@@ -1919,7 +2352,7 @@ export function CustomerDetailContent({
                             type="button"
                             onClick={closeRepairModal}
                             disabled={repairSaving}
-                            className="btn-ghost inline-flex items-center justify-center gap-1.5 px-4 py-2 text-sm disabled:opacity-60"
+                            className="btn-ghost inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 text-sm disabled:opacity-60"
                           >
                             <IconCancel />
                             Cancel
@@ -1931,7 +2364,7 @@ export function CustomerDetailContent({
                               !repairVehicleId ||
                               !repairLines.some((r) => r.name.trim())
                             }
-                            className="btn-primary inline-flex items-center justify-center gap-1.5 px-5 py-2.5 disabled:cursor-not-allowed disabled:opacity-40"
+                            className="btn-primary inline-flex items-center justify-center gap-1.5 px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-40"
                           >
                             {!repairSaving && <IconSave />}
                             {repairSaving ? "Saving…" : "Save"}
@@ -2073,54 +2506,23 @@ export function CustomerDetailContent({
                     className="text-lg font-semibold tracking-tight text-slate-900"
                   >
                     {deleteConversationTarget.kind === "call"
-                      ? "Delete call?"
-                      : "Delete message?"}
+                      ? "Delete call history?"
+                      : deleteConversationTarget.kind === "sms"
+                        ? "Delete SMS conversation?"
+                        : "Delete message?"}
                   </h2>
                 </div>
               </div>
 
               <div className="space-y-4 px-5 py-5">
-                <div className="flex items-start gap-3 rounded-xl border border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-3.5 py-3">
-                  <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-900 text-white">
-                    {deleteConversationTarget.kind === "call" ? (
-                      <IconPhone className="h-4 w-4" />
-                    ) : (
-                      <IconMessage className="h-4 w-4" />
-                    )}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    {deleteConversationTarget.kind === "call" ? (
-                      <>
-                        <p className="truncate text-sm font-semibold text-slate-900">
-                          {deleteConversationTarget.call.caller_phone}
-                        </p>
-                        <p className="mt-1 line-clamp-2 text-xs text-[var(--muted)]">
-                          {deleteConversationTarget.call.owner_summary ||
-                            deleteConversationTarget.call.call_summary ||
-                            deleteConversationTarget.call.last_intent ||
-                            "Voice call"}
-                        </p>
-                      </>
-                    ) : (
-                      <>
-                        <p className="text-sm font-semibold text-slate-900">
-                          {channelLabel(deleteConversationTarget.comm.channel)} ·{" "}
-                          {deleteConversationTarget.comm.direction === "incoming"
-                            ? "Inbound"
-                            : "Outbound"}
-                        </p>
-                        <p className="mt-1 line-clamp-3 text-xs leading-relaxed text-[var(--muted)]">
-                          {deleteConversationTarget.comm.message}
-                        </p>
-                      </>
-                    )}
-                  </div>
-                </div>
-
                 <p className="text-sm leading-relaxed text-[var(--muted)]">
                   This cannot be undone. The{" "}
-                  {deleteConversationTarget.kind === "call" ? "call" : "message"} will
-                  be permanently removed from this customer&apos;s history.
+                  {deleteConversationTarget.kind === "call"
+                    ? "call history"
+                    : deleteConversationTarget.kind === "sms"
+                      ? "SMS conversation"
+                      : "message"}{" "}
+                  will be permanently removed from this customer&apos;s history.
                 </p>
 
                 {error && (
@@ -2328,18 +2730,33 @@ export function CustomerDetailContent({
       {vehicleModal &&
         createPortal(
           <div
-            className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
+            className="fixed inset-0 z-[100]"
             role="dialog"
             aria-modal="true"
             aria-labelledby="vehicle-modal-title"
-            onClick={() => {
-              if (!vehicleSaving && !deletingVehicleId) closeVehicleModal();
-            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerUp={(e) => e.stopPropagation()}
+            onPointerCancel={(e) => e.stopPropagation()}
           >
-            <div
-              className="flex max-h-[min(90dvh,42rem)] w-full max-w-[28rem] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]"
-              onClick={(e) => e.stopPropagation()}
-            >
+            {/* Dedicated full-screen layer so outside clicks always close
+                (flex gutters alone can miss hit-testing on some browsers). */}
+            <button
+              type="button"
+              tabIndex={-1}
+              aria-label="Close vehicle dialog"
+              className="absolute inset-0 cursor-default bg-slate-950/55 backdrop-blur-[2px]"
+              disabled={vehicleSaving || Boolean(deletingVehicleId)}
+              onPointerDown={(e) => {
+                // pointerdown closes more reliably than click on touch (slight
+                // movement often suppresses the click event).
+                if (e.button !== 0) return;
+                if (vehicleSaving || deletingVehicleId) return;
+                e.preventDefault();
+                closeVehicleModal();
+              }}
+            />
+            <div className="pointer-events-none relative flex h-full items-end justify-center p-4 sm:items-center">
+              <div className="pointer-events-auto flex max-h-[min(90dvh,42rem)] w-full max-w-[28rem] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]">
               <div className="relative shrink-0 overflow-hidden border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white px-5 pb-5 pt-6">
                 <div
                   className="pointer-events-none absolute right-0 top-0 h-40 w-40 translate-x-1/4 -translate-y-1/4 rounded-full bg-[var(--accent-glow)] blur-2xl"
@@ -2496,6 +2913,7 @@ export function CustomerDetailContent({
                   </button>
                 </div>
               </form>
+              </div>
             </div>
           </div>,
           document.body,
@@ -2512,6 +2930,7 @@ function Field({
   type = "text",
   required,
   placeholder,
+  disabled,
 }: {
   label: string;
   icon?: ReactNode;
@@ -2520,6 +2939,7 @@ function Field({
   type?: string;
   required?: boolean;
   placeholder?: string;
+  disabled?: boolean;
 }) {
   return (
     <label className="block space-y-1.5">
@@ -2530,10 +2950,16 @@ function Field({
       <input
         type={type}
         value={value}
-        required={required}
+        required={required && !disabled}
         placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-md border border-[var(--line)] bg-white px-3 py-2 text-sm outline-none ring-[var(--accent)] focus:ring-2"
+        disabled={disabled}
+        onChange={(e) => {
+          if (disabled) return;
+          onChange(e.target.value);
+        }}
+        className={`w-full rounded-md border border-[var(--line)] px-3 py-2 text-sm outline-none ring-[var(--accent)] focus:ring-2 disabled:cursor-not-allowed disabled:bg-[var(--background)] disabled:text-[var(--ink)] disabled:opacity-100 ${
+          disabled ? "focus:ring-0" : "bg-white"
+        }`}
       />
     </label>
   );

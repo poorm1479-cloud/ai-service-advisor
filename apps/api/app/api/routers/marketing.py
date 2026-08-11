@@ -112,9 +112,19 @@ class CampaignOut(BaseModel):
     updated_at: datetime | None
 
 
-class CampaignCreateOut(CampaignOut):
-    """Campaign create response includes first-customer AI preview to avoid a second round-trip."""
+class AudienceMemberOut(BaseModel):
+    customer_id: UUID
+    name: str
+    phone: str | None = None
+    email: str | None = None
+    vehicle: str | None = None
+    service: str | None = None
 
+
+class CampaignCreateOut(CampaignOut):
+    """Campaign create response includes audience + first-customer AI preview."""
+
+    audience: list[AudienceMemberOut] = Field(default_factory=list)
     ai_preview: dict[str, Any] | None = None
 
 
@@ -397,8 +407,25 @@ async def create_campaign(
         except LookupError:
             preview = None
 
+    audience_out = [
+        AudienceMemberOut(
+            customer_id=m.customer_id,
+            name=m.name,
+            phone=m.phone,
+            email=m.email,
+            vehicle=(
+                str(meta["vehicle"])
+                if (meta := (m.metadata or {})).get("vehicle")
+                else None
+            ),
+            service=str(meta["service"]) if meta.get("service") else None,
+        )
+        for m in campaign.audience
+    ]
     base = _campaign_out(campaign)
-    return CampaignCreateOut(**base.model_dump(), ai_preview=preview)
+    return CampaignCreateOut(
+        **base.model_dump(), audience=audience_out, ai_preview=preview
+    )
 
 
 @router.get("/campaigns/{campaign_id}", response_model=CampaignOut)

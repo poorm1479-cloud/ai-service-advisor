@@ -363,6 +363,8 @@ class AgentOrchestrator:
                 merged["service_id"] = meta["pending_service_id"]
             if not merged.get("duration_minutes") and meta.get("pending_duration_minutes"):
                 merged["duration_minutes"] = meta["pending_duration_minutes"]
+            if not merged.get("service_price") and meta.get("pending_service_price"):
+                merged["service_price"] = meta["pending_service_price"]
 
         preferred = self._parse_iso_dt(merged.get("preferred_start"))
         preferred_end = self._parse_iso_dt(merged.get("preferred_end"))
@@ -985,6 +987,15 @@ class AgentOrchestrator:
                 service_id = UUID(str(booking["service_id"]))
             except (ValueError, TypeError):
                 service_id = None
+        estimated_revenue = None
+        raw_price = booking.get("service_price") or booking.get("estimated_revenue")
+        if raw_price is not None and str(raw_price).strip() != "":
+            try:
+                from decimal import Decimal
+
+                estimated_revenue = Decimal(str(raw_price).replace("$", "").strip())
+            except Exception:  # noqa: BLE001 — ignore bad price strings
+                estimated_revenue = None
         preferred_start = booking.get("preferred_start")
         if isinstance(preferred_start, str):
             preferred_start = self._parse_iso_dt(preferred_start)
@@ -1001,6 +1012,7 @@ class AgentOrchestrator:
             vehicle_id=context.vehicle_id,
             requested_service=requested_service,
             service_id=service_id,
+            estimated_revenue=estimated_revenue,
             appointment_id=appointment_id,
             preferred_start=preferred_start if isinstance(preferred_start, datetime) else None,
             preferred_end=preferred_end if isinstance(preferred_end, datetime) else None,

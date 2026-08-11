@@ -102,6 +102,8 @@ class AppointmentDecision:
     duration_minutes: int | None = None
     required_skill: str | None = None
     required_bay: str | None = None
+    # Catalog list price — Workflow books estimated_revenue from this (not DEFAULT_REVENUE).
+    estimated_revenue: Decimal | None = None
     reason: str | None = None
     days_ahead: int = 7
     confidence: float = 1.0

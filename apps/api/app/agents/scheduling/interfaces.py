@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Protocol
 from uuid import UUID
 
@@ -47,6 +48,7 @@ class SchedulingStorePort(Protocol):
         duration_minutes: int | None = None,
         repair_type: str | None = None,
         required_bay: str | None = None,
+        estimated_revenue: Decimal | None = None,
     ) -> AppointmentRecord: ...
 
     async def reschedule(
@@ -61,6 +63,7 @@ class SchedulingStorePort(Protocol):
         duration_minutes: int | None = None,
         repair_type: str | None = None,
         required_bay: str | None = None,
+        estimated_revenue: Decimal | None = None,
     ) -> AppointmentRecord: ...
 
     async def cancel(

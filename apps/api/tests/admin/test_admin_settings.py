@@ -57,6 +57,7 @@ async def test_admin_settings_get_defaults(admin_email: str) -> None:
                 "notification_retention_days": 90,
                 "toast_enabled": True,
                 "maintenance_mode": False,
+                "twilio_auto_provision_numbers": True,
             },
         )
         res = await client.get("/v1/admin/settings", headers=headers)
@@ -69,6 +70,7 @@ async def test_admin_settings_get_defaults(admin_email: str) -> None:
     assert editable["notification_retention_days"] == 90
     assert editable["toast_enabled"] is True
     assert editable["maintenance_mode"] is False
+    assert editable["twilio_auto_provision_numbers"] is True
     env = body["env_snapshot"]
     assert "environment" in env
     assert "ai_provider" in env
@@ -91,6 +93,7 @@ async def test_admin_settings_patch_roundtrip(admin_email: str) -> None:
                 "notification_retention_days": 30,
                 "toast_enabled": False,
                 "maintenance_mode": True,
+                "twilio_auto_provision_numbers": False,
             },
         )
         assert patch.status_code == 200, patch.text
@@ -99,6 +102,7 @@ async def test_admin_settings_patch_roundtrip(admin_email: str) -> None:
         assert body["editable"]["notification_retention_days"] == 30
         assert body["editable"]["toast_enabled"] is False
         assert body["editable"]["maintenance_mode"] is True
+        assert body["editable"]["twilio_auto_provision_numbers"] is False
         assert body["updated_at"] is not None
 
         get = await client.get("/v1/admin/settings", headers=headers)
@@ -106,6 +110,7 @@ async def test_admin_settings_patch_roundtrip(admin_email: str) -> None:
         again = get.json()["editable"]
         assert again["dashboard_poll_seconds"] == 5
         assert again["toast_enabled"] is False
+        assert again["twilio_auto_provision_numbers"] is False
 
         # restore defaults for other tests sharing DB
         await client.patch(
@@ -116,6 +121,7 @@ async def test_admin_settings_patch_roundtrip(admin_email: str) -> None:
                 "notification_retention_days": 90,
                 "toast_enabled": True,
                 "maintenance_mode": False,
+                "twilio_auto_provision_numbers": True,
             },
         )
 

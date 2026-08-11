@@ -12,6 +12,7 @@ class SchedulingMetrics:
     bookings: int = 0
     reschedules: int = 0
     cancellations: int = 0
+    completions: int = 0
     conflicts_detected: int = 0
     optimizations_run: int = 0
     last_event_at: datetime | None = None
@@ -21,6 +22,7 @@ class SchedulingMetrics:
             "bookings": self.bookings,
             "reschedules": self.reschedules,
             "cancellations": self.cancellations,
+            "completions": self.completions,
             "conflicts_detected": self.conflicts_detected,
             "optimizations_run": self.optimizations_run,
             "last_event_at": self.last_event_at.isoformat() if self.last_event_at else None,
@@ -45,6 +47,11 @@ class SchedulingMonitor:
     def record_cancel(self) -> None:
         with self._lock:
             self.metrics.cancellations += 1
+            self.metrics.last_event_at = datetime.now(timezone.utc)
+
+    def record_complete(self) -> None:
+        with self._lock:
+            self.metrics.completions += 1
             self.metrics.last_event_at = datetime.now(timezone.utc)
 
     def record_conflict(self) -> None:

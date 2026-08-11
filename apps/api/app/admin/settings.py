@@ -28,6 +28,8 @@ DEFAULTS: dict[str, Any] = {
     "notification_retention_days": 90,
     "toast_enabled": True,
     "maintenance_mode": False,
+    # Placeholder; live env is used when no DB override (see _load_editable).
+    "twilio_auto_provision_numbers": True,
 }
 
 EDITABLE_KEYS = frozenset(DEFAULTS.keys())
@@ -38,6 +40,7 @@ class EditableSettingsPatch(BaseModel):
     notification_retention_days: int | None = Field(default=None, ge=1, le=365)
     toast_enabled: bool | None = None
     maintenance_mode: bool | None = None
+    twilio_auto_provision_numbers: bool | None = None
 
     @field_validator("dashboard_poll_seconds")
     @classmethod
@@ -129,9 +132,20 @@ class PlatformSettingsService:
         editable, _ = await self._load_editable()
         return bool(editable.get("maintenance_mode", DEFAULTS["maintenance_mode"]))
 
+    async def twilio_auto_provision_numbers(self) -> bool:
+        """Whether shop signup should auto-buy/assign a Twilio number."""
+        editable, _ = await self._load_editable()
+        return bool(
+            editable.get(
+                "twilio_auto_provision_numbers",
+                settings.twilio_auto_provision_numbers,
+            )
+        )
+
     async def _load_editable(self) -> tuple[dict[str, Any], datetime | None]:
         merged = dict(DEFAULTS)
         latest: datetime | None = None
+        seen: set[str] = set()
         async with SessionLocal() as session:
             rows = (await session.scalars(select(PlatformSettingModel))).all()
             for row in rows:
@@ -141,6 +155,10 @@ class PlatformSettingsService:
                     merged[row.key] = json.loads(row.value_json)
                 except json.JSONDecodeError:
                     continue
+                seen.add(row.key)
                 if latest is None or row.updated_at > latest:
                     latest = row.updated_at
+        # Env-backed knobs: use live Settings until an admin writes a DB override.
+        if "twilio_auto_provision_numbers" not in seen:
+            merged["twilio_auto_provision_numbers"] = bool(settings.twilio_auto_provision_numbers)
         return merged, latest

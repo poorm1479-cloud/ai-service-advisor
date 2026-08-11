@@ -164,3 +164,51 @@ async def attach_repair_history_to_walk_in(
     except (ValidationError, ConflictError, NotFoundError) as exc:
         raise _http_error(exc) from exc
     return _detail_out(detail)
+
+
+@router.post("/{visit_id}/close", response_model=WalkInDetailOut)
+async def close_walk_in(
+    visit_id: UUID,
+    current: CurrentUser = Depends(get_current_user),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> WalkInDetailOut:
+    service = WalkInService(uow)
+    try:
+        detail = await service.close(shop_id=current.shop_id, visit_id=visit_id)
+    except (ValidationError, ConflictError, NotFoundError) as exc:
+        raise _http_error(exc) from exc
+    return _detail_out(detail)
+
+
+@router.post("/{visit_id}/cancel", response_model=WalkInDetailOut)
+async def cancel_walk_in(
+    visit_id: UUID,
+    current: CurrentUser = Depends(get_current_user),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> WalkInDetailOut:
+    """Cancel a walk-in visit and any linked active appointments."""
+    from app.scheduling.factory import get_scheduling_runtime
+
+    runtime = get_scheduling_runtime()
+    try:
+        linked = await runtime.service.list_appointments(shop_id=current.shop_id)
+        for appt in linked:
+            if appt.walk_in_id != visit_id:
+                continue
+            if appt.status not in ("booked", "confirmed", "in_progress"):
+                continue
+            await runtime.service.cancel(
+                shop_id=current.shop_id,
+                appointment_id=appt.id,
+                reason="Walk-in visit cancelled",
+            )
+            runtime.monitor.record_cancel()
+    except ValidationError as exc:
+        raise _http_error(exc) from exc
+
+    service = WalkInService(uow)
+    try:
+        detail = await service.cancel(shop_id=current.shop_id, visit_id=visit_id)
+    except (ValidationError, ConflictError, NotFoundError) as exc:
+        raise _http_error(exc) from exc
+    return _detail_out(detail)

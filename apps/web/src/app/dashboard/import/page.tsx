@@ -132,6 +132,26 @@ function duplicatesResolved(job: ImportJob): number {
   return job.duplicates.filter((d) => d.resolved).length;
 }
 
+function formatJobCreated(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function jobCountsSummary(job: ImportJob): string {
+  const customers = entityImported(job, "customer");
+  const vehicles = entityImported(job, "vehicle");
+  const repairs = entityImported(job, "repair_history");
+  const duplicates = duplicatesResolved(job);
+  return `${customers} cust · ${vehicles} veh · ${repairs} repair · ${duplicates} dup`;
+}
+
 type ManualCustomerForm = {
   name: string;
   phone: string;
@@ -222,7 +242,7 @@ function ManualField({
   autoComplete?: string;
 }) {
   return (
-    <label className="block space-y-1.5">
+    <label className="block space-y-1">
       <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
         {label}
       </span>
@@ -233,7 +253,7 @@ function ManualField({
         placeholder={placeholder}
         autoComplete={autoComplete}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-[var(--line)] bg-[var(--background)]/40 px-3.5 py-2.5 text-sm"
+        className="w-full rounded-lg border border-[var(--line)] bg-[var(--background)]/40 px-3 py-2 text-sm"
       />
     </label>
   );
@@ -443,7 +463,7 @@ function IconSave({ className = "h-4 w-4" }: { className?: string }) {
   );
 }
 
-function IconPlus({ className = "h-4 w-4" }: { className?: string }) {
+function IconImportPlus({ className = "h-5 w-5" }: { className?: string }) {
   return (
     <svg
       className={className}
@@ -455,8 +475,11 @@ function IconPlus({ className = "h-4 w-4" }: { className?: string }) {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <path d="M12 5v14" />
-      <path d="M5 12h14" />
+      {/* Document left, + on the right — extra gap vs IconUserPlus */}
+      <path d="M7.5 3H4A2 2 0 0 0 2 5v14a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2V9L9.5 3H7.5z" />
+      <path d="M9.5 3v5h4" />
+      <path d="M5 13h5.5M5 16.5h3.5" />
+      <path d="M20 8v6M17 11h6" />
     </svg>
   );
 }
@@ -501,6 +524,24 @@ function IconExcel({ className = "h-5 w-5" }: { className?: string }) {
   );
 }
 
+function IconImport({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M22 12h-6l-2 3h-4l-2-3H2" />
+      <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z" />
+    </svg>
+  );
+}
+
 function IconUpload({ className = "h-5 w-5" }: { className?: string }) {
   return (
     <svg
@@ -518,6 +559,51 @@ function IconUpload({ className = "h-5 w-5" }: { className?: string }) {
       <path d="M4 19h16" />
     </svg>
   );
+}
+
+function IconManual({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M5 19h14" />
+      <path d="M7 15.5 16.5 6a1.8 1.8 0 0 1 2.5 2.5L9.5 18l-4 1 1.5-3.5z" />
+    </svg>
+  );
+}
+
+function IconHistory({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 12a9 9 0 1 0 3-6.7" />
+      <path d="M3 4v5h5" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
+function JobSourceIcon({ source, className = "h-4 w-4" }: { source: string; className?: string }) {
+  const s = (source || "").toLowerCase();
+  if (s === "excel") return <IconExcel className={className} />;
+  if (s === "csv") return <IconCsv className={className} />;
+  if (s === "manual") return <IconManual className={className} />;
+  return <IconUpload className={className} />;
 }
 
 function formatFileSize(bytes: number): string {
@@ -927,7 +1013,8 @@ export default function ImportPage() {
   if (!authLoading && session && session.role !== "owner") {
     return (
       <div className="flex h-full min-h-0 flex-1 flex-col gap-5 overflow-hidden">
-        <div>
+        <div className="flex items-center gap-2">
+          <IconImport className="h-5 w-5 shrink-0 text-[var(--muted)]" />
           <h1 className="page-title">Import</h1>
         </div>
         <p className="surface-panel max-w-lg border-amber-200/80 bg-amber-50 px-4 py-3 text-sm text-amber-900">
@@ -938,10 +1025,13 @@ export default function ImportPage() {
   }
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-hidden">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-hidden">
       <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
         <div className="hero-motion min-w-0">
-          <h1 className="page-title">Import</h1>
+          <div className="flex items-center gap-2">
+            <IconImport className="h-5 w-5 shrink-0 text-[var(--muted)]" />
+            <h1 className="page-title">Import</h1>
+          </div>
           <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-[var(--muted)]">
             Bring in shop history so AI can advise with real customer and vehicle context.
           </p>
@@ -950,10 +1040,10 @@ export default function ImportPage() {
           <button
             type="button"
             onClick={resetWizard}
-            className="btn-ghost inline-flex items-center justify-center gap-1.5 px-4 py-2 text-sm"
+            aria-label="New import"
+            className="btn-primary inline-flex h-10 w-10 items-center justify-center p-0 shadow-[0_14px_32px_-16px_rgba(240,90,36,0.85)]"
           >
-            <IconPlus />
-            New import
+            <IconImportPlus className="h-5 w-5" />
           </button>
         )}
       </div>
@@ -974,22 +1064,26 @@ export default function ImportPage() {
         </p>
       )}
 
-      <div className="asa-scroll min-h-0 min-w-0 flex-1 space-y-6 overflow-y-auto overscroll-contain pb-2 [-webkit-overflow-scrolling:touch]">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-6 overflow-hidden pb-2">
       {step === "source" && (
-        <section className="hero-motion-late space-y-5">
-          <aside className="relative overflow-hidden rounded-2xl border border-[var(--line)] bg-[linear-gradient(135deg,#111_0%,#1c1c1c_48%,#2a1810_100%)] px-5 py-5 text-white shadow-[var(--shadow-soft)] sm:px-6">
+        <section className="hero-motion-late shrink-0 space-y-5">
+          <aside className="relative overflow-hidden rounded-2xl border border-[var(--accent)]/20 bg-[linear-gradient(145deg,#fff8f3_0%,#ffefe6_45%,#ffe6d8_100%)] px-5 py-5 shadow-[var(--shadow-soft)] sm:px-6">
             <div
-              className="pointer-events-none absolute -right-10 -top-16 h-44 w-44 rounded-full bg-[radial-gradient(circle,rgba(240,90,36,0.45),transparent_70%)]"
+              className="pointer-events-none absolute -right-10 -top-16 h-44 w-44 rounded-full bg-[radial-gradient(circle,rgba(240,90,36,0.14),transparent_70%)]"
+              aria-hidden
+            />
+            <div
+              className="pointer-events-none absolute -bottom-12 -left-8 h-36 w-36 rounded-full bg-[radial-gradient(circle,rgba(255,133,65,0.1),transparent_68%)]"
               aria-hidden
             />
             <div className="relative">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--rail-active-fg)]">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--accent-hover)]">
                 AI Import Assistant
               </p>
-              <h2 className="font-display mt-2 text-xl font-semibold tracking-tight sm:text-2xl">
+              <h2 className="font-display mt-2 text-xl font-semibold tracking-tight text-[var(--ink)] sm:text-2xl">
                 History becomes context
               </h2>
-              <p className="mt-2 text-sm leading-relaxed text-white/70 md:whitespace-nowrap">
+              <p className="mt-2 text-sm leading-relaxed text-[var(--ink)]/60">
                 While importing, AI detects customers, matches vehicles, builds repair history, and creates lasting memory for better advice.
               </p>
               <ul className="mt-4 flex flex-wrap gap-2">
@@ -997,7 +1091,7 @@ export default function ImportPage() {
                   (item) => (
                     <li
                       key={item}
-                      className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] font-medium tracking-wide text-white/80"
+                      className="rounded-full border border-[var(--accent)]/25 bg-white/65 px-3 py-1 text-[11px] font-medium tracking-wide text-[var(--accent-hover)] shadow-[0_1px_0_rgba(255,255,255,0.7)]"
                     >
                       {item}
                     </li>
@@ -1007,39 +1101,30 @@ export default function ImportPage() {
             </div>
           </aside>
 
-          <div>
-            <div className="flex items-end justify-between gap-3">
-              <div>
-                <h2 className="font-display text-lg font-semibold tracking-tight">
-                  Choose how to import
-                </h2>
-              </div>
-            </div>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <SourceOptionCard
+              title="CSV / Excel"
+              description="Upload spreadsheet exports from your shop system"
+              selected={primaryGroup === "file"}
+              icon="file"
+              onClick={() => {
+                setPrimaryGroup("file");
+                setSource(fileSources[0]?.source ?? "csv");
+              }}
+            />
+
+            {manualSource && (
               <SourceOptionCard
-                title="CSV / Excel"
-                description="Upload spreadsheet exports from your shop system"
-                selected={primaryGroup === "file"}
-                icon="file"
+                title="Manual Entry"
+                description="Enter a customer and vehicle with guided forms"
+                icon="manual"
                 onClick={() => {
-                  setPrimaryGroup("file");
-                  setSource(fileSources[0]?.source ?? "csv");
+                  setSuccess(null);
+                  setError(null);
+                  selectSource("manual");
                 }}
               />
-
-              {manualSource && (
-                <SourceOptionCard
-                  title="Manual Entry"
-                  description="Enter a customer and vehicle with guided forms"
-                  icon="manual"
-                  onClick={() => {
-                    setSuccess(null);
-                    setError(null);
-                    selectSource("manual");
-                  }}
-                />
-              )}
-            </div>
+            )}
           </div>
         </section>
       )}
@@ -1061,27 +1146,27 @@ export default function ImportPage() {
             }}
           >
             <div
-              className="flex w-full max-w-[32rem] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]"
+              className="flex w-full max-w-[24rem] flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="relative shrink-0 overflow-hidden border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white px-5 pb-5 pt-6">
+              <div className="relative shrink-0 overflow-hidden border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white px-4 pb-3.5 pt-4">
                 <div
-                  className="pointer-events-none absolute right-0 top-0 h-40 w-40 translate-x-1/4 -translate-y-1/4 rounded-full bg-[var(--accent-glow)] blur-2xl"
+                  className="pointer-events-none absolute right-0 top-0 h-32 w-32 translate-x-1/4 -translate-y-1/4 rounded-full bg-[var(--accent-glow)] blur-2xl"
                   aria-hidden="true"
                 />
                 <div className="relative">
                   <p
                     id="file-import-dialog-title"
-                    className="text-lg font-semibold tracking-tight text-[var(--ink)]"
+                    className="text-base font-semibold tracking-tight text-[var(--ink)]"
                   >
                     Select file type
                   </p>
-                  <p className="mt-1 text-sm text-[var(--muted)]">
+                  <p className="mt-0.5 text-xs text-[var(--muted)]">
                     Choose CSV or Excel, then continue to upload.
                   </p>
                 </div>
               </div>
-              <div className="space-y-5 px-5 py-5">
+              <div className="space-y-3.5 px-4 py-4">
                 <div className="grid grid-cols-2 gap-2">
                   {fileSources.map((s) => {
                     const selected = source === s.source;
@@ -1094,20 +1179,20 @@ export default function ImportPage() {
                           if (source !== s.source) clearSelectedFile();
                           setSource(s.source);
                         }}
-                        className={`flex flex-col items-center gap-2 rounded-xl border px-3 py-4 text-sm font-medium transition-colors ${
+                        className={`flex flex-col items-center gap-1.5 rounded-lg border px-2.5 py-3.5 text-sm font-medium transition-colors ${
                           selected
                             ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
                             : "border-[var(--line)] hover:border-[var(--accent)]/50"
                         }`}
                       >
                         <span
-                          className={`inline-flex h-10 w-10 items-center justify-center rounded-xl ${
+                          className={`inline-flex h-9 w-9 items-center justify-center rounded-lg ${
                             selected
                               ? "bg-[var(--accent)] text-white shadow-md shadow-[var(--accent-glow)]"
                               : "bg-[var(--background)] text-[var(--foreground)] ring-1 ring-[var(--line)]"
                           }`}
                         >
-                          <FileIcon />
+                          <FileIcon className="h-4 w-4" />
                         </span>
                         {s.label}
                       </button>
@@ -1122,7 +1207,7 @@ export default function ImportPage() {
                       setSource("");
                       clearSelectedFile();
                     }}
-                    className="btn-ghost inline-flex items-center justify-center gap-1.5 px-4 py-2 text-sm"
+                    className="btn-ghost inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 text-sm"
                   >
                     <IconCancel />
                     Cancel
@@ -1131,7 +1216,7 @@ export default function ImportPage() {
                     type="button"
                     disabled={!source || !FILE_SOURCES.has(source)}
                     onClick={() => setStep("configure")}
-                    className="btn-primary inline-flex items-center justify-center gap-1.5 px-4 py-2 text-sm disabled:opacity-60"
+                    className="btn-primary inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 text-sm disabled:opacity-60"
                   >
                     Continue
                     <IconContinue />
@@ -1161,28 +1246,39 @@ export default function ImportPage() {
             <form
               onSubmit={startImport}
               onClick={(e) => e.stopPropagation()}
-              className={`asa-scroll flex w-full flex-col overflow-hidden overscroll-contain rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_28px_80px_-20px_rgba(15,23,42,0.55)] ${
+              className={`asa-scroll flex w-full flex-col overflow-hidden overscroll-contain border border-[var(--line)] bg-[var(--panel)] shadow-[0_28px_80px_-20px_rgba(15,23,42,0.55)] ${
                 FILE_SOURCES.has(source)
-                  ? "max-w-[32rem]"
-                  : "max-h-[min(92vh,44rem)] max-w-2xl"
+                  ? "max-w-[24rem] rounded-xl"
+                  : source === "manual"
+                    ? "max-h-[min(88vh,36rem)] max-w-md rounded-xl"
+                    : "max-h-[min(92vh,44rem)] max-w-2xl rounded-2xl"
               }`}
             >
               <div
                 className={`relative shrink-0 border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white ${
-                  FILE_SOURCES.has(source) ? "p-5" : "px-5 py-6 sm:px-6"
+                  FILE_SOURCES.has(source) || source === "manual"
+                    ? "px-4 py-3.5"
+                    : "px-5 py-6 sm:px-6"
                 }`}
-              >                <div
-                  className="pointer-events-none absolute -right-6 -top-10 h-40 w-40 rounded-full bg-[var(--accent-glow)] blur-2xl"
+              >
+                <div
+                  className={`pointer-events-none absolute rounded-full bg-[var(--accent-glow)] blur-2xl ${
+                    FILE_SOURCES.has(source) || source === "manual"
+                      ? "-right-4 -top-8 h-32 w-32"
+                      : "-right-6 -top-10 h-40 w-40"
+                  }`}
                   aria-hidden="true"
                 />
                 <div
-                  className={`relative flex gap-3.5 ${
-                    FILE_SOURCES.has(source) ? "items-center" : "items-start"
+                  className={`relative flex ${
+                    FILE_SOURCES.has(source) || source === "manual"
+                      ? "items-center gap-3"
+                      : "items-start gap-3.5"
                   }`}
                 >
                   {FILE_SOURCES.has(source) ? (
-                    <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-white shadow-[0_8px_20px_-8px_rgba(240,90,36,0.85)]">
-                      {source === "excel" ? <IconExcel className="h-5 w-5" /> : <IconCsv className="h-5 w-5" />}
+                    <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] text-white shadow-[0_8px_20px_-8px_rgba(240,90,36,0.85)]">
+                      {source === "excel" ? <IconExcel className="h-4 w-4" /> : <IconCsv className="h-4 w-4" />}
                     </span>
                   ) : null}
                   <div className="min-w-0 flex items-center">
@@ -1190,18 +1286,20 @@ export default function ImportPage() {
                       <div>
                         <h2
                           id="import-review-dialog-title"
-                          className="font-display text-xl font-semibold tracking-tight text-[var(--ink)]"
+                          className="font-display text-base font-semibold tracking-tight text-[var(--ink)]"
                         >
                           Manual Entry
                         </h2>
-                        <p className="mt-1.5 text-sm leading-relaxed text-[var(--muted)] whitespace-nowrap">
-                          Enter a customer and/or vehicle, then save. The form stays open for the next entry.
+                        <p className="mt-0.5 text-xs leading-relaxed text-[var(--muted)]">
+                          Enter a customer and/or vehicle, then save.
                         </p>
                       </div>
                     ) : (
                       <h2
                         id="import-review-dialog-title"
-                        className="font-display text-xl font-semibold leading-none tracking-tight text-[var(--ink)]"
+                        className={`font-display font-semibold leading-none tracking-tight text-[var(--ink)] ${
+                          FILE_SOURCES.has(source) ? "text-base" : "text-xl"
+                        }`}
                       >
                         {FILE_SOURCES.has(source) ? "Review" : selectedSource.label}
                       </h2>
@@ -1213,8 +1311,10 @@ export default function ImportPage() {
               <div
                 className={
                   FILE_SOURCES.has(source)
-                    ? "p-5"
-                    : "asa-scroll min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5 sm:px-6"
+                    ? "px-4 py-4"
+                    : source === "manual"
+                      ? "asa-scroll min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3.5"
+                      : "asa-scroll min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5 sm:px-6"
                 }
               >
                 {selectedSource.requires_upload && FILE_SOURCES.has(source) && (
@@ -1264,26 +1364,26 @@ export default function ImportPage() {
                           if (!next) return;
                           applySpreadsheetFile(next);
                         }}
-                        className={`group relative flex w-full flex-col items-center justify-center rounded-2xl border border-dashed px-5 py-8 text-center transition-colors ${
+                        className={`group relative flex w-full flex-col items-center justify-center rounded-xl border border-dashed px-4 py-6 text-center transition-colors ${
                           fileDragOver
                             ? "border-[var(--accent)] bg-[var(--accent-soft)]"
                             : "border-[var(--line)] bg-[var(--background)]/45 hover:border-[var(--accent)]/55 hover:bg-[var(--accent-soft)]/40"
                         }`}
                       >
                         <div
-                          className="pointer-events-none absolute inset-x-0 top-0 h-20 rounded-t-2xl bg-[radial-gradient(circle_at_50%_0%,var(--accent-glow),transparent_70%)] opacity-50"
+                          className="pointer-events-none absolute inset-x-0 top-0 h-16 rounded-t-xl bg-[radial-gradient(circle_at_50%_0%,var(--accent-glow),transparent_70%)] opacity-50"
                           aria-hidden
                         />
                         <span
-                          className={`relative inline-flex h-12 w-12 items-center justify-center rounded-xl transition-colors ${
+                          className={`relative inline-flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
                             fileDragOver
                               ? "bg-[var(--accent)] text-white shadow-lg shadow-[var(--accent-glow)]"
                               : "bg-white text-[var(--accent)] ring-1 ring-[var(--line)] group-hover:bg-[var(--accent)] group-hover:text-white group-hover:shadow-md group-hover:shadow-[var(--accent-glow)] group-hover:ring-0"
                           }`}
                         >
-                          <IconUpload className="h-5 w-5" />
+                          <IconUpload className="h-4 w-4" />
                         </span>
-                        <p className="relative mt-3 font-display text-sm font-semibold tracking-tight text-[var(--ink)]">
+                        <p className="relative mt-2.5 font-display text-sm font-semibold tracking-tight text-[var(--ink)]">
                           {fileDragOver
                             ? "Drop to upload"
                             : source === "excel"
@@ -1292,17 +1392,17 @@ export default function ImportPage() {
                         </p>
                       </button>
                     ) : (
-                      <div className="relative overflow-hidden rounded-2xl border border-[var(--line)] bg-[linear-gradient(135deg,#111_0%,#1c1c1c_55%,#2a1810_100%)] px-5 py-5 text-white shadow-[var(--shadow-soft)]">
+                      <div className="relative overflow-hidden rounded-xl border border-[var(--line)] bg-[linear-gradient(135deg,#111_0%,#1c1c1c_55%,#2a1810_100%)] px-4 py-4 text-white shadow-[var(--shadow-soft)]">
                         <div
-                          className="pointer-events-none absolute -right-8 -top-10 h-36 w-36 rounded-full bg-[radial-gradient(circle,rgba(240,90,36,0.4),transparent_70%)]"
+                          className="pointer-events-none absolute -right-8 -top-10 h-28 w-28 rounded-full bg-[radial-gradient(circle,rgba(240,90,36,0.4),transparent_70%)]"
                           aria-hidden
                         />
-                        <div className="relative flex items-center gap-3.5">
-                          <span className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-white/10 ring-1 ring-white/15">
+                        <div className="relative flex items-center gap-3">
+                          <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-white/10 ring-1 ring-white/15">
                             {source === "excel" ? (
-                              <IconExcel className="h-5 w-5 text-[var(--rail-active-fg)]" />
+                              <IconExcel className="h-4 w-4 text-[var(--rail-active-fg)]" />
                             ) : (
-                              <IconCsv className="h-5 w-5 text-[var(--rail-active-fg)]" />
+                              <IconCsv className="h-4 w-4 text-[var(--rail-active-fg)]" />
                             )}
                           </span>
                           <div className="min-w-0 flex-1">
@@ -1313,8 +1413,8 @@ export default function ImportPage() {
                               {formatFileSize(file.size)} · {source.toUpperCase()} connector
                             </p>
                           </div>
-                          <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-400/20 text-emerald-300 ring-1 ring-emerald-400/30">
-                            <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" aria-hidden>
+                          <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-400/20 text-emerald-300 ring-1 ring-emerald-400/30">
+                            <svg viewBox="0 0 16 16" className="h-3 w-3" aria-hidden>
                               <path
                                 fill="currentColor"
                                 d="M6.5 11.2 3.3 8l1.1-1.1 2.1 2.1 4.6-4.6L12.2 5.5 6.5 11.2z"
@@ -1322,11 +1422,11 @@ export default function ImportPage() {
                             </svg>
                           </span>
                         </div>
-                        <div className="relative mt-4 flex flex-wrap gap-2">
+                        <div className="relative mt-3 flex flex-wrap gap-1.5">
                           <button
                             type="button"
                             onClick={() => fileInputRef.current?.click()}
-                            className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/15 transition-colors hover:bg-white/15"
+                            className="rounded-lg bg-white/10 px-2.5 py-1 text-xs font-semibold text-white ring-1 ring-white/15 transition-colors hover:bg-white/15"
                           >
                             Replace file
                           </button>
@@ -1335,7 +1435,7 @@ export default function ImportPage() {
                             onClick={() => {
                               clearSelectedFile();
                             }}
-                            className="rounded-lg px-3 py-1.5 text-xs font-semibold text-white/70 transition-colors hover:bg-white/10 hover:text-white"
+                            className="rounded-lg px-2.5 py-1 text-xs font-semibold text-white/70 transition-colors hover:bg-white/10 hover:text-white"
                           >
                             Remove
                           </button>
@@ -1369,12 +1469,12 @@ export default function ImportPage() {
                 )}
 
                 {source === "manual" && (
-                  <div className="space-y-5">
-                    <div className="space-y-3 rounded-xl border border-[var(--line)] bg-[var(--background)]/35 p-4">
+                  <div className="space-y-3">
+                    <div className="space-y-2.5 rounded-lg border border-[var(--line)] bg-[var(--background)]/35 p-3">
                       <h3 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
                         Customer
                       </h3>
-                      <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="grid gap-2.5 sm:grid-cols-2">
                         <ManualField
                           label="Name"
                           value={manualCustomer.name}
@@ -1405,14 +1505,14 @@ export default function ImportPage() {
                       </div>
                     </div>
 
-                    <div className="space-y-3 rounded-xl border border-[var(--line)] bg-[var(--background)]/35 p-4">
+                    <div className="space-y-2.5 rounded-lg border border-[var(--line)] bg-[var(--background)]/35 p-3">
                       <h3 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
                         Vehicle
                       </h3>
                       <p className="text-xs text-[var(--muted)]">
                         Scan or type a 17-character VIN to auto-fill year, make, and model.
                       </p>
-                      <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="grid gap-2.5 sm:grid-cols-2">
                         <div className="sm:col-span-2">
                           <VinInput
                             value={manualVehicle.vin}
@@ -1455,60 +1555,85 @@ export default function ImportPage() {
               </div>
 
               <div
-                className={`flex shrink-0 items-center justify-between gap-3 border-t border-[var(--line)] bg-[var(--background)]/35 ${
-                  FILE_SOURCES.has(source) ? "p-5" : "px-5 py-4 sm:px-6"
+                className={`flex shrink-0 items-center gap-3 border-t border-[var(--line)] bg-[var(--background)]/35 ${
+                  source === "manual" ? "justify-end" : "justify-between"
+                } ${
+                  FILE_SOURCES.has(source) || source === "manual"
+                    ? "px-4 py-3.5"
+                    : "px-5 py-4 sm:px-6"
                 }`}
-              >                <button
-                  type="button"
-                  onClick={() => {
-                    setStep("source");
-                    setPrimaryGroup(null);
-                    setFileDragOver(false);
-                  }}
-                  className="btn-ghost inline-flex items-center justify-center gap-1.5 px-4 py-2 text-sm"
-                >
-                  {source === "manual" ? (
-                    <>
+              >
+                {source === "manual" ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStep("source");
+                        setPrimaryGroup(null);
+                        setFileDragOver(false);
+                      }}
+                      className="btn-ghost inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 text-sm"
+                    >
                       <IconCancel />
                       Cancel
-                    </>
-                  ) : (
-                    "Back"
-                  )}
-                </button>
-                <button
-                  type="submit"
-                  disabled={
-                    busy ||
-                    (selectedSource.requires_upload &&
-                      !file &&
-                      !(source === "ocr" && ocrText.trim())) ||
-                    (source === "manual" &&
-                      !manualCustomer.name.trim() &&
-                      !manualCustomer.phone.trim() &&
-                      !manualCustomer.email.trim() &&
-                      !manualVehicle.year.trim() &&
-                      !manualVehicle.make.trim() &&
-                      !manualVehicle.model.trim() &&
-                      !manualVehicle.mileage.trim() &&
-                      !manualVehicle.vin.trim())
-                  }
-                  className="btn-primary inline-flex items-center justify-center gap-1.5 px-5 py-2.5 text-sm disabled:opacity-60"
-                >
-                  {source === "manual"
-                    ? busy
-                      ? "Saving…"
-                      : (
-                          <>
-                            <IconSave />
-                            Save
-                          </>
-                        )
-                    : busy
-                      ? "Starting…"
-                      : "Start import"}
-                  {source !== "manual" && !busy ? <IconContinue /> : null}
-                </button>
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={
+                        busy ||
+                        (!manualCustomer.name.trim() &&
+                          !manualCustomer.phone.trim() &&
+                          !manualCustomer.email.trim() &&
+                          !manualVehicle.year.trim() &&
+                          !manualVehicle.make.trim() &&
+                          !manualVehicle.model.trim() &&
+                          !manualVehicle.mileage.trim() &&
+                          !manualVehicle.vin.trim())
+                      }
+                      className="btn-primary inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 text-sm disabled:opacity-60"
+                    >
+                      {busy ? (
+                        "Saving…"
+                      ) : (
+                        <>
+                          <IconSave />
+                          Save
+                        </>
+                      )}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStep("source");
+                        setPrimaryGroup(null);
+                        setFileDragOver(false);
+                      }}
+                      className={`btn-ghost inline-flex items-center justify-center gap-1.5 ${
+                        FILE_SOURCES.has(source) ? "px-3.5 py-1.5 text-sm" : "px-4 py-2 text-sm"
+                      }`}
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={
+                        busy ||
+                        (selectedSource.requires_upload &&
+                          !file &&
+                          !(source === "ocr" && ocrText.trim()))
+                      }
+                      className={`btn-primary inline-flex items-center justify-center gap-1.5 text-sm disabled:opacity-60 ${
+                        FILE_SOURCES.has(source) ? "px-3.5 py-1.5" : "px-5 py-2.5"
+                      }`}
+                    >
+                      {busy ? "Starting…" : "Start import"}
+                      {!busy ? <IconContinue /> : null}
+                    </button>
+                  </>
+                )}
               </div>
             </form>
           </div>,
@@ -1516,7 +1641,7 @@ export default function ImportPage() {
         )}
 
       {step === "progress" && (
-        <section className="surface-panel relative overflow-hidden max-w-xl p-6">
+        <section className="surface-panel relative max-w-xl shrink-0 overflow-hidden p-6">
           <div
             className="pointer-events-none absolute -right-8 -top-10 h-32 w-32 rounded-full bg-[radial-gradient(circle,rgba(240,90,36,0.18),transparent_70%)]"
             aria-hidden
@@ -1541,7 +1666,7 @@ export default function ImportPage() {
       )}
 
       {step === "duplicates" && job && (
-        <section className="min-w-0 space-y-4">
+        <section className="min-w-0 shrink-0 space-y-4">
           <div className="min-w-0">
             <h2 className="font-display text-lg font-semibold tracking-tight">
               Resolve duplicates
@@ -1576,7 +1701,7 @@ export default function ImportPage() {
       )}
 
       {step === "report" && job && (
-        <section className="space-y-4">
+        <section className="shrink-0 space-y-4">
           <div className="surface-panel space-y-5 p-5 sm:p-6">
             <div className="flex flex-wrap items-center gap-3">
               <StatusBadge status={job.status} />
@@ -1643,59 +1768,61 @@ export default function ImportPage() {
         </section>
       )}
 
-      <section className="space-y-3">
-        <h2 className="font-display text-lg font-semibold tracking-tight">History</h2>
-        <div className="table-scroll">
-          <table>
-            <thead className="bg-[var(--background)]/70 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
-              <tr>
-                <th className="px-4 py-3 text-left">Source</th>
-                <th className="px-4 py-3 text-left">Status</th>
-                <th className="px-4 py-3 text-left">Customers</th>
-                <th className="px-4 py-3 text-left">Vehicles</th>
-                <th className="px-4 py-3 text-left">Repairs</th>
-                <th className="px-4 py-3 text-left">Duplicates</th>
-                <th className="px-4 py-3 text-left">Created</th>
-              </tr>
-            </thead>
-            <tbody>
-              {jobs.map((j) => {
-                const selected = job?.id === j.id;
-                return (
-                <tr
-                  key={j.id}
-                  aria-selected={selected}
-                  className={`cursor-pointer border-t border-[var(--line)] transition-colors ${
-                    selected
-                      ? "bg-[var(--accent)]/10 shadow-[inset_3px_0_0_0_var(--accent)]"
-                      : "hover:bg-[var(--accent-soft)]/60"
-                  }`}
+      <section className="flex min-h-0 flex-1 flex-col gap-3">
+        <h2 className="font-display flex shrink-0 items-center gap-2 text-lg font-semibold tracking-tight">
+          <IconHistory className="h-5 w-5 text-[var(--muted)]" />
+          History
+        </h2>
+        <ul className="asa-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-[var(--radius)] border border-[var(--line)] bg-[var(--panel)] shadow-[var(--shadow-soft)] [-webkit-overflow-scrolling:touch]">
+          {jobs.map((j) => {
+            const selected = job?.id === j.id;
+            return (
+              <li key={j.id}>
+                <button
+                  type="button"
+                  aria-pressed={selected}
                   onClick={() => void openRecentJob(j)}
+                  className={`flex w-full items-start gap-3 border-t border-[var(--line)] px-3.5 py-3 text-left transition-colors first:border-t-0 ${
+                    selected
+                      ? "border-l-2 border-l-[var(--accent)] bg-[var(--accent-soft)] pl-[calc(0.875rem-2px)]"
+                      : "border-l-2 border-l-transparent hover:bg-[var(--background)]"
+                  }`}
                 >
-                  <td className="px-4 py-3 text-left capitalize">{j.source}</td>
-                  <td className="px-4 py-3 text-left">
-                    <StatusBadge status={j.status} />
-                  </td>
-                  <td className="px-4 py-3 text-left tabular-nums">{entityImported(j, "customer")}</td>
-                  <td className="px-4 py-3 text-left tabular-nums">{entityImported(j, "vehicle")}</td>
-                  <td className="px-4 py-3 text-left tabular-nums">{entityImported(j, "repair_history")}</td>
-                  <td className="px-4 py-3 text-left tabular-nums">{duplicatesResolved(j)}</td>
-                  <td className="px-4 py-3 text-left text-[var(--muted)]">
-                    {j.created_at ? new Date(j.created_at).toLocaleString() : "—"}
-                  </td>
-                </tr>
-                );
-              })}
-              {jobs.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-[var(--muted)]">
-                    No imports yet — start with a spreadsheet or manual entry above.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+                  <span
+                    className={`mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
+                      selected
+                        ? "bg-[var(--accent)] text-white"
+                        : "bg-[var(--background)] text-[var(--foreground)] ring-1 ring-[var(--line)]"
+                    }`}
+                  >
+                    <JobSourceIcon source={j.source} className="h-4 w-4" />
+                  </span>
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                      <span
+                        className={`truncate text-sm capitalize ${
+                          selected ? "font-semibold text-[var(--ink)]" : "font-medium"
+                        }`}
+                      >
+                        {j.source}
+                      </span>
+                      <StatusBadge status={j.status} />
+                    </div>
+                    <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-xs text-[var(--muted)]">
+                      <span className="min-w-0 break-words tabular-nums">{jobCountsSummary(j)}</span>
+                      <span className="shrink-0 whitespace-nowrap">{formatJobCreated(j.created_at)}</span>
+                    </div>
+                  </div>
+                </button>
+              </li>
+            );
+          })}
+          {jobs.length === 0 && (
+            <li className="px-3.5 py-10 text-center text-sm text-[var(--muted)]">
+              No imports yet — start with a spreadsheet or manual entry above.
+            </li>
+          )}
+        </ul>
       </section>
       </div>
     </div>

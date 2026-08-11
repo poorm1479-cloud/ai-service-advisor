@@ -4,6 +4,7 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import {
   FormEvent,
+  PointerEvent as ReactPointerEvent,
   ReactNode,
   Suspense,
   useCallback,
@@ -47,6 +48,11 @@ type EntryMode = "vin" | "manual";
 type PageView = "intake" | "todays";
 /** URL `?view=` — keeps No VIN / Today's selection across menu navigation. */
 type WalkInView = "vin" | "manual" | "todays";
+
+const WALK_IN_VIEWS: readonly WalkInView[] = ["vin", "manual", "todays"];
+
+/** Minimum horizontal drag distance (px) to change views. */
+const VIEW_SWIPE_THRESHOLD_PX = 56;
 
 function parseWalkInView(value: string | null): WalkInView {
   if (value === "manual" || value === "todays" || value === "vin") return value;
@@ -130,6 +136,13 @@ function WalkInsContent() {
   const [match, setMatch] = useState<MatchContext | null>(null);
   const [matchLoading, setMatchLoading] = useState(false);
   const assistSeq = useRef(0);
+  const intakeScrollRef = useRef<HTMLDivElement>(null);
+
+  // Scan VIN ↔ No VIN share one scroller; reset so prior scroll doesn't carry over.
+  useEffect(() => {
+    if (pageView !== "intake") return;
+    intakeScrollRef.current?.scrollTo({ top: 0 });
+  }, [entryMode, pageView]);
 
   const complaintText = useMemo(
     () => complaints.map((c) => c.trim()).filter(Boolean).join("\n"),
@@ -379,6 +392,66 @@ function WalkInsContent() {
     [pathname, router, searchParams],
   );
 
+  /** Horizontal click-drag / swipe switches adjacent views (VIN ↔ No VIN ↔ Today). */
+  const swipeRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+
+  const onSwipePointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const el = e.target as HTMLElement | null;
+    if (
+      el?.closest(
+        "input, textarea, select, button, a, label, [role='tab'], [contenteditable='true']",
+      )
+    ) {
+      return;
+    }
+    // Avoid highlighting body copy while click-dragging to change views.
+    window.getSelection()?.removeAllRanges();
+    swipeRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, []);
+
+  const onSwipePointerUp = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      const start = swipeRef.current;
+      swipeRef.current = null;
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+      if (!start || start.pointerId !== e.pointerId) return;
+
+      const dx = e.clientX - start.startX;
+      const dy = e.clientY - start.startY;
+      if (Math.abs(dx) < VIEW_SWIPE_THRESHOLD_PX) return;
+      // Prefer vertical scroll when the gesture is mostly vertical.
+      if (Math.abs(dx) < Math.abs(dy) * 1.15) return;
+
+      const idx = WALK_IN_VIEWS.indexOf(walkInView);
+      if (idx < 0) return;
+      if (dx < 0 && idx < WALK_IN_VIEWS.length - 1) {
+        selectView(WALK_IN_VIEWS[idx + 1]);
+      } else if (dx > 0 && idx > 0) {
+        selectView(WALK_IN_VIEWS[idx - 1]);
+      }
+    },
+    [selectView, walkInView],
+  );
+
+  const onSwipePointerCancel = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    swipeRef.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  }, []);
+
   async function onCreate(e: FormEvent) {
     e.preventDefault();
     setSaving(true);
@@ -446,7 +519,8 @@ function WalkInsContent() {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:h-full">
       <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
-        <div>
+        <div className="flex items-center gap-2">
+          <IconDoorOpen className="h-5 w-5 shrink-0 text-[var(--muted)]" />
           <h1 className="page-title">Walk-ins</h1>
         </div>
         {pageView === "todays" && !loading ? (
@@ -466,7 +540,12 @@ function WalkInsContent() {
         </p>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+      <div
+        className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden touch-pan-y select-none [&_input]:select-text [&_textarea]:select-text"
+        onPointerDown={onSwipePointerDown}
+        onPointerUp={onSwipePointerUp}
+        onPointerCancel={onSwipePointerCancel}
+      >
         <div
           className="surface-panel flex shrink-0 gap-1 p-1.5"
           role="tablist"
@@ -581,7 +660,10 @@ function WalkInsContent() {
             onSubmit={onCreate}
             className="surface-panel flex min-h-0 flex-1 flex-col overflow-hidden"
           >
-            <div className="asa-scroll min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-4 sm:p-5">
+            <div
+              ref={intakeScrollRef}
+              className="asa-scroll min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-4 sm:p-5"
+            >
               <SectionHeader
                 title="Vehicle"
                 titleClassName="text-[var(--accent)]"
@@ -880,10 +962,10 @@ function WalkInsContent() {
                 <button
                   type="submit"
                   disabled={saving || vinLooking || services.length === 0}
-                  className="btn-primary inline-flex min-w-[9.5rem] items-center justify-center gap-1.5 px-5 py-2.5 shadow-[0_14px_32px_-16px_rgba(240,90,36,0.85)] disabled:opacity-60"
+                  className="btn-primary inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-sm shadow-[0_10px_24px_-14px_rgba(240,90,36,0.8)] disabled:opacity-60"
                 >
-                  {!saving ? <IconPlay className="h-4 w-4" /> : null}
-                  {saving ? "Starting…" : "Start Service"}
+                  {!saving ? <IconWrench className="h-3.5 w-3.5" /> : null}
+                  {saving ? "Starting…" : "Start"}
                 </button>
               </div>
             </div>
@@ -1049,7 +1131,11 @@ function StatusPill({ status }: { status: string }) {
       ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
       : status === "open"
         ? "bg-[var(--accent-soft)] text-[var(--accent)] ring-[var(--accent)]/25"
-        : "bg-[var(--background)] text-[var(--muted)] ring-[var(--line)]";
+        : status === "closed"
+          ? "bg-slate-100 text-slate-700 ring-slate-200"
+          : status === "cancelled"
+            ? "bg-red-50 text-red-700 ring-red-200"
+            : "bg-[var(--background)] text-[var(--muted)] ring-[var(--line)]";
   return (
     <span
       className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize ring-1 ${tone}`}
@@ -1101,6 +1187,27 @@ function Field({
         className="w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2.5 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-glow)]"
       />
     </label>
+  );
+}
+
+function IconDoorOpen({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M13 4h3a2 2 0 0 1 2 2v14" />
+      <path d="M2 20h3" />
+      <path d="M13 20h9" />
+      <path d="M10 12v.01" />
+      <path d="M13 4.562v16.157a1 1 0 0 1-1.242.97L5 20V5.562a2 2 0 0 1 1.515-1.94l4-1A2 2 0 0 1 13 4.561Z" />
+    </svg>
   );
 }
 
@@ -1158,7 +1265,7 @@ function IconQueue({ className = "h-4 w-4" }: { className?: string }) {
   );
 }
 
-function IconPlay({ className = "h-4 w-4" }: { className?: string }) {
+function IconWrench({ className = "h-4 w-4" }: { className?: string }) {
   return (
     <svg
       className={className}
@@ -1170,7 +1277,7 @@ function IconPlay({ className = "h-4 w-4" }: { className?: string }) {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <path d="M7 4.5v15l13-7.5L7 4.5z" />
+      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76Z" />
     </svg>
   );
 }

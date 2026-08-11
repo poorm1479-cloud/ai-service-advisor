@@ -1,227 +1,393 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAuth } from "@/lib/auth";
 import {
-  AnalyticsSummary,
   Campaign,
-  CampaignMessage,
   SuggestedAction,
   createCampaign,
-  deleteCampaignMessages,
   getAiPreview,
-  getAnalyticsSummary,
-  listCampaignMessages,
-  listCampaigns,
-  listChannels,
   listSuggestedActions,
-  processCampaign,
-  scheduleCampaign,
-  updateCampaign,
   type AiPreview,
+  type AudienceMember,
 } from "@/lib/marketing";
 
-type Tab = "followup" | "messages" | "analytics";
+const STEPS = ["AI Recommendations", "Review customers", "AI message"] as const;
+/** Drafts stay email for API compat — sending is disabled. */
+const PREVIEW_CHANNELS = ["email"] as const;
 
-const STEPS = ["AI Recommendations", "Review customer", "AI message", "Send"] as const;
-/** Review customer: Email only (SMS / voice hidden in UI). */
-const REVIEW_CHANNELS = ["email"] as const;
-const HIDDEN_CHANNELS = new Set(["sms", "voice"]);
+function IconMarketing({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4.5 12.5 19.5 5.5 13.5 19.5l-2-5.5-5.5-1.5Z" />
+      <path d="M11.5 14 19.5 5.5" />
+    </svg>
+  );
+}
+
+function IconSpark({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M12 3.5 13.4 8.6 18.5 10 13.4 11.4 12 16.5 10.6 11.4 5.5 10 10.6 8.6 12 3.5Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M18.5 15.5 19.2 17.8 21.5 18.5 19.2 19.2 18.5 21.5 17.8 19.2 15.5 18.5 17.8 17.8 18.5 15.5Z"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconUser({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="12" cy="8" r="3.25" stroke="currentColor" strokeWidth="1.6" />
+      <path
+        d="M5.5 19.25c1.4-3 3.7-4.5 6.5-4.5s5.1 1.5 6.5 4.5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function IconMail({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <rect
+        x="3.75"
+        y="5.75"
+        width="16.5"
+        height="12.5"
+        rx="2"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      />
+      <path
+        d="m5 8 7 5 7-5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconArrow({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M5 12h12.5M13 6.5 18.5 12 13 17.5"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconX({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M6.5 6.5 17.5 17.5M17.5 6.5 6.5 17.5"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function IconCopy({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <rect
+        x="9"
+        y="9"
+        width="11"
+        height="11"
+        rx="2"
+        stroke="currentColor"
+        strokeWidth="1.7"
+      />
+      <path
+        d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function IconCheck({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="m5.5 12.5 4 4 9-9"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconClipboard({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <rect
+        x="6"
+        y="4.75"
+        width="12"
+        height="15.5"
+        rx="2"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      />
+      <path
+        d="M9 4.75h6v2.5H9z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M9.5 11h5M9.5 14.5h3.5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function IconUserOff({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="12" cy="8" r="3.25" stroke="currentColor" strokeWidth="1.6" />
+      <path
+        d="M5.5 19.25c1.4-3 3.7-4.5 6.5-4.5s5.1 1.5 6.5 4.5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+      <path
+        d="M4.5 4.5 19.5 19.5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function IconWrench({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M14.7 6.3a4.2 4.2 0 0 0-5.9 5.9L4.5 16.5l3 3 4.3-4.3a4.2 4.2 0 0 0 5.9-5.9l-2.4 2.4-2.6-2.4 2-2.4Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconCalendarMissed({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <rect
+        x="3.75"
+        y="5.75"
+        width="16.5"
+        height="14.5"
+        rx="2"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      />
+      <path
+        d="M8 3.75v3.5M16 3.75v3.5M3.75 10.25h16.5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+      <path
+        d="m10 14.25 4 4M14 14.25l-4 4"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function actionIcon(action: SuggestedAction) {
+  const key = `${action.id} ${action.campaign_type}`.toLowerCase();
+  const cls = "h-5 w-5";
+  if (key.includes("declined") || key.includes("estimate"))
+    return <IconClipboard className={cls} />;
+  if (key.includes("open_recommendation") || key.includes("advisor"))
+    return <IconSpark className={cls} />;
+  if (key.includes("inactive") || key.includes("lapsed") || key.includes("win"))
+    return <IconUserOff className={cls} />;
+  if (
+    key.includes("maintenance") ||
+    key.includes("oil") ||
+    key.includes("service") ||
+    key.includes("reminder")
+  )
+    return <IconWrench className={cls} />;
+  if (key.includes("missed") || key.includes("appointment"))
+    return <IconCalendarMissed className={cls} />;
+  if (key.includes("thank") || key.includes("review"))
+    return <IconSpark className={cls} />;
+  if (key.includes("recall") || key.includes("alert"))
+    return <IconClipboard className={cls} />;
+  return <IconSpark className={cls} />;
+}
 
 export default function MarketingPage() {
   const { session, loading: authLoading } = useAuth();
-  const [tab, setTab] = useState<Tab>("followup");
-  const [channels, setChannels] = useState<string[]>([]);
   const [suggestedActions, setSuggestedActions] = useState<SuggestedAction[]>([]);
-  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [selected, setSelected] = useState<Campaign | null>(null);
+  const [audience, setAudience] = useState<AudienceMember[]>([]);
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(
+    null,
+  );
   const [activeActionId, setActiveActionId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<CampaignMessage[]>([]);
-  /** Messages loaded for the Messages tab, tagged with parent campaign for type grouping. */
-  const [tabMessages, setTabMessages] = useState<
-    (CampaignMessage & { campaign_name: string; campaign_type: string })[]
-  >([]);
-  const [messagesTypeFilter, setMessagesTypeFilter] = useState<string | null>(null);
-  const [selectedMessage, setSelectedMessage] = useState<
-    (CampaignMessage & { campaign_name?: string; campaign_type?: string }) | null
-  >(null);
   const [aiPreview, setAiPreview] = useState<AiPreview | null>(null);
-  const [channelOverride, setChannelOverride] = useState<string | null>(null);
-  const [messageDraft, setMessageDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [sentFlash, setSentFlash] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [loadingList, setLoadingList] = useState(true);
   const [portalReady, setPortalReady] = useState(false);
-  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(new Set());
-  const [deleteSelectedConfirm, setDeleteSelectedConfirm] = useState(false);
-  /** Campaign IDs that still have at least one message (exclude fully deleted). */
-  const [idsWithMessages, setIdsWithMessages] = useState<Set<string>>(() => new Set());
+  const [copied, setCopied] = useState(false);
+  const [audienceExpanded, setAudienceExpanded] = useState(false);
 
   useEffect(() => {
     setPortalReady(true);
   }, []);
 
   const closeFollowupDialog = useCallback(() => {
-    if (busy) return;
+    if (busy || previewBusy) return;
     setSelected(null);
+    setAudience([]);
+    setAudienceExpanded(false);
+    setSelectedCustomerId(null);
     setActiveActionId(null);
     setAiPreview(null);
-    setChannelOverride(null);
-    setMessageDraft("");
-    setSentFlash(false);
-    setMessages([]);
-  }, [busy]);
+    setCopied(false);
+  }, [busy, previewBusy]);
 
-  const refresh = useCallback(async (opts?: { light?: boolean }) => {
-    // light: campaign list only — used after opening Review customer so the dialog
-    // is not blocked by analytics / suggested-actions / N message probes.
-    if (opts?.light) {
-      const c = await listCampaigns();
-      setCampaigns(c);
-      return c;
+  const copyPreviewMessage = useCallback(async () => {
+    const text = (
+      aiPreview?.message ||
+      selected?.ai_defaults?.message ||
+      selected?.custom_message ||
+      ""
+    )
+      .replace(/\n{2,}/g, "\n")
+      .trim();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setError("Could not copy message");
     }
+  }, [aiPreview, selected]);
 
-    const [c, sum, actionsResult] = await Promise.all([
-      listCampaigns(),
-      getAnalyticsSummary(),
-      listSuggestedActions().catch(() => [] as SuggestedAction[]),
-    ]);
-    setCampaigns(c);
-    setSummary(sum);
-    setSuggestedActions(actionsResult);
-
-    // Only list campaigns that still have message records (deleted ones drop out of Recent).
-    const candidates = c.filter(
-      (camp) => camp.status !== "draft" && camp.status !== "cancelled",
+  const refresh = useCallback(async () => {
+    const actionsResult = await listSuggestedActions().catch(
+      () => [] as SuggestedAction[],
     );
-    const present = await Promise.all(
-      candidates.map(async (camp) => {
-        try {
-          const msgs = await listCampaignMessages(camp.id);
-          return msgs.length > 0 ? camp.id : null;
-        } catch {
-          return null;
-        }
-      }),
+    setSuggestedActions(
+      actionsResult.filter((action) => action.id !== "missed_appointment"),
     );
-    setIdsWithMessages(new Set(present.filter((id): id is string => id != null)));
-
-    return c;
   }, []);
-
-  const canEditCampaign = (c: Campaign | null) =>
-    !!c && (c.status === "draft" || c.status === "paused" || c.status === "scheduled");
 
   useEffect(() => {
     if (authLoading || !session) return;
     void (async () => {
+      setLoadingList(true);
       try {
-        setChannels(await listChannels());
         await refresh();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Load failed");
+      } finally {
+        setLoadingList(false);
       }
     })();
   }, [authLoading, session, refresh]);
 
-  /** Sent follow-ups that still have messages (not draft/cancelled and not fully deleted). */
-  const recentSentFollowUps = useMemo(
-    () =>
-      campaigns
-        .filter((c) => c.status !== "draft" && c.status !== "cancelled")
-        .filter((c) => idsWithMessages.has(c.id))
-        .slice(0, 6),
-    [campaigns, idsWithMessages],
-  );
-
-  const typeLabel = useCallback((campaignType: string) => {
-    const fromAction = suggestedActions.find((a) => a.campaign_type === campaignType);
-    if (fromAction) return fromAction.title;
-    return campaignType.replaceAll("_", " ");
-  }, [suggestedActions]);
-
-  /** Visible messages only (SMS / voice hidden in marketing UI). */
-  const visibleTabMessages = useMemo(
-    () => tabMessages.filter((m) => !HIDDEN_CHANNELS.has(m.channel)),
-    [tabMessages],
-  );
-
-  /** Messages tab: group by campaign_type so the same kind appears in one place. */
-  const messagesByType = useMemo(() => {
-    const map = new Map<
-      string,
-      (CampaignMessage & { campaign_name: string; campaign_type: string })[]
-    >();
-    for (const m of visibleTabMessages) {
-      if (messagesTypeFilter && m.campaign_type !== messagesTypeFilter) continue;
-      const list = map.get(m.campaign_type) ?? [];
-      list.push(m);
-      map.set(m.campaign_type, list);
-    }
-    return [...map.entries()]
-      .map(([type, items]) => ({
-        type,
-        label: typeLabel(type),
-        items: items.sort((a, b) => {
-          const ta = a.sent_at ?? a.scheduled_at ?? "";
-          const tb = b.sent_at ?? b.scheduled_at ?? "";
-          return tb.localeCompare(ta);
-        }),
-      }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [visibleTabMessages, messagesTypeFilter, typeLabel]);
-
-  const messageTypeChips = useMemo(() => {
-    const types = new Set(visibleTabMessages.map((m) => m.campaign_type));
-    return [...types]
-      .map((type) => ({
-        type,
-        label: typeLabel(type),
-        count: visibleTabMessages.filter((m) => m.campaign_type === type).length,
-      }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [visibleTabMessages, typeLabel]);
-
-  const aiChannel =
-    channelOverride ?? aiPreview?.channel ?? selected?.ai_defaults?.channel ?? "email";
-  /** SMS / voice are hidden in Review customer; map to email. */
-  const recommendedChannel = HIDDEN_CHANNELS.has(aiChannel) ? "email" : aiChannel;
-  const reviewChannels = (channels.length ? channels : [...REVIEW_CHANNELS]).filter(
-    (ch) => !HIDDEN_CHANNELS.has(ch),
-  );
-
-  /** Contact for the active channel only (email vs phone). */
-  const reviewContact =
-    recommendedChannel === "email"
-      ? aiPreview?.email?.trim() || null
-      : aiPreview?.phone?.trim() || null;
-  const hasContact = Boolean(reviewContact);
-
-  const previewMessage =
-    messageDraft ||
+  const previewMessageRaw =
     aiPreview?.message ||
     selected?.ai_defaults?.message ||
+    selected?.custom_message ||
     null;
+  const previewMessage = previewMessageRaw
+    ? previewMessageRaw.replace(/\n{2,}/g, "\n").trim()
+    : null;
 
-  const flowStep = !selected ? 0 : !previewMessage ? 1 : sentFlash ? 3 : 2;
+  const flowStep = !selected ? 0 : !previewMessage ? 1 : 2;
 
-  async function loadPreview(campaign: Campaign, channel?: string, prefetched?: AiPreview | null) {
+  async function loadPreview(
+    campaign: Campaign,
+    customerId?: string | null,
+    prefetched?: AiPreview | null,
+  ) {
     const preview =
       prefetched ??
-      ((await getAiPreview(campaign.id)) as AiPreview);
+      ((await getAiPreview(
+        campaign.id,
+        customerId ?? undefined,
+      )) as AiPreview);
     setAiPreview(preview);
-    setMessageDraft(
-      preview.message ??
-        campaign.custom_message ??
-        campaign.ai_defaults?.message ??
-        "",
-    );
-    if (!channel) {
-      setChannelOverride(null);
+    if (preview.customer_id) {
+      setSelectedCustomerId(preview.customer_id);
+    } else if (customerId) {
+      setSelectedCustomerId(customerId);
     }
     return preview;
+  }
+
+  async function onSelectCustomer(member: AudienceMember) {
+    if (!selected || previewBusy || member.customer_id === selectedCustomerId) {
+      return;
+    }
+    setPreviewBusy(true);
+    setError(null);
+    setCopied(false);
+    try {
+      await loadPreview(selected, member.customer_id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load preview");
+    } finally {
+      setPreviewBusy(false);
+    }
   }
 
   async function onSelectAction(action: SuggestedAction) {
@@ -231,31 +397,34 @@ export default function MarketingPage() {
     }
     setBusy(true);
     setError(null);
-    setSentFlash(false);
-    setMessages([]);
     setAiPreview(null);
-    setTab("followup");
+    setAudience([]);
+    setAudienceExpanded(false);
+    setSelectedCustomerId(null);
     try {
-      const allowed = (channels.length > 0 ? channels : [...REVIEW_CHANNELS]).filter(
-        (ch) => !HIDDEN_CHANNELS.has(ch),
-      );
       const created = await createCampaign({
         name: `${action.title} follow-up`,
         campaign_type: action.campaign_type,
-        channels_allowed: allowed.length > 0 ? allowed : [...REVIEW_CHANNELS],
+        channels_allowed: [...PREVIEW_CHANNELS],
         use_demo_audience: false,
         auto_schedule: false,
         expected_revenue: "500",
         tags: ["ai-followup", action.id],
         ...(action.custom_message ? { custom_message: action.custom_message } : {}),
       });
-      const { ai_preview: prefetched, ...campaign } = created;
+      const {
+        ai_preview: prefetched,
+        audience: createdAudience,
+        ...campaign
+      } = created;
+      const members = createdAudience ?? [];
       setSelected(campaign);
+      setAudience(members);
       setActiveActionId(action.id);
-      setCampaigns((prev) => [campaign, ...prev.filter((c) => c.id !== campaign.id)]);
-      await loadPreview(campaign, undefined, prefetched ?? null);
-      // Background only: full refresh was blocking Review customer (audience + metrics N+1).
-      void refresh({ light: true }).catch(() => undefined);
+      const initialId =
+        prefetched?.customer_id ?? members[0]?.customer_id ?? null;
+      setSelectedCustomerId(initialId);
+      await loadPreview(campaign, initialId, prefetched ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start follow-up");
     } finally {
@@ -263,329 +432,212 @@ export default function MarketingPage() {
     }
   }
 
-  /** Recent follow-ups: open message detail for the latest message in that campaign. */
-  async function onSelectRecentFollowup(campaign: Campaign) {
-    setBusy(true);
-    setError(null);
-    try {
-      const msgs = await listCampaignMessages(campaign.id);
-      if (msgs.length === 0) {
-        setError("No messages for this follow-up");
-        return;
-      }
-      const latest = [...msgs].sort((a, b) => {
-        const ta = a.sent_at ?? a.scheduled_at ?? "";
-        const tb = b.sent_at ?? b.scheduled_at ?? "";
-        return tb.localeCompare(ta);
-      })[0];
-      // Do not set `selected` — that opens the Review customer dialog.
-      setSelectedMessage({
-        ...latest,
-        campaign_name: campaign.name,
-        campaign_type: campaign.campaign_type,
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load message");
-    } finally {
-      setBusy(false);
-    }
-  }
+  const confidencePct =
+    (aiPreview?.confidence ?? selected?.ai_defaults?.confidence) != null
+      ? Math.round(
+          (aiPreview?.confidence ?? selected?.ai_defaults?.confidence ?? 0) * 100,
+        )
+      : null;
 
-  async function onChannelOverride(ch: string) {
-    if (!selected || !canEditCampaign(selected)) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const updated = await updateCampaign(selected.id, {
-        channels_allowed: [ch],
-      });
-      setSelected(updated);
-      setChannelOverride(ch);
-      setCampaigns((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
-      await loadPreview(updated, ch);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Channel update failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onSend() {
-    if (!selected || !canEditCampaign(selected) || !hasContact) return;
-    const body = messageDraft.trim();
-    if (!body) {
-      setError("Message cannot be empty");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const patch: Record<string, unknown> = { custom_message: body };
-      // Pin channel on send when user overrode it, or when AI chose a hidden channel.
-      if (channelOverride || HIDDEN_CHANNELS.has(aiChannel)) {
-        patch.channels_allowed = [recommendedChannel];
-      }
-      const updated = await updateCampaign(selected.id, patch);
-      setSelected(updated);
-      setAiPreview((prev) => (prev ? { ...prev, message: body } : prev));
-      await scheduleCampaign(selected.id);
-      await processCampaign(selected.id);
-      setSentFlash(true);
-      const list = await refresh();
-      const latest = list.find((x) => x.id === selected.id);
-      if (latest) setSelected(latest);
-      const msgs = await listCampaignMessages(selected.id);
-      setMessages(msgs);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Send failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  /** Load campaign messages for the Messages tab (sent follow-ups grouped by type). */
-  async function onLoadMessages() {
-    // Messages tab: load all sent follow-ups and group by type
-    const targets = campaigns.filter(
-      (c) => c.status !== "draft" && c.status !== "cancelled",
-    );
-    if (targets.length === 0) {
-      setTabMessages([]);
-      setSelectedMessage(null);
-      setSelectedMessageIds(new Set());
-      setMessagesTypeFilter(null);
-      setTab("messages");
-      return;
-    }
-
-    setBusy(true);
-    setError(null);
-    try {
-      const nested = await Promise.all(
-        targets.map(async (c) => {
-          const msgs = await listCampaignMessages(c.id);
-          return msgs.map((m) => ({
-            ...m,
-            campaign_name: c.name,
-            campaign_type: c.campaign_type,
-          }));
-        }),
-      );
-      const flat = nested.flat();
-      setTabMessages(flat);
-      setSelectedMessage(null);
-      setSelectedMessageIds(new Set());
-      setTab("messages");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Load messages failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const visibleMessageIds = useMemo(
-    () => messagesByType.flatMap((g) => g.items.map((m) => m.id)),
-    [messagesByType],
+  const reasons = (
+    aiPreview?.reasons ??
+    selected?.ai_defaults?.reasons ??
+    []
+  ).filter(
+    (r) =>
+      !r.startsWith("channel=") &&
+      !r.startsWith("send_window=") &&
+      !r.startsWith("frequency="),
   );
 
-  const allVisibleSelected =
-    visibleMessageIds.length > 0 &&
-    visibleMessageIds.every((id) => selectedMessageIds.has(id));
-
-  function toggleMessageSelected(id: string) {
-    setSelectedMessageIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  function toggleSelectAllVisible() {
-    setSelectedMessageIds((prev) => {
-      if (allVisibleSelected) {
-        const next = new Set(prev);
-        for (const id of visibleMessageIds) next.delete(id);
-        return next;
-      }
-      const next = new Set(prev);
-      for (const id of visibleMessageIds) next.add(id);
-      return next;
-    });
-  }
-
-  async function onDeleteSelectedMessages() {
-    const ids = [...selectedMessageIds];
-    if (ids.length === 0) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await deleteCampaignMessages(ids);
-      const removed = new Set(ids);
-      setTabMessages((prev) => prev.filter((m) => !removed.has(m.id)));
-      setMessages((prev) => prev.filter((m) => !removed.has(m.id)));
-      setSelectedMessage((prev) => (prev && removed.has(prev.id) ? null : prev));
-      setSelectedMessageIds(new Set());
-      setDeleteSelectedConfirm(false);
-      // Recompute campaigns that still have messages so Recent follow-ups stays in sync.
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Delete messages failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:h-full">
-      <div className="shrink-0">
-        <h1 className="page-title">AI Customer Follow-up</h1>
-        <p className="mt-1 text-sm text-[var(--muted)]">
-          Email — AI suggests who to contact and drafts the message
-        </p>
-      </div>
-
-      <div className="flex shrink-0 flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setTab("followup")}
-          className={`rounded-md px-3 py-1.5 text-sm ${
-            tab === "followup"
-              ? "bg-[var(--accent-soft)] font-medium text-[var(--accent)]"
-              : "text-[var(--muted)] hover:bg-[var(--accent-soft)]"
-          }`}
-        >
-          Follow-up
-        </button>
-        <button
-          type="button"
-          onClick={() => void onLoadMessages()}
-          className={`rounded-md px-3 py-1.5 text-sm ${
-            tab === "messages"
-              ? "bg-[var(--accent-soft)] font-medium text-[var(--accent)]"
-              : "text-[var(--muted)] hover:bg-[var(--accent-soft)]"
-          }`}
-        >
-          Messages
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab("analytics")}
-          className={`rounded-md px-3 py-1.5 text-sm ${
-            tab === "analytics"
-              ? "bg-[var(--accent-soft)] font-medium text-[var(--accent)]"
-              : "text-[var(--muted)] hover:bg-[var(--accent-soft)]"
-          }`}
-        >
-          Analytics
-        </button>
-      </div>
+    <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-hidden md:h-full">
+      <header className="relative shrink-0 overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[var(--shadow-soft)]">
+        <div
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,var(--accent-soft),transparent_55%),linear-gradient(135deg,#fff_0%,#fafafa_100%)]"
+          aria-hidden
+        />
+        <div
+          className="pointer-events-none absolute -right-10 -top-16 h-48 w-48 rounded-full bg-[var(--accent-glow)] blur-3xl"
+          aria-hidden
+        />
+        <div className="relative px-5 py-5 sm:px-6 sm:py-6">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <IconMarketing className="h-5 w-5 shrink-0 text-[var(--muted)]" />
+              <h1 className="page-title">Marketing</h1>
+            </div>
+            <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-[var(--muted)]">
+              AI suggests who to contact and drafts the message — preview only
+            </p>
+          </div>
+        </div>
+      </header>
 
       {error && (
-        <p className="shrink-0 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <p className="shrink-0 rounded-xl border border-red-200/80 bg-red-50 px-4 py-2.5 text-sm text-red-700">
           {error}
         </p>
       )}
 
-      <div
-        className={
-          tab === "messages"
-            ? "flex min-h-0 flex-1 flex-col overflow-hidden"
-            : "asa-scroll min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain"
-        }
-      >
-      {tab === "followup" && (
-        <div className="space-y-6">
-          <ol className="flex flex-wrap gap-2 text-xs">
-            {STEPS.map((label, i) => (
-              <li
-                key={label}
-                className={`rounded-md px-2.5 py-1 ${
-                  i <= flowStep
-                    ? "bg-[var(--accent-soft)] font-medium text-[var(--accent)]"
-                    : "text-[var(--muted)]"
-                }`}
-              >
-                {i + 1}. {label}
-              </li>
-            ))}
+      <div className="mx-auto flex min-h-0 w-full max-w-2xl flex-1 flex-col gap-6 overflow-hidden">
+        <nav aria-label="Follow-up steps" className="flex shrink-0 justify-center">
+          <ol className="flex items-center justify-center">
+            {STEPS.map((label, i) => {
+              const done = i < flowStep;
+              const current = i === flowStep;
+              return (
+                <li key={label} className="flex items-center">
+                  <div className="flex w-[7.5rem] flex-col items-center gap-1.5 text-center sm:w-[8.5rem]">
+                    <span
+                      className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-semibold transition-colors ${
+                        done || current
+                          ? "bg-[var(--accent)] text-white shadow-md shadow-[var(--accent-glow)]"
+                          : "bg-white text-[var(--muted)] ring-1 ring-[var(--line)]"
+                      }`}
+                    >
+                      {done ? "✓" : i + 1}
+                    </span>
+                    <span
+                      className={`max-w-full truncate text-[10px] font-medium uppercase tracking-[0.08em] sm:text-[11px] ${
+                        done || current
+                          ? "text-[var(--foreground)]"
+                          : "text-[var(--muted)]"
+                      }`}
+                    >
+                      {label}
+                    </span>
+                  </div>
+                  {i < STEPS.length - 1 && (
+                    <div
+                      className={`mb-5 h-px w-6 shrink-0 sm:w-10 ${
+                        i < flowStep
+                          ? "bg-[var(--accent)]"
+                          : "bg-[var(--line)]"
+                      }`}
+                      aria-hidden
+                    />
+                  )}
+                </li>
+              );
+            })}
           </ol>
+        </nav>
 
-          <section className="mx-auto w-full max-w-2xl space-y-3">
-            <div>
-              <h2 className="text-sm font-medium">AI Recommendations</h2>
-              <p className="mt-0.5 text-xs text-[var(--muted)]">
-                Pick a suggested action — AI prepares the customer list and message
-              </p>
-            </div>
-            <div className="space-y-2">
-              {suggestedActions.map((action) => {
-                const active = activeActionId === action.id;
-                const empty = action.count <= 0;
-                return (
-                  <button
-                    key={action.id}
-                    type="button"
-                    disabled={busy || empty}
-                    onClick={() => void onSelectAction(action)}
-                    className={`w-full rounded-md border px-4 py-3 text-left transition-colors disabled:opacity-60 ${
-                      active
-                        ? "border-[var(--accent)] bg-[var(--accent-soft)]"
-                        : "border-[var(--line)] bg-[var(--panel)] hover:border-[var(--accent)]"
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="text-sm font-medium">{action.title}</p>
-                      <span className="shrink-0 text-[11px] text-[var(--muted)]">
-                        {action.hint}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-xs text-[var(--muted)]">{action.description}</p>
-                  </button>
-                );
-              })}
-            </div>
+        <section className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+          <div className="shrink-0">
+            <p className="text-xs text-[var(--muted)]">
+              Pick a suggested action — browse every matching customer and draft
+            </p>
+          </div>
 
-            {recentSentFollowUps.length > 0 && (
-              <div className="pt-2">
-                <h3 className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
-                  Recent follow-ups
-                </h3>
-                <ul className="asa-scroll mt-2 max-h-40 space-y-1 overflow-y-auto overscroll-contain">
-                  {recentSentFollowUps.map((c) => (
-                    <li key={c.id}>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void onSelectRecentFollowup(c)}
-                        className={`w-full rounded-md px-3 py-2 text-left text-sm disabled:opacity-60 ${
-                          selectedMessage?.campaign_id === c.id
-                            ? "bg-[var(--accent-soft)] text-[var(--accent)]"
-                            : "hover:bg-[var(--accent-soft)]"
-                        }`}
-                      >
-                        <span className="font-medium">{c.name}</span>
-                        <span className="ml-2 text-xs text-[var(--muted)]">
-                          {c.status} · {c.audience_count} customers
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
+          <div className="asa-scroll min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain pb-6">
+            {loadingList &&
+              Array.from({ length: 3 }).map((_, i) => (
+                <div
+                  key={i}
+                  className="h-[4.75rem] animate-pulse rounded-2xl border border-[var(--line)] bg-[var(--panel)]"
+                  style={{ animationDelay: `${i * 80}ms` }}
+                />
+              ))}
+
+            {!loadingList && suggestedActions.length === 0 && (
+              <div className="rounded-2xl border border-dashed border-[var(--line)] bg-[var(--panel)] px-6 py-10 text-center">
+                <span className="mx-auto inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--accent)]/15">
+                  <IconSpark className="h-5 w-5" />
+                </span>
+                <p className="mt-3 text-sm font-medium">No recommendations yet</p>
+                <p className="mt-1 text-xs text-[var(--muted)]">
+                  AI will surface follow-ups when matching customers appear
+                </p>
               </div>
             )}
-          </section>
 
-        </div>
-      )}
+            {suggestedActions.map((action, index) => {
+              const active = activeActionId === action.id;
+              const empty = action.count <= 0;
+              return (
+                <button
+                  key={action.id}
+                  type="button"
+                  disabled={busy || empty}
+                  onClick={() => void onSelectAction(action)}
+                  style={{ animationDelay: `${index * 45}ms` }}
+                  className={`group relative w-full overflow-hidden rounded-2xl border px-4 py-4 text-left transition-all duration-200 [animation:rise-in_0.45s_ease_both] disabled:cursor-not-allowed disabled:opacity-55 ${
+                    active
+                      ? "border-[var(--accent)]/50 bg-[var(--accent-soft)] shadow-[0_12px_36px_-20px_var(--accent-glow)] ring-1 ring-[var(--accent)]/25"
+                      : "border-[var(--line)] bg-[var(--panel)] shadow-[0_1px_0_rgba(255,255,255,0.9)_inset] hover:-translate-y-0.5 hover:border-[var(--accent)]/35 hover:shadow-[0_18px_40px_-28px_rgba(0,0,0,0.35)]"
+                  }`}
+                >
+                  <div
+                    className={`pointer-events-none absolute inset-y-0 left-0 w-1 transition-colors ${
+                      active ? "bg-[var(--accent)]" : "bg-transparent group-hover:bg-[var(--accent)]/40"
+                    }`}
+                    aria-hidden
+                  />
+                  <div className="flex items-start gap-3.5">
+                    <span
+                      className={`mt-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl transition-colors ${
+                        active
+                          ? "bg-[var(--accent)] text-white shadow-md shadow-[var(--accent-glow)]"
+                          : "bg-[linear-gradient(145deg,var(--accent-soft),#fff)] text-[var(--accent)] ring-1 ring-[var(--accent)]/15"
+                      }`}
+                    >
+                      {actionIcon(action)}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="text-sm font-semibold tracking-tight text-[var(--foreground)]">
+                          {action.title}
+                        </p>
+                        <span
+                          className={`shrink-0 rounded-lg px-2 py-0.5 text-[11px] font-medium tabular-nums ${
+                            empty
+                              ? "bg-[var(--background)] text-[var(--muted)]"
+                              : "bg-white text-[var(--accent)] ring-1 ring-[var(--accent)]/20"
+                          }`}
+                        >
+                          {action.hint}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
+                        {action.description}
+                      </p>
+                      <div className="mt-2.5 flex items-center justify-between gap-2">
+                        <span className="text-[11px] text-[var(--muted)]">
+                          {empty
+                            ? "No matching customers"
+                            : busy && active
+                              ? "Preparing preview…"
+                              : "Tap to draft preview"}
+                        </span>
+                        {!empty && (
+                          <span
+                            className={`inline-flex items-center gap-1 text-[11px] font-medium transition-colors ${
+                              active
+                                ? "text-[var(--accent)]"
+                                : "text-[var(--muted)] group-hover:text-[var(--accent)]"
+                            }`}
+                          >
+                            Open
+                            <IconArrow className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      </div>
 
-      {/* Portaled so dim covers header + chrome (escapes overflow-hidden shell) */}
       {portalReady &&
         selected &&
-        tab === "followup" &&
         createPortal(
           <div
-            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px] [animation:rise-in_0.2s_ease_both]"
             role="dialog"
             aria-modal="true"
             aria-labelledby="followup-dialog-title"
@@ -594,470 +646,268 @@ export default function MarketingPage() {
             }}
           >
             <section
-              className="asa-scroll max-h-[min(90vh,720px)] w-full max-w-lg space-y-4 overflow-y-auto rounded-md border border-[var(--line)] bg-[var(--panel)] p-5 shadow-lg"
+              className="flex max-h-[min(88vh,680px)] w-full max-w-md flex-col overflow-hidden rounded-[1.2rem] border border-[var(--line)] bg-[var(--panel)] shadow-[0_28px_80px_-36px_rgba(0,0,0,0.5)] [animation:reveal-scale_0.28s_ease_both]"
               onClick={(e) => e.stopPropagation()}
             >
-              <div>
-                <h2 id="followup-dialog-title" className="text-sm font-medium">
-                  Review customer
-                </h2>
+              <div className="relative shrink-0 overflow-hidden rounded-t-[1.2rem] border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white px-4 pb-4 pt-4">
+                <div
+                  className="pointer-events-none absolute -right-8 -top-10 h-36 w-36 rounded-full bg-[var(--accent-glow)] blur-2xl"
+                  aria-hidden
+                />
+                <div className="relative flex items-start gap-2.5">
+                  <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-white shadow-md shadow-[var(--accent-glow)]">
+                    <IconUser className="h-4 w-4" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <h2
+                      id="followup-dialog-title"
+                      className="text-base font-semibold tracking-tight"
+                      style={{ fontFamily: "var(--font-display)" }}
+                    >
+                      Review customers
+                    </h2>
+                    <p className="mt-0.5 text-xs text-[var(--muted)]">
+                      {selected.name}
+                      {audience.length > 0
+                        ? ` · ${audience.length} customer${audience.length === 1 ? "" : "s"}`
+                        : ""}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label="Close"
+                    disabled={busy || previewBusy}
+                    onClick={() => closeFollowupDialog()}
+                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-[var(--muted)] transition hover:bg-black/[0.05] hover:text-[var(--foreground)] disabled:opacity-50"
+                  >
+                    <IconX className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
 
-              <div className="space-y-2 text-sm">
-                <p>
-                  <span className="text-[var(--muted)]">Customer:</span>{" "}
-                  {aiPreview?.customer_name
-                    ? aiPreview.customer_name
-                    : busy
-                      ? "Loading…"
-                      : "—"}
-                </p>
-                <p>
-                  <span className="text-[var(--muted)]">Contact:</span>{" "}
-                  {reviewContact ||
-                    (recommendedChannel === "email" ? "No email" : "No phone")}
-                </p>
-                <p>
-                  <span className="text-[var(--muted)]">Best send time:</span>{" "}
-                  {aiPreview?.send_at
-                    ? new Date(aiPreview.send_at).toLocaleString()
-                    : selected.ai_defaults?.send_at
-                      ? new Date(selected.ai_defaults.send_at).toLocaleString()
-                      : "—"}
-                </p>
-                {(aiPreview?.confidence ?? selected.ai_defaults?.confidence) != null && (
-                  <p>
-                    <span className="text-[var(--muted)]">Confidence:</span>{" "}
-                    {(
-                      (aiPreview?.confidence ?? selected.ai_defaults?.confidence ?? 0) * 100
-                    ).toFixed(0)}
-                    %
-                  </p>
-                )}
-                {(() => {
-                  const reasons = (
-                    aiPreview?.reasons ??
-                    selected.ai_defaults?.reasons ??
-                    []
-                  ).filter(
-                    (r) =>
-                      !r.startsWith("channel=") &&
-                      !r.startsWith("send_window=") &&
-                      !r.startsWith("frequency="),
-                  );
-                  return reasons.length ? (
-                    <p className="text-xs text-[var(--muted)]">{reasons.join(" · ")}</p>
-                  ) : null;
-                })()}
-              </div>
-
-              <div className="border-t border-[var(--line)] pt-4">
-                <h2 className="text-sm font-medium">AI Message Preview</h2>
-
-                <div className="mt-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-xs text-[var(--muted)]">Channel</p>
-                    <span className="rounded-md bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--accent)]">
-                      AI recommends {recommendedChannel.toUpperCase()}
+              <div className="asa-scroll min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-4 py-4 pb-5">
+                <div>
+                  <div className="mb-2.5 flex items-center justify-between gap-2">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+                      Matching customers
+                    </p>
+                    <span className="text-[11px] tabular-nums text-[var(--muted)]">
+                      {audience.length}
                     </span>
                   </div>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {reviewChannels.map((ch) => {
-                      const backendAi =
-                        aiPreview?.channel ?? selected.ai_defaults?.channel ?? "email";
-                      const isAi =
-                        ch === (HIDDEN_CHANNELS.has(backendAi) ? "email" : backendAi);
-                      const isSelected = ch === recommendedChannel;
-                      const editable = canEditCampaign(selected);
-                      return (
-                        <button
-                          key={ch}
-                          type="button"
-                          disabled={busy || !editable}
-                          onClick={() => void onChannelOverride(ch)}
-                          className={`rounded-md px-3 py-1 text-xs uppercase disabled:opacity-60 ${
-                            isSelected
-                              ? "bg-[var(--accent)] font-medium text-white"
-                              : "border border-[var(--line)] text-[var(--muted)] hover:border-[var(--accent)]"
-                          }`}
-                        >
-                          {ch}
-                          {isAi && !channelOverride ? " · AI" : ""}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  {!canEditCampaign(selected) && (
-                    <p className="mt-1.5 text-[11px] text-[var(--muted)]">Channel is locked after send.</p>
-                  )}
-                </div>
-
-                <div className="mt-3">
-                  <label className="text-xs text-[var(--muted)]" htmlFor="ai-message-draft">
-                    Message
-                  </label>
-                  {canEditCampaign(selected) ? (
-                    <textarea
-                      id="ai-message-draft"
-                      value={messageDraft}
-                      onChange={(e) => setMessageDraft(e.target.value)}
-                      disabled={busy}
-                      rows={5}
-                      placeholder={busy ? "Generating…" : "AI message will appear here"}
-                      className="mt-1.5 w-full resize-y whitespace-pre-wrap rounded-md border border-[var(--line)] bg-transparent p-3 text-sm outline-none focus:border-[var(--accent)] disabled:opacity-60"
-                    />
+                  {audience.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-[var(--line)] bg-[var(--background)]/50 px-4 py-6 text-center text-sm text-[var(--muted)]">
+                      No customers in this follow-up
+                    </div>
                   ) : (
-                    <div className="mt-1.5 whitespace-pre-wrap rounded-md border border-[var(--line)] p-3 text-sm text-[var(--muted)]">
-                      {previewMessage ?? "No preview yet"}
+                    <div className="space-y-2">
+                      {audience.length > 1 ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setAudienceExpanded((open) => !open)
+                          }
+                          className="w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-xs font-semibold text-[var(--muted)] transition hover:bg-black/[0.03] hover:text-[var(--foreground)]"
+                        >
+                          {audienceExpanded
+                            ? "Show less"
+                            : `Show all ${audience.length} customers`}
+                        </button>
+                      ) : null}
+                      <div className="relative">
+                        {(() => {
+                          const renderMember = (member: AudienceMember) => {
+                            const active =
+                              member.customer_id === selectedCustomerId;
+                            const contact =
+                              member.email?.trim() ||
+                              member.phone?.trim() ||
+                              "—";
+                            const meta = [member.vehicle, member.service]
+                              .filter(Boolean)
+                              .join(" · ");
+                            return (
+                              <li key={member.customer_id}>
+                                <button
+                                  type="button"
+                                  disabled={previewBusy}
+                                  onClick={() => {
+                                    void onSelectCustomer(member);
+                                    if (audienceExpanded) {
+                                      setAudienceExpanded(false);
+                                    }
+                                  }}
+                                  className={`flex w-full items-start gap-3 rounded-xl px-3 py-2.5 text-left transition disabled:cursor-wait ${
+                                    active
+                                      ? "bg-[var(--accent-soft)] ring-1 ring-[var(--accent)]/30"
+                                      : "hover:bg-black/[0.03]"
+                                  }`}
+                                >
+                                  <span
+                                    className={`mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-semibold ${
+                                      active
+                                        ? "bg-[var(--accent)] text-white"
+                                        : "bg-white text-[var(--muted)] ring-1 ring-[var(--line)]"
+                                    }`}
+                                  >
+                                    {(member.name || "?")
+                                      .slice(0, 1)
+                                      .toUpperCase()}
+                                  </span>
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block truncate text-sm font-semibold tracking-tight">
+                                      {member.name || "Customer"}
+                                    </span>
+                                    <span className="mt-0.5 block truncate text-xs text-[var(--muted)]">
+                                      {contact}
+                                    </span>
+                                    {meta ? (
+                                      <span className="mt-0.5 block truncate text-[11px] text-[var(--muted)]">
+                                        {meta}
+                                      </span>
+                                    ) : null}
+                                  </span>
+                                  {active && (
+                                    <span className="mt-1 shrink-0 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--accent)]">
+                                      Selected
+                                    </span>
+                                  )}
+                                </button>
+                              </li>
+                            );
+                          };
+                          const selectedMember =
+                            audience.find(
+                              (m) => m.customer_id === selectedCustomerId,
+                            ) ?? audience[0];
+                          return (
+                            <>
+                              <ul className="space-y-1.5 rounded-2xl border border-[var(--line)] bg-[linear-gradient(180deg,#fff_0%,#fafafa_100%)] p-1.5">
+                                {selectedMember
+                                  ? renderMember(selectedMember)
+                                  : null}
+                              </ul>
+                              {audienceExpanded ? (
+                                <ul className="absolute left-0 right-0 top-0 z-20 max-h-[min(40vh,280px)] space-y-1.5 overflow-y-auto overscroll-contain rounded-2xl border border-[var(--line)] bg-[linear-gradient(180deg,#fff_0%,#fafafa_100%)] p-1.5 shadow-[0_18px_40px_-20px_rgba(0,0,0,0.45)]">
+                                  {audience.map(renderMember)}
+                                </ul>
+                              ) : null}
+                            </>
+                          );
+                        })()}
+                      </div>
                     </div>
                   )}
-                  {canEditCampaign(selected) && (
-                    <p className="mt-1.5 text-[11px] text-[var(--muted)]">
-                      Edit the AI draft before send.
-                    </p>
-                  )}
                 </div>
-              </div>
 
-              <div className="flex flex-wrap items-center gap-2 border-t border-[var(--line)] pt-4">
-                <button
-                  type="button"
-                  disabled={
-                    busy || !previewMessage || !canEditCampaign(selected) || !hasContact
-                  }
-                  onClick={() => void onSend()}
-                  className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
-                >
-                  {busy
-                    ? "Working…"
-                    : canEditCampaign(selected)
-                      ? "Send"
-                      : "Already sent"}
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => closeFollowupDialog()}
-                  className="rounded-md border border-[var(--line)] px-3 py-2 text-sm disabled:opacity-60"
-                >
-                  Cancel
-                </button>
-                {sentFlash && (
-                  <span className="text-xs font-medium text-[var(--accent)]">
-                    Follow-up queued and processed
-                  </span>
-                )}
-              </div>
-            </section>
-          </div>,
-          document.body,
-        )}
-
-      {tab === "analytics" && summary && (
-        <div className="space-y-6">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <Metric label="Follow-ups" value={String(summary.campaigns)} />
-            <Metric label="Sent" value={String(summary.sent)} />
-            <Metric
-              label="Appointment rate"
-              value={`${(summary.appointment_rate * 100).toFixed(1)}%`}
-            />
-            <Metric label="Revenue" value={`$${Number(summary.revenue).toLocaleString()}`} />
-          </div>
-
-          <section className="rounded-md border border-[var(--line)] bg-[var(--panel)] p-5">
-            <h2 className="text-sm font-medium">By channel</h2>
-            <div className="mt-3 space-y-2">
-              {Object.entries(summary.by_channel)
-                .filter(([ch]) => !HIDDEN_CHANNELS.has(ch))
-                .map(([ch, n]) => {
-                  const max = Math.max(
-                    ...Object.entries(summary.by_channel)
-                      .filter(([k]) => !HIDDEN_CHANNELS.has(k))
-                      .map(([, v]) => v),
-                    1,
-                  );
-                  return (
-                    <div key={ch}>
-                      <div className="flex justify-between text-xs text-[var(--muted)]">
-                        <span className="uppercase">{ch}</span>
-                        <span>{n}</span>
-                      </div>
-                      <div className="mt-1 h-2 overflow-hidden rounded-full bg-[var(--line)]">
-                        <div
-                          className="h-full bg-[var(--accent)]"
-                          style={{ width: `${(n / max) * 100}%` }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-            </div>
-          </section>
-        </div>
-      )}
-
-      {tab === "messages" && (
-        <section className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
-          {(messageTypeChips.length > 0 || visibleTabMessages.length > 0) && (
-            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => {
-                    setSelectedMessage(null);
-                    setMessagesTypeFilter(null);
-                  }}
-                  className={`rounded-md border px-2.5 py-1 text-xs disabled:opacity-60 ${
-                    messagesTypeFilter === null
-                      ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
-                      : "border-[var(--line)] text-[var(--muted)] hover:bg-[var(--accent-soft)]"
-                  }`}
-                >
-                  All ({visibleTabMessages.length})
-                </button>
-                {messageTypeChips.map((chip) => (
-                  <button
-                    key={chip.type}
-                    type="button"
-                    disabled={busy}
-                    onClick={() => {
-                      setSelectedMessage(null);
-                      setMessagesTypeFilter(chip.type);
-                    }}
-                    className={`rounded-md border px-2.5 py-1 text-xs capitalize disabled:opacity-60 ${
-                      messagesTypeFilter === chip.type
-                        ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
-                        : "border-[var(--line)] text-[var(--muted)] hover:bg-[var(--accent-soft)]"
-                    }`}
-                  >
-                    {chip.label} ({chip.count})
-                  </button>
-                ))}
-              </div>
-              {visibleTabMessages.length > 0 && (
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    disabled={busy || visibleMessageIds.length === 0}
-                    onClick={toggleSelectAllVisible}
-                    className="rounded-md border border-[var(--line)] px-2.5 py-1 text-xs text-[var(--muted)] hover:bg-[var(--accent-soft)] disabled:opacity-60"
-                  >
-                    {allVisibleSelected ? "Deselect all" : "Select all"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy || selectedMessageIds.size === 0}
-                    onClick={() => setDeleteSelectedConfirm(true)}
-                    className="rounded-md border border-red-300 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-60"
-                  >
-                    Delete{selectedMessageIds.size > 0 ? ` (${selectedMessageIds.size})` : ""}
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-          {visibleTabMessages.length === 0 && !busy && (
-            <p className="shrink-0 text-sm text-[var(--muted)]">
-              {recentSentFollowUps.length === 0
-                ? "Start a follow-up from the Follow-up tab to see messages"
-                : "No messages yet — send a follow-up to queue messages"}
-            </p>
-          )}
-          <div className="asa-scroll min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain">
-            {messagesByType.flatMap((group) =>
-              group.items.map((m) => {
-                const checked = selectedMessageIds.has(m.id);
-                return (
-                  <div
-                    key={m.id}
-                    className={`flex w-full items-start gap-2 rounded-md border bg-[var(--panel)] px-3 py-2 text-sm transition-colors ${
-                      checked || selectedMessage?.id === m.id
-                        ? "border-[var(--accent)] bg-[var(--accent-soft)]"
-                        : "border-[var(--line)] hover:border-[var(--accent)]"
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      disabled={busy}
-                      onChange={() => toggleMessageSelected(m.id)}
-                      onClick={(e) => e.stopPropagation()}
-                      aria-label={`Select message ${m.channel} ${m.status}`}
-                      className="mt-1 h-4 w-4 shrink-0 cursor-pointer accent-[var(--accent)] disabled:opacity-60"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setSelectedMessage(m)}
-                      className="min-w-0 flex-1 text-left"
-                    >
-                      <p className="font-medium uppercase tracking-wide">
-                        {m.channel} · {m.status}
+                <div className="rounded-2xl border border-[var(--line)] bg-[linear-gradient(180deg,#fff_0%,#fafafa_100%)] p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+                        Selected customer
                       </p>
-                      <p className="mt-0.5 text-[11px] text-[var(--muted)]">{m.campaign_name}</p>
-                      <p className="mt-1 text-xs text-[var(--muted)] line-clamp-2">{m.body}</p>
-                    </button>
-                    {(m.sent_at || m.scheduled_at) && (
-                      <span className="shrink-0 text-[11px] text-[var(--muted)]">
-                        {m.sent_at
-                          ? new Date(m.sent_at).toLocaleString()
-                          : `scheduled ${new Date(m.scheduled_at!).toLocaleString()}`}
-                      </span>
+                      <p className="mt-1 truncate text-base font-semibold tracking-tight">
+                        {aiPreview?.customer_name
+                          ? aiPreview.customer_name
+                          : busy || previewBusy
+                            ? "Loading…"
+                            : "—"}
+                      </p>
+                      <p className="mt-1 text-sm text-[var(--muted)]">
+                        {aiPreview?.email?.trim() ||
+                          aiPreview?.phone?.trim() ||
+                          "—"}
+                      </p>
+                      {(aiPreview?.vehicle || aiPreview?.service) && (
+                        <p className="mt-2 text-xs text-[var(--muted)]">
+                          {[aiPreview.vehicle, aiPreview.service]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </p>
+                      )}
+                    </div>
+                    {confidencePct != null && (
+                      <div className="shrink-0 text-right">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+                          Confidence
+                        </p>
+                        <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-[var(--accent)]">
+                          {confidencePct}
+                          <span className="text-sm font-medium">%</span>
+                        </p>
+                        <div className="mt-1.5 h-1 w-16 overflow-hidden rounded-full bg-[var(--accent-soft)]">
+                          <div
+                            className="h-full rounded-full bg-[var(--accent)] transition-all"
+                            style={{ width: `${Math.min(100, confidencePct)}%` }}
+                          />
+                        </div>
+                      </div>
                     )}
                   </div>
-                );
-              }),
-            )}
-          </div>
-        </section>
-      )}
+                  {reasons.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-1.5 border-t border-[var(--line)] pt-3">
+                      {reasons.map((reason) => (
+                        <span
+                          key={reason}
+                          className="rounded-lg bg-white px-2 py-1 text-[11px] text-[var(--muted)] ring-1 ring-[var(--line)]"
+                        >
+                          {reason}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
 
-      {portalReady &&
-        selectedMessage &&
-        (tab === "messages" || tab === "followup") &&
-        createPortal(
-          <div
-            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="message-detail-title"
-            onClick={(e) => {
-              if (e.target === e.currentTarget) setSelectedMessage(null);
-            }}
-          >
-            <section
-              className="asa-scroll max-h-[min(90vh,720px)] w-full max-w-lg space-y-4 overflow-y-auto rounded-md border border-[var(--line)] bg-[var(--panel)] p-5 shadow-lg"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h2 id="message-detail-title" className="text-sm font-medium">
-                    {selectedMessage.channel === "voice"
-                      ? "Voice call detail"
-                      : selectedMessage.channel === "email"
-                        ? "Email detail"
-                        : selectedMessage.channel === "sms"
-                          ? "SMS detail"
-                          : "Message detail"}
-                  </h2>
+                  <div className="mb-2.5 flex items-center gap-2">
+                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--accent-soft)] text-[var(--accent)]">
+                      <IconMail className="h-3.5 w-3.5" />
+                    </span>
+                    <h3 className="text-sm font-semibold tracking-tight">
+                      AI Message
+                    </h3>
+                    <button
+                      type="button"
+                      disabled={busy || previewBusy || !previewMessage}
+                      onClick={() => void copyPreviewMessage()}
+                      className="ml-auto inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-[var(--muted)] transition hover:bg-black/[0.04] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      {copied ? (
+                        <>
+                          <IconCheck className="h-3.5 w-3.5 text-[var(--accent)]" />
+                          Copied
+                        </>
+                      ) : (
+                        <>
+                          <IconCopy className="h-3.5 w-3.5" />
+                          Copy
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <div className="flex max-h-[min(36vh,260px)] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-white shadow-[inset_0_1px_0_rgba(255,255,255,0.9)]">
+                    <div className="flex shrink-0 items-center gap-1.5 border-b border-[var(--line)] bg-[var(--background)]/60 px-3 py-2">
+                      <span className="h-2 w-2 rounded-full bg-[#ff5f57]" />
+                      <span className="h-2 w-2 rounded-full bg-[#febc2e]" />
+                      <span className="h-2 w-2 rounded-full bg-[#28c840]" />
+                      <span className="ml-2 text-[10px] font-medium uppercase tracking-[0.12em] text-[var(--muted)]">
+                        Preview
+                      </span>
+                    </div>
+                    <div className="asa-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain whitespace-pre-wrap px-4 py-4 text-sm leading-relaxed text-[var(--foreground)]">
+                      {(busy || previewBusy) && !previewMessage
+                        ? "Generating…"
+                        : previewBusy
+                          ? "Updating…"
+                          : (previewMessage ?? "No AI draft yet")}
+                    </div>
+                  </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setSelectedMessage(null)}
-                  className="rounded-md border border-[var(--line)] px-2.5 py-1 text-xs text-[var(--muted)] hover:bg-[var(--accent-soft)]"
-                >
-                  Close
-                </button>
-              </div>
-
-              <div className="space-y-2 text-sm">
-                {selectedMessage.sent_at && (
-                  <p>
-                    <span className="text-[var(--muted)]">
-                      {selectedMessage.channel === "voice" ? "Called:" : "Sent:"}
-                    </span>{" "}
-                    {new Date(selectedMessage.sent_at).toLocaleString()}
-                  </p>
-                )}
-                {!selectedMessage.sent_at && selectedMessage.scheduled_at && (
-                  <p>
-                    <span className="text-[var(--muted)]">Scheduled:</span>{" "}
-                    {new Date(selectedMessage.scheduled_at).toLocaleString()}
-                  </p>
-                )}
-                {(selectedMessage.customer_name || selectedMessage.customer_id) && (
-                  <p>
-                    <span className="text-[var(--muted)]">Customer:</span>{" "}
-                    {selectedMessage.customer_name || selectedMessage.customer_id}
-                  </p>
-                )}
-              </div>
-
-              <div className="border-t border-[var(--line)] pt-4">
-                <p className="text-xs text-[var(--muted)]">
-                  {selectedMessage.channel === "voice"
-                    ? "Call script"
-                    : selectedMessage.channel === "email"
-                      ? "Text"
-                      : "Message"}
-                </p>
-                <div className="mt-1.5 whitespace-pre-wrap rounded-md border border-[var(--line)] p-3 text-sm">
-                  {selectedMessage.body ||
-                    (selectedMessage.channel === "voice"
-                      ? "(empty script)"
-                      : selectedMessage.channel === "email"
-                        ? "(empty text)"
-                        : "(empty message)")}
-                </div>
-              </div>
-
-              {selectedMessage.error && (
-                <p className="text-xs text-red-600">{selectedMessage.error}</p>
-              )}
-            </section>
-          </div>,
-          document.body,
-        )}
-
-      {portalReady &&
-        deleteSelectedConfirm &&
-        createPortal(
-          <div
-            className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 p-4"
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="delete-selected-messages-title"
-            aria-describedby="delete-selected-messages-desc"
-            onClick={(e) => {
-              if (e.target === e.currentTarget && !busy) setDeleteSelectedConfirm(false);
-            }}
-          >
-            <section
-              className="w-full max-w-sm space-y-4 rounded-md border border-[var(--line)] bg-[var(--panel)] p-5 shadow-lg"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div>
-                <h2 id="delete-selected-messages-title" className="text-sm font-medium">
-                  Delete selected messages?
-                </h2>
-                <p id="delete-selected-messages-desc" className="mt-1.5 text-sm text-[var(--muted)]">
-                  This cannot be undone. {selectedMessageIds.size} selected message
-                  {selectedMessageIds.size === 1 ? "" : "s"} will be permanently removed.
-                </p>
-              </div>
-              <div className="flex flex-wrap justify-end gap-2">
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => setDeleteSelectedConfirm(false)}
-                  className="rounded-md border border-[var(--line)] px-3 py-1.5 text-sm text-[var(--muted)] hover:bg-[var(--accent-soft)] disabled:opacity-60"
-                >
-                  No
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void onDeleteSelectedMessages()}
-                  className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-60"
-                >
-                  {busy ? "Deleting…" : "Yes"}
-                </button>
               </div>
             </section>
           </div>,
           document.body,
         )}
-      </div>
-    </div>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md border border-[var(--line)] bg-[var(--panel)] px-4 py-3">
-      <p className="text-xs uppercase tracking-wide text-[var(--muted)]">{label}</p>
-      <p className="mt-1 text-xl font-semibold tracking-tight">{value}</p>
     </div>
   );
 }

@@ -3,10 +3,12 @@
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   FormEvent,
+  PointerEvent as ReactPointerEvent,
   ReactNode,
   Suspense,
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { PasswordField } from "@/components/PasswordField";
@@ -26,13 +28,25 @@ import { formatPhoneInput, PHONE_PLACEHOLDER } from "@/lib/phone";
 import { ServicesPanel } from "@/components/services/ServicesPanel";
 import { TeamPanel } from "@/components/team/TeamPanel";
 
-const TABS = [
-  { id: "account", label: "Account" },
-  { id: "shop", label: "Shop" },
-  { id: "team", label: "Team" },
-] as const;
+type TabId = "account" | "shop" | "team";
 
-type TabId = (typeof TABS)[number]["id"];
+function IconSetting({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
 
 function parseTab(value: string | null): TabId {
   // Legacy ?tab=profile / ?tab=password redirect into Account.
@@ -80,6 +94,26 @@ function IconUser({ className = "h-3.5 w-3.5" }: { className?: string }) {
     >
       <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
       <circle cx="12" cy="7" r="4" />
+    </svg>
+  );
+}
+
+function IconUsers({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
     </svg>
   );
 }
@@ -213,6 +247,15 @@ function IconBuilding({ className = "h-3.5 w-3.5" }: { className?: string }) {
     </svg>
   );
 }
+
+const TABS = [
+  { id: "account", label: "Account", Icon: IconUser },
+  { id: "shop", label: "Shop", Icon: IconBuilding },
+  { id: "team", label: "Team", Icon: IconUsers },
+] as const;
+
+/** Minimum horizontal drag distance (px) to change tabs. */
+const TAB_SWIPE_THRESHOLD_PX = 56;
 
 function IconClock({ className = "h-3.5 w-3.5" }: { className?: string }) {
   return (
@@ -366,8 +409,7 @@ function SettingsContent() {
 
   const [shopName, setShopName] = useState("");
   const [hours, setHours] = useState<BusinessHours[]>([]);
-  /** Assigned Twilio channel number(s) — read-only. */
-  const [twilioSmsPhone, setTwilioSmsPhone] = useState<string | null>(null);
+  /** Assigned Twilio voice number — read-only. */
   const [twilioVoicePhone, setTwilioVoicePhone] = useState<string | null>(null);
   /** Last saved shop fields — used to enable Save only when dirty. */
   const [savedShopName, setSavedShopName] = useState("");
@@ -414,6 +456,66 @@ function SettingsContent() {
     [pathname, router, searchParams],
   );
 
+  /** Horizontal click-drag / swipe on the page body switches adjacent tabs. */
+  const swipeRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+
+  const onSwipePointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const el = e.target as HTMLElement | null;
+    if (
+      el?.closest(
+        "input, textarea, select, button, a, label, [role='tab'], [role='dialog'], [aria-modal='true'], [contenteditable='true']",
+      )
+    ) {
+      return;
+    }
+    // Avoid highlighting body copy while click-dragging to change tabs.
+    window.getSelection()?.removeAllRanges();
+    swipeRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, []);
+
+  const onSwipePointerUp = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      const start = swipeRef.current;
+      swipeRef.current = null;
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+      if (!start || start.pointerId !== e.pointerId) return;
+
+      const dx = e.clientX - start.startX;
+      const dy = e.clientY - start.startY;
+      if (Math.abs(dx) < TAB_SWIPE_THRESHOLD_PX) return;
+      // Prefer vertical scroll when the gesture is mostly vertical.
+      if (Math.abs(dx) < Math.abs(dy) * 1.15) return;
+
+      const idx = TABS.findIndex((t) => t.id === tab);
+      if (idx < 0) return;
+      if (dx < 0 && idx < TABS.length - 1) {
+        selectTab(TABS[idx + 1].id);
+      } else if (dx > 0 && idx > 0) {
+        selectTab(TABS[idx - 1].id);
+      }
+    },
+    [selectTab, tab],
+  );
+
+  const onSwipePointerCancel = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    swipeRef.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  }, []);
+
   // Load shop/hours once per shop — do not depend on the whole session object.
   // Token refresh / updateSession would otherwise re-fetch and wipe in-progress edits.
   const shopId = session?.shopId || session?.shopSlug || null;
@@ -446,7 +548,6 @@ function SettingsContent() {
         setHours(loadedHours);
         setSavedShopName(setup.profile.name);
         setSavedHours(loadedHours);
-        setTwilioSmsPhone(shop.sms_phone_e164 ?? null);
         setTwilioVoicePhone(shop.voice_phone_e164 ?? null);
         // Setup may have backfilled User.email from shop contact after phone signup.
         const current = session;
@@ -625,12 +726,7 @@ function SettingsContent() {
 
   const shopDirty =
     shopName.trim() !== savedShopName.trim() || !hoursEqual(normalizeHours(hours), savedHours);
-  const twilioSms = twilioSmsPhone?.trim() || null;
   const twilioVoice = twilioVoicePhone?.trim() || null;
-  const twilioPrimary = twilioSms || twilioVoice;
-  const twilioSameChannel =
-    Boolean(twilioSms && twilioVoice && twilioSms === twilioVoice) ||
-    Boolean(twilioPrimary && (!twilioSms || !twilioVoice));
   const profileDirty =
     fullName.trim() !== savedFullName.trim() ||
     profilePhone.trim() !== savedProfilePhone.trim() ||
@@ -647,41 +743,50 @@ function SettingsContent() {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-hidden md:h-full">
-      <header className="hero-motion shrink-0 space-y-3">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
+    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden md:h-full">
+      <header className="hero-motion shrink-0">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <IconSetting className="h-5 w-5 shrink-0 text-[var(--muted)]" />
             <h1 className="page-title">Setting</h1>
           </div>
-        </div>
 
-        <div
-          className="inline-flex max-w-full flex-wrap gap-px rounded-full border border-black/8 bg-white/80 p-px shadow-[var(--shadow-soft)] backdrop-blur-sm"
-          role="tablist"
-          aria-label="Setting categories"
-        >
-          {TABS.map((t) => {
-            const active = tab === t.id;
-            return (
-              <button
-                key={t.id}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                onClick={() => selectTab(t.id)}
-                className={`rounded-full px-2 py-px text-[10px] font-semibold leading-4 transition-colors ${
-                  active
-                    ? "bg-[var(--ink)] text-white"
-                    : "text-[var(--muted)] hover:bg-black/[0.04] hover:text-[var(--ink)]"
-                }`}
-              >
-                {t.label}
-              </button>
-            );
-          })}
+          <div
+            className="inline-flex max-w-full flex-wrap gap-0.5 rounded-full border border-black/8 bg-white/80 p-0.5 shadow-[var(--shadow-soft)] backdrop-blur-sm"
+            role="tablist"
+            aria-label="Setting categories"
+          >
+            {TABS.map((t) => {
+              const active = tab === t.id;
+              const Icon = t.Icon;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => selectTab(t.id)}
+                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold leading-4 transition-colors ${
+                    active
+                      ? "bg-[var(--accent)] text-white"
+                      : "text-[var(--muted)] hover:bg-black/[0.04] hover:text-[var(--ink)]"
+                  }`}
+                >
+                  <Icon className="h-3.5 w-3.5 shrink-0" />
+                  {t.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </header>
 
+      <div
+        className="flex min-h-0 flex-1 flex-col overflow-hidden touch-pan-y select-none [&_input]:select-text [&_textarea]:select-text"
+        onPointerDown={onSwipePointerDown}
+        onPointerUp={onSwipePointerUp}
+        onPointerCancel={onSwipePointerCancel}
+      >
       {error && tab !== "team" && (
         <p
           className="hero-motion-delay shrink-0 rounded-xl border border-red-200/80 bg-red-50 px-4 py-3 text-sm text-red-700"
@@ -814,7 +919,7 @@ function SettingsContent() {
                   </form>
                 </section>
 
-                <section className="space-y-4">
+                <section className="space-y-2">
                   <div>
                     <h3 className="inline-flex items-center gap-1.5 text-sm font-semibold">
                       <span className="text-[var(--muted)]">
@@ -828,48 +933,26 @@ function SettingsContent() {
                     </p>
                   </div>
 
-                  {!twilioPrimary ? (
-                    <div className="flex flex-col items-center rounded-xl border border-dashed border-[var(--line)] bg-[var(--background)]/50 px-6 py-8 text-center">
-                      <span className="mb-3 inline-flex h-11 w-11 items-center justify-center rounded-full bg-white text-[var(--muted)] ring-1 ring-[var(--line)]">
-                        <IconPhone className="h-5 w-5" />
-                      </span>
+                  {!twilioVoice ? (
+                    <div className="rounded-xl border border-dashed border-[var(--line)] bg-[var(--background)]/50 px-4 py-3 text-center">
                       <p className="text-sm font-medium">No number assigned yet</p>
-                      <p className="mt-1 max-w-sm text-xs text-[var(--muted)]">
-                        Contact support if you need SMS/Voice AI for this shop.
+                      <p className="mt-0.5 text-xs text-[var(--muted)]">
+                        Contact support if you need Voice AI for this shop.
                       </p>
                     </div>
-                  ) : twilioSameChannel ? (
-                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--line)] bg-[var(--panel)] px-4 py-3 shadow-[var(--shadow-soft)]">
+                  ) : (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--line)] bg-[var(--panel)] px-3 py-2 shadow-[var(--shadow-soft)]">
                       <p className="font-mono text-sm font-medium tracking-tight text-[var(--ink)]">
-                        {formatPhoneInput(twilioPrimary)}
+                        {formatPhoneInput(twilioVoice)}
                       </p>
                       <button
                         type="button"
-                        className="btn-ghost inline-flex items-center gap-1.5 px-3 py-1.5 text-xs"
-                        onClick={() => void navigator.clipboard.writeText(twilioPrimary)}
+                        className="btn-ghost inline-flex items-center gap-1.5 px-2.5 py-1 text-xs"
+                        onClick={() => void navigator.clipboard.writeText(twilioVoice)}
                       >
                         <IconCopy className="h-3.5 w-3.5" />
                         Copy
                       </button>
-                    </div>
-                  ) : (
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-xl border border-[var(--line)] bg-[var(--panel)] px-4 py-3 shadow-[var(--shadow-soft)]">
-                        <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
-                          SMS
-                        </p>
-                        <p className="mt-1.5 font-mono text-sm font-medium tracking-tight text-[var(--ink)]">
-                          {formatPhoneInput(twilioSms!)}
-                        </p>
-                      </div>
-                      <div className="rounded-xl border border-[var(--line)] bg-[var(--panel)] px-4 py-3 shadow-[var(--shadow-soft)]">
-                        <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
-                          Voice
-                        </p>
-                        <p className="mt-1.5 font-mono text-sm font-medium tracking-tight text-[var(--ink)]">
-                          {formatPhoneInput(twilioVoice!)}
-                        </p>
-                      </div>
                     </div>
                   )}
                 </section>
@@ -1194,6 +1277,7 @@ function SettingsContent() {
           </div>
         </section>
       )}
+      </div>
     </div>
   );
 }

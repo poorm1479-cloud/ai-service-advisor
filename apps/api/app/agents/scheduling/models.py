@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Any
 from uuid import UUID
@@ -69,6 +70,8 @@ class SchedulingRequest:
     # Identified / pre-resolved Service Catalog fields (AI reads; WF writes)
     requested_service: str | None = None
     service_id: UUID | None = None
+    # Catalog list price carried from intent/memory when match is unavailable.
+    estimated_revenue: Decimal | None = None
 
 
 @dataclass(slots=True)

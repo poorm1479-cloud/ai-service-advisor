@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -27,6 +28,8 @@ def _reset():
 
 
 def test_match_catalog_service_by_name_and_duration():
+    from decimal import Decimal
+
     oil_id = uuid4()
     brake_id = uuid4()
     services = [
@@ -37,6 +40,7 @@ def test_match_catalog_service_by_name_and_duration():
             duration_minutes=30,
             skill="oil_change",
             bay="quick_service",
+            price=Decimal("49.99"),
         ),
         CatalogServiceView(
             id=brake_id,
@@ -45,17 +49,20 @@ def test_match_catalog_service_by_name_and_duration():
             duration_minutes=120,
             skill="brakes",
             bay="general",
+            price=Decimal("299.00"),
         ),
     ]
     oil = match_catalog_service("need an oil change appointment", services)
     assert oil is not None
     assert oil.service_id == oil_id
     assert oil.duration_minutes == 30
+    assert oil.price == Decimal("49.99")
 
     brake = match_catalog_service("brakes", services)
     assert brake is not None
     assert brake.service_id == brake_id
     assert brake.duration_minutes == 120
+    assert brake.price == Decimal("299.00")
 
 
 def test_reschedule_phrasing_does_not_match_oil_change():
@@ -179,6 +186,7 @@ async def test_scheduling_agent_proposes_catalog_appointment_decision():
                 duration_minutes=30,
                 skill="oil_change",
                 bay="quick_service",
+                price=Decimal("59.99"),
             )
         ],
     )
@@ -206,6 +214,7 @@ async def test_scheduling_agent_proposes_catalog_appointment_decision():
     assert decision.service_id == oil_id
     assert decision.service_name == "Oil Change"
     assert decision.duration_minutes == 30
+    assert decision.estimated_revenue == Decimal("59.99")
     assert decision.recommended_slot_start is not None
     assert decision.recommended_slot_end == decision.recommended_slot_start + timedelta(
         minutes=30

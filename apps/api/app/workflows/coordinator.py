@@ -155,11 +155,18 @@ class WorkflowCoordinator:
 
         try:
             from app.plugins.scheduling.factory import get_scheduling_plugin
+            from app.scheduling.catalog import ensure_shop_resources_synced
 
             plugin = get_scheduling_plugin()
             intel = getattr(plugin, "intelligence", None)
-            if intel is not None and hasattr(getattr(intel, "_store", None), "ensure_shop"):
-                intel._store.ensure_shop(shop_id)  # noqa: SLF001
+            store = getattr(intel, "_store", None) if intel is not None else None
+            if store is not None:
+                # Sync Team/hours from DB — seed-only ensure_shop loses roster on restart.
+                try:
+                    await ensure_shop_resources_synced(shop_id, store)
+                except Exception:  # noqa: BLE001
+                    if hasattr(store, "ensure_shop"):
+                        store.ensure_shop(shop_id)
             sources["scheduling"] = await plugin.live_snapshot(shop_id, now=now)
         except Exception as exc:  # noqa: BLE001
             sources["scheduling"] = {"error": str(exc)}
@@ -187,11 +194,21 @@ class WorkflowCoordinator:
             from app.marketing.factory import peek_marketing_runtime
 
             mkt = peek_marketing_runtime()
+            follow_up_customers = await self._marketing_follow_up_count(shop_id, mkt=mkt)
             if mkt is None:
-                sources["marketing"] = {"summary": {}, "monitor": {}, "cold": True}
+                sources["marketing"] = {
+                    "summary": {},
+                    "monitor": {},
+                    "cold": True,
+                    "follow_up_customers": follow_up_customers,
+                }
             else:
                 summary = await mkt.service.analytics_summary(shop_id)
-                sources["marketing"] = {"summary": summary, "monitor": mkt.monitor.snapshot()}
+                sources["marketing"] = {
+                    "summary": summary,
+                    "monitor": mkt.monitor.snapshot(),
+                    "follow_up_customers": follow_up_customers,
+                }
         except Exception as exc:  # noqa: BLE001
             sources["marketing"] = {"error": str(exc)}
 
@@ -199,11 +216,12 @@ class WorkflowCoordinator:
             from app.sms.runtime import peek_sms_runtime
 
             sms = peek_sms_runtime()
-            sources["sms"] = (
-                {"monitor": {}, "cold": True}
-                if sms is None
-                else {"monitor": sms.monitor.snapshot()}
-            )
+            monitor = {} if sms is None else sms.monitor.snapshot()
+            durable = await self._sms_live_counts(shop_id, now=now)
+            sources["sms"] = {
+                "monitor": {**monitor, **durable},
+                "cold": sms is None and not durable,
+            }
         except Exception as exc:  # noqa: BLE001
             sources["sms"] = {"error": str(exc)}
 
@@ -211,11 +229,12 @@ class WorkflowCoordinator:
             from app.voice.runtime import peek_voice_runtime
 
             voice = peek_voice_runtime()
-            sources["voice"] = (
-                {"monitor": {}, "cold": True}
-                if voice is None
-                else {"monitor": voice.monitor.snapshot()}
-            )
+            monitor = {} if voice is None else voice.monitor.snapshot()
+            durable = await self._voice_live_counts(shop_id, now=now)
+            sources["voice"] = {
+                "monitor": {**monitor, **durable},
+                "cold": voice is None and not durable,
+            }
         except Exception as exc:  # noqa: BLE001
             sources["voice"] = {"error": str(exc)}
 
@@ -230,6 +249,143 @@ class WorkflowCoordinator:
             sources["crm"] = {"error": str(exc)}
 
         return sources
+
+    async def _shop_day_start_utc(self, session: Any, shop_id: UUID, *, now: datetime) -> datetime:
+        from zoneinfo import ZoneInfo
+
+        from sqlalchemy import select
+
+        from app.infrastructure.models import ShopModel
+
+        tz_name = await session.scalar(select(ShopModel.timezone).where(ShopModel.id == shop_id))
+        try:
+            shop_tz = ZoneInfo(tz_name or "America/Los_Angeles")
+        except Exception:  # noqa: BLE001
+            shop_tz = ZoneInfo("America/Los_Angeles")
+        return (
+            now.astimezone(shop_tz)
+            .replace(hour=0, minute=0, second=0, microsecond=0)
+            .astimezone(timezone.utc)
+        )
+
+    async def _sms_live_counts(self, shop_id: UUID, *, now: datetime) -> dict[str, Any]:
+        """Durable today SMS inbound/escalation counts (RLS via app.shop_id)."""
+        from sqlalchemy import func, select, text
+
+        from app.infrastructure.database import SessionLocal
+        from app.infrastructure.models import SmsConversationModel, SmsMessageModel
+        from app.sms.enums import SmsMessageDirection
+
+        async with SessionLocal() as session:
+            await session.execute(
+                text("SELECT set_config('app.shop_id', :sid, true)"),
+                {"sid": str(shop_id)},
+            )
+            start = await self._shop_day_start_utc(session, shop_id, now=now)
+            inbound = await session.scalar(
+                select(func.count())
+                .select_from(SmsMessageModel)
+                .where(
+                    SmsMessageModel.shop_id == shop_id,
+                    SmsMessageModel.direction == SmsMessageDirection.INBOUND.value,
+                    SmsMessageModel.created_at >= start,
+                )
+            )
+            escalations = await session.scalar(
+                select(func.count())
+                .select_from(SmsConversationModel)
+                .where(
+                    SmsConversationModel.shop_id == shop_id,
+                    SmsConversationModel.escalate.is_(True),
+                    SmsConversationModel.last_message_at >= start,
+                )
+            )
+        return {
+            "inbound_received": int(inbound or 0),
+            "escalations": int(escalations or 0),
+            "source": "database",
+        }
+
+    async def _voice_live_counts(self, shop_id: UUID, *, now: datetime) -> dict[str, Any]:
+        """Durable today voice call counts (RLS via app.shop_id)."""
+        from sqlalchemy import func, select, text
+
+        from app.infrastructure.database import SessionLocal
+        from app.infrastructure.models import VoiceCallModel
+        from app.voice.enums import VoiceCallStatus
+
+        async with SessionLocal() as session:
+            await session.execute(
+                text("SELECT set_config('app.shop_id', :sid, true)"),
+                {"sid": str(shop_id)},
+            )
+            start = await self._shop_day_start_utc(session, shop_id, now=now)
+            started = await session.scalar(
+                select(func.count())
+                .select_from(VoiceCallModel)
+                .where(
+                    VoiceCallModel.shop_id == shop_id,
+                    VoiceCallModel.created_at >= start,
+                )
+            )
+            missed = await session.scalar(
+                select(func.count())
+                .select_from(VoiceCallModel)
+                .where(
+                    VoiceCallModel.shop_id == shop_id,
+                    VoiceCallModel.created_at >= start,
+                    VoiceCallModel.status.in_(
+                        (
+                            VoiceCallStatus.FAILED.value,
+                            VoiceCallStatus.NO_ANSWER.value,
+                        )
+                    ),
+                )
+            )
+            escalations = await session.scalar(
+                select(func.count())
+                .select_from(VoiceCallModel)
+                .where(
+                    VoiceCallModel.shop_id == shop_id,
+                    VoiceCallModel.created_at >= start,
+                    VoiceCallModel.escalate.is_(True),
+                )
+            )
+        return {
+            "calls_started": int(started or 0),
+            # Dashboard "AI calls handled" uses call count (not turns). Soft-deleted
+            # rows still count so purging call history does not shrink today's metric.
+            "turns": int(started or 0),
+            "missed_calls": int(missed or 0),
+            "escalations": int(escalations or 0),
+            "source": "database",
+        }
+
+    async def _marketing_follow_up_count(self, shop_id: UUID, *, mkt: Any = None) -> int:
+        """Unique customers in Marketing suggested-action audiences (RLS via app.shop_id)."""
+        from sqlalchemy import text
+
+        from app.infrastructure.database import SessionLocal
+        from app.infrastructure.unit_of_work import SqlAlchemyUnitOfWork
+        from app.marketing.audience import count_follow_up_customers
+
+        exclude = None
+        if mkt is not None and hasattr(mkt, "service"):
+
+            async def _exclude(ctype: str):
+                return await mkt.service.customers_in_recommendation_cooldown(shop_id, ctype)
+
+            exclude = _exclude
+
+        async with SessionLocal() as session:
+            await session.execute(
+                text("SELECT set_config('app.shop_id', :sid, true)"),
+                {"sid": str(shop_id)},
+            )
+            uow = SqlAlchemyUnitOfWork(session)
+            return await count_follow_up_customers(
+                uow, shop_id, exclude_customer_ids=exclude
+            )
 
     async def _crm_live_snapshot(self, shop_id: UUID, *, now: datetime) -> dict[str, Any]:
         """Count today's CRM creates + walk-in arrivals; list in-shop walk-ins.
@@ -289,7 +445,7 @@ class WorkflowCoordinator:
                 .select_from(CustomerModel)
                 .where(CustomerModel.shop_id == shop_id)
             )
-            # In-shop walk-ins for Repair Status (open + converted; exclude closed).
+            # In-shop walk-ins for Repair Status (open + converted; exclude closed/cancelled).
             open_rows = (
                 await session.execute(
                     select(WalkInVisitModel, VehicleModel)

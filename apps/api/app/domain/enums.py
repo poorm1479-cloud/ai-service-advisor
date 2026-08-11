@@ -148,4 +148,6 @@ class WalkInStatus(str, Enum):
 
     CLOSED = "closed"
 
+    CANCELLED = "cancelled"
+
 

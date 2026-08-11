@@ -430,6 +430,8 @@ class VoiceAiService:
             booking_meta["pending_service_id"] = memory.pending_service_id
         if memory.pending_duration_minutes is not None:
             booking_meta["pending_duration_minutes"] = memory.pending_duration_minutes
+        if getattr(memory, "pending_service_price", None):
+            booking_meta["pending_service_price"] = memory.pending_service_price
         if memory.pending_cancel:
             booking_meta["pending_cancel"] = True
         if memory.pending_action:
@@ -622,6 +624,9 @@ class VoiceAiService:
                 duration = intent_entities.get("duration_minutes")
                 if duration is None:
                     duration = memory.pending_duration_minutes
+                service_price = intent_entities.get("service_price") or getattr(
+                    memory, "pending_service_price", None
+                )
                 decision = getattr(sched.data, "decision", None)
                 hold_appointment_id: str | None = None
                 if decision is not None:
@@ -630,6 +635,8 @@ class VoiceAiService:
                         service_id = str(decision.service_id)
                     if getattr(decision, "duration_minutes", None):
                         duration = decision.duration_minutes
+                    if getattr(decision, "estimated_revenue", None) is not None:
+                        service_price = str(decision.estimated_revenue)
                     if getattr(decision, "appointment_id", None):
                         hold_appointment_id = str(decision.appointment_id)
                 if not hold_appointment_id:
@@ -748,6 +755,7 @@ class VoiceAiService:
                     pending_service=service_name or "",
                     pending_service_id=str(service_id) if service_id else "",
                     pending_duration_minutes=int(duration) if duration else 0,
+                    pending_service_price=str(service_price) if service_price else "",
                     pending_cancel=False,
                     pending_action=pending_action,
                     pending_preferred_start=stash_start,
@@ -770,6 +778,7 @@ class VoiceAiService:
             if soft_service:
                 soft_id = intent_entities.get("service_id")
                 soft_duration = intent_entities.get("duration_minutes")
+                soft_price = intent_entities.get("service_price")
                 await self._memory.update_state(
                     shop_id=shop_id,
                     call_id=call.id,
@@ -777,6 +786,7 @@ class VoiceAiService:
                     pending_service=str(soft_service),
                     pending_service_id=str(soft_id) if soft_id else "",
                     pending_duration_minutes=int(soft_duration) if soft_duration else 0,
+                    pending_service_price=str(soft_price) if soft_price else "",
                     pending_cancel=False,
                     pending_action="book",
                 )

@@ -2,11 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import {
-  BarcodeFormat,
-  BrowserCodeReader,
-  BrowserMultiFormatReader,
-} from "@zxing/browser";
 
 const VIN_EXACT_RE = /^[A-HJ-NPR-Z0-9]{17}$/;
 /** VIN label with common OCR noise (V1N / VlN / V I N). */
@@ -18,15 +13,25 @@ const HINT_POSSIBLE_FORMATS = 2;
 const HINT_TRY_HARDER = 3;
 const HINT_PURE_BARCODE = 1;
 
-const VIN_BARCODE_FORMATS = [
-  BarcodeFormat.CODE_39,
-  BarcodeFormat.CODE_128,
-  BarcodeFormat.PDF_417,
-  BarcodeFormat.QR_CODE,
-  BarcodeFormat.DATA_MATRIX,
-  BarcodeFormat.CODABAR,
-  BarcodeFormat.ITF,
-];
+type ZxingBrowser = typeof import("@zxing/browser");
+type ZxingReader = InstanceType<ZxingBrowser["BrowserMultiFormatReader"]>;
+
+/** Lazy-load zxing only when the camera scanner starts (keeps customer nav light). */
+let zxingModulePromise: Promise<ZxingBrowser> | null = null;
+function loadZxing(): Promise<ZxingBrowser> {
+  if (!zxingModulePromise) {
+    zxingModulePromise = import("@zxing/browser");
+  }
+  return zxingModulePromise;
+}
+
+function releaseZxingStreams(): void {
+  void loadZxing()
+    .then(({ BrowserCodeReader }) => {
+      BrowserCodeReader.releaseAllStreams();
+    })
+    .catch(() => undefined);
+}
 
 const NATIVE_BARCODE_FORMATS = [
   "code_39",
@@ -271,10 +276,20 @@ type OcrWorker = {
   terminate: () => Promise<unknown>;
 };
 
-function createVinReader(pureBarcode = false): BrowserMultiFormatReader {
+async function createVinReader(pureBarcode = false): Promise<ZxingReader> {
+  const { BarcodeFormat, BrowserMultiFormatReader } = await loadZxing();
+  const formats = [
+    BarcodeFormat.CODE_39,
+    BarcodeFormat.CODE_128,
+    BarcodeFormat.PDF_417,
+    BarcodeFormat.QR_CODE,
+    BarcodeFormat.DATA_MATRIX,
+    BarcodeFormat.CODABAR,
+    BarcodeFormat.ITF,
+  ];
   const hints = new Map<number, unknown>();
   hints.set(HINT_TRY_HARDER, true);
-  hints.set(HINT_POSSIBLE_FORMATS, VIN_BARCODE_FORMATS);
+  hints.set(HINT_POSSIBLE_FORMATS, formats);
   if (pureBarcode) hints.set(HINT_PURE_BARCODE, true);
   return new BrowserMultiFormatReader(
     hints as ConstructorParameters<typeof BrowserMultiFormatReader>[0],
@@ -513,6 +528,7 @@ async function openRearCamera(): Promise<MediaStream> {
     }
   }
 
+  const { BrowserCodeReader } = await loadZxing();
   const devices = await BrowserCodeReader.listVideoInputDevices().catch(() => []);
   if (devices.length) {
     const preferred =
@@ -851,7 +867,7 @@ async function setOcrPageSeg(worker: OcrWorker, sparse: boolean): Promise<void> 
 }
 
 function tryDecodeBarcodeCanvas(
-  reader: BrowserMultiFormatReader,
+  reader: ZxingReader,
   canvas: HTMLCanvasElement,
 ): string | null {
   try {
@@ -915,8 +931,8 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
     let fuseGray: Uint8Array | null = null;
     const ocrVotes = new Map<string, number>();
     const barcodeVotes = new Map<string, number>();
-    const liveReader = createVinReader(false);
-    const zoomReader = createVinReader(true);
+    let liveReader: ZxingReader | null = null;
+    let zoomReader: ZxingReader | null = null;
 
     const stopEverything = () => {
       if (ocrTimer !== null) {
@@ -938,7 +954,7 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
       controlsRef.current = null;
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
-      BrowserCodeReader.releaseAllStreams();
+      releaseZxingStreams();
       const worker = ocrWorkerRef.current;
       ocrWorkerRef.current = null;
       void worker?.terminate();
@@ -1003,6 +1019,7 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
     };
 
     const scanBarcodeCrops = (video: HTMLVideoElement, passes: number): boolean => {
+      if (!zoomReader) return false;
       for (let i = 0; i < passes; i++) {
         const preset = BARCODE_ZOOM_PRESETS[barcodeIndex % BARCODE_ZOOM_PRESETS.length];
         barcodeIndex += 1;
@@ -1077,12 +1094,24 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
         setCameraReady(true);
         setScanHint("Point at the VIN barcode or printed VIN — keep inside the box");
 
+        try {
+          [liveReader, zoomReader] = await Promise.all([
+            createVinReader(false),
+            createVinReader(true),
+          ]);
+        } catch {
+          // Native + OCR paths still work without ZXing.
+        }
+        if (cancelled) return;
+
         // 1) Live ZXing stream (full-frame backup; ROI canvas is primary).
         try {
-          controlsRef.current = await liveReader.decodeFromStream(stream, video, (result) => {
-            if (!result || cancelled || settled) return;
-            acceptBarcodeVin(result.getText());
-          });
+          if (liveReader) {
+            controlsRef.current = await liveReader.decodeFromStream(stream, video, (result) => {
+              if (!result || cancelled || settled) return;
+              acceptBarcodeVin(result.getText());
+            });
+          }
         } catch {
           // Canvas + native paths still work without live stream decode.
         }
@@ -1322,7 +1351,7 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
     pendingStreamRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
-    BrowserCodeReader.releaseAllStreams();
+    releaseZxingStreams();
     const worker = ocrWorkerRef.current;
     ocrWorkerRef.current = null;
     void worker?.terminate();
@@ -1334,37 +1363,76 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
     setTorchAvailable(false);
   }
 
+  const vinLen = Math.min(value.replace(/[\s-]/g, "").length, 17);
+  const vinComplete = vinLen === 17;
+  const scanBusy = cameraReady && !scanError && !capturing;
+  const statusTone = scanError
+    ? "error"
+    : /glare|tilt|light/i.test(scanHint)
+      ? "warn"
+      : /confirm|barcode|scanned|reading|captur/i.test(scanHint)
+        ? "active"
+        : "idle";
+
   return (
-    <div className="space-y-1.5 sm:col-span-2 lg:col-span-2">
-      <span className="text-sm font-medium">VIN{required ? "" : " (optional)"}</span>
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <input
-          value={value}
-          required={required}
-          maxLength={17}
-          autoComplete="off"
-          spellCheck={false}
-          inputMode="text"
-          placeholder={required ? "Type 17-character VIN, or scan" : "Scan if available, or skip"}
-          onChange={(e) => onChange(e.target.value.toUpperCase())}
-          className="min-w-0 flex-1 rounded-md border border-[var(--line)] bg-white px-3 py-2 font-mono text-sm uppercase outline-none ring-[var(--accent)] focus:ring-2"
-        />
+    <div className="space-y-2 sm:col-span-2 lg:col-span-2">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--muted)]">
+          VIN{required ? "" : " · optional"}
+        </span>
+        <span
+          className={`font-mono text-[11px] tabular-nums tracking-wider ${
+            vinComplete ? "text-[var(--accent)]" : "text-[var(--muted)]"
+          }`}
+        >
+          {vinLen}
+          <span className="text-[var(--muted)]">/17</span>
+        </span>
+      </div>
+
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+        <div className="relative min-w-0 flex-1">
+          <input
+            value={value}
+            required={required}
+            maxLength={17}
+            autoComplete="off"
+            spellCheck={false}
+            inputMode="text"
+            placeholder={required ? "17-character VIN" : "Scan if available, or skip"}
+            onChange={(e) => onChange(e.target.value.toUpperCase())}
+            className="w-full rounded-xl border border-[var(--line)] bg-white px-3.5 py-2.5 font-mono text-sm uppercase tracking-[0.12em] outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-glow)]"
+          />
+          {vinComplete ? (
+            <span
+              className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-[var(--accent)]"
+              aria-hidden
+            >
+              <CheckIcon />
+            </span>
+          ) : null}
+        </div>
         <button
           type="button"
           onClick={() => {
             void startScanner();
           }}
-          className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-[var(--line)] bg-[var(--background)] px-3 py-2 text-sm font-medium hover:border-[var(--accent)] hover:text-[var(--accent)]"
+          className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white shadow-[0_10px_28px_-14px_rgba(240,90,36,0.75)] transition hover:bg-[var(--accent-hover)]"
         >
           <ScanIcon />
           Scan
         </button>
       </div>
+
       <p className="text-xs text-[var(--muted)]">
-        {looking
-          ? "Looking up VIN…"
-          : status ||
-            `${Math.min(value.replace(/[\s-]/g, "").length, 17)}/17 · type or camera scan`}
+        {looking ? (
+          <span className="inline-flex items-center gap-2">
+            <span className="vin-status-dot h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />
+            Looking up VIN…
+          </span>
+        ) : (
+          status || "Camera scan · door-jamb barcode · or type"
+        )}
       </p>
 
       {/* Portal past overflow-hidden shells so dim covers header + full viewport */}
@@ -1372,89 +1440,145 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
         scanning &&
         createPortal(
           <div
-            className="fixed inset-0 z-[100] flex items-end justify-center bg-black/50 p-4 sm:items-center"
+            className="fixed inset-0 z-[100] flex items-end justify-center bg-black/65 p-0 backdrop-blur-[2px] sm:items-center sm:p-5"
             role="dialog"
             aria-modal="true"
             aria-label="Scan VIN"
             onClick={closeScanner}
           >
             <div
-              className="w-full max-w-md overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-xl"
+              className="flex max-h-[100dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-[1.35rem] border border-white/10 bg-[#0c0c0c] text-white shadow-[0_32px_80px_-24px_rgba(0,0,0,0.85)] sm:max-h-[min(92dvh,720px)] sm:rounded-[1.35rem]"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="flex items-center justify-between border-b border-[var(--line)] px-4 py-3">
-                <div>
-                  <p className="text-sm font-medium">Scan VIN</p>
-                  <p className="text-xs text-[var(--muted)]">
-                    Barcode first · printed VIN OCR · Capture
-                  </p>
+              <div className="relative flex items-center justify-between gap-3 px-4 pb-2 pt-4 sm:px-5">
+                <div className="min-w-0">
+                  <p className="font-display text-lg font-semibold tracking-tight">Scan VIN</p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex shrink-0 items-center gap-2">
                   {torchAvailable && (
                     <button
                       type="button"
                       onClick={() => {
                         void toggleTorch();
                       }}
-                      className="rounded-md border border-[var(--line)] px-3 py-1.5 text-sm"
+                      className={`inline-flex h-10 w-10 items-center justify-center rounded-full border transition ${
+                        torchOn
+                          ? "border-[var(--accent)] bg-[var(--accent)] text-white"
+                          : "border-white/15 bg-white/5 text-white/85 hover:bg-white/10"
+                      }`}
                       aria-pressed={torchOn}
+                      aria-label={torchOn ? "Turn light off" : "Turn light on"}
                     >
-                      {torchOn ? "Light on" : "Light"}
+                      <TorchIcon on={torchOn} />
                     </button>
                   )}
                   <button
                     type="button"
                     onClick={closeScanner}
-                    className="rounded-md border border-[var(--line)] px-3 py-1.5 text-sm"
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-white/5 text-white/85 transition hover:bg-white/10"
+                    aria-label="Close scanner"
                   >
-                    Close
+                    <CloseIcon />
                   </button>
                 </div>
               </div>
-              <div className="relative bg-black">
+
+              <div className="relative mx-3 overflow-hidden rounded-2xl bg-black ring-1 ring-white/10 sm:mx-4">
                 <video
                   ref={videoRef}
-                  className="aspect-[4/3] w-full bg-black object-contain"
+                  className="aspect-[4/3] w-full bg-black object-cover"
                   muted
                   playsInline
                   autoPlay
                 />
                 {/* Guide matches barcode + near OCR center band. */}
                 <div className="pointer-events-none absolute inset-0">
-                  <div className="absolute inset-x-0 top-0 h-[34%] bg-black/50" />
-                  <div className="absolute inset-x-0 bottom-0 h-[34%] bg-black/50" />
-                  <div className="absolute inset-y-[34%] left-0 w-[3%] bg-black/50" />
-                  <div className="absolute inset-y-[34%] right-0 w-[3%] bg-black/50" />
-                  <div className="absolute inset-x-[3%] top-[34%] h-[32%] rounded-md border-2 border-[var(--accent)]">
-                    <div className="absolute left-2 top-2 h-3 w-3 border-l-2 border-t-2 border-white/90" />
-                    <div className="absolute right-2 top-2 h-3 w-3 border-r-2 border-t-2 border-white/90" />
-                    <div className="absolute bottom-2 left-2 h-3 w-3 border-b-2 border-l-2 border-white/90" />
-                    <div className="absolute bottom-2 right-2 h-3 w-3 border-b-2 border-r-2 border-white/90" />
+                  <div className="absolute inset-x-0 top-0 h-[34%] bg-gradient-to-b from-black/70 via-black/45 to-transparent" />
+                  <div className="absolute inset-x-0 bottom-0 h-[34%] bg-gradient-to-t from-black/70 via-black/45 to-transparent" />
+                  <div className="absolute inset-y-[34%] left-0 w-[4%] bg-black/40" />
+                  <div className="absolute inset-y-[34%] right-0 w-[4%] bg-black/40" />
+
+                  <div
+                    className={`vin-reticle-glow absolute inset-x-[4%] top-[34%] h-[32%] rounded-xl border border-[var(--accent)]/70 ${
+                      scanBusy ? "" : "opacity-70"
+                    }`}
+                  >
+                    <span className="absolute -left-px -top-px h-5 w-5 rounded-tl-xl border-l-[3px] border-t-[3px] border-white" />
+                    <span className="absolute -right-px -top-px h-5 w-5 rounded-tr-xl border-r-[3px] border-t-[3px] border-white" />
+                    <span className="absolute -bottom-px -left-px h-5 w-5 rounded-bl-xl border-b-[3px] border-l-[3px] border-white" />
+                    <span className="absolute -bottom-px -right-px h-5 w-5 rounded-br-xl border-b-[3px] border-r-[3px] border-white" />
+                    {scanBusy ? (
+                      <span className="vin-scan-beam absolute inset-x-3 h-px bg-gradient-to-r from-transparent via-[var(--accent)] to-transparent shadow-[0_0_12px_2px_rgba(240,90,36,0.55)]" />
+                    ) : null}
                   </div>
-                  <p className="absolute inset-x-0 bottom-[26%] text-center text-[11px] font-medium tracking-wide text-white/90">
-                    Align barcode or VIN letters here
+
+                  <p className="absolute inset-x-0 bottom-[22%] text-center text-[11px] font-medium tracking-[0.14em] text-white/80 uppercase">
+                    Align barcode or VIN
                   </p>
                 </div>
+
+                {!cameraReady && !scanError ? (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/55 backdrop-blur-[1px]">
+                    <div className="flex flex-col items-center gap-3">
+                      <span className="h-8 w-8 animate-spin rounded-full border-2 border-white/20 border-t-[var(--accent)]" />
+                      <p className="text-xs font-medium tracking-wide text-white/70">
+                        Opening camera…
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
               </div>
-              <div className="space-y-2 px-4 py-3">
-                {scanError ? (
-                  <p className="text-sm text-red-700">{scanError}</p>
-                ) : (
-                  <p className="text-xs text-[var(--muted)]">{scanHint}</p>
-                )}
-                <button
-                  type="button"
-                  disabled={!cameraReady || capturing || Boolean(scanError)}
-                  onClick={() => {
-                    void captureNow();
-                  }}
-                  className="flex w-full min-h-11 items-center justify-center rounded-md bg-[var(--accent)] px-3 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+
+              <div className="flex flex-col gap-3 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4 sm:px-5 sm:pb-5">
+                <div
+                  className={`flex min-h-[2.5rem] items-start gap-2.5 rounded-xl px-3 py-2.5 text-sm leading-snug ${
+                    statusTone === "error"
+                      ? "bg-red-500/15 text-red-200 ring-1 ring-red-400/30"
+                      : statusTone === "warn"
+                        ? "bg-amber-500/12 text-amber-100 ring-1 ring-amber-400/25"
+                        : "bg-white/[0.06] text-white/75 ring-1 ring-white/10"
+                  }`}
                 >
-                  {capturing ? "Reading…" : "Capture frame"}
-                </button>
-                <p className="text-xs text-[var(--muted)]">
-                  Best: door-jamb barcode. Printed VIN: hold steady or tap Capture. Tilt to cut glass glare. USB scanners work in the VIN field.
-                </p>
+                  {!scanError ? (
+                    <span
+                      className={`vin-status-dot mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${
+                        statusTone === "warn"
+                          ? "bg-amber-300"
+                          : statusTone === "active"
+                            ? "bg-[var(--accent)]"
+                            : "bg-white/50"
+                      }`}
+                      aria-hidden
+                    />
+                  ) : null}
+                  <p className="min-w-0 flex-1">{scanError ?? scanHint}</p>
+                </div>
+
+                <div className="flex flex-col items-center">
+                  <button
+                    type="button"
+                    disabled={!cameraReady || capturing || Boolean(scanError)}
+                    onClick={() => {
+                      void captureNow();
+                    }}
+                    className="group relative inline-flex h-[4.25rem] w-[4.25rem] items-center justify-center rounded-full bg-gradient-to-b from-white/20 to-white/5 p-[3px] shadow-[0_12px_40px_-12px_rgba(240,90,36,0.65)] transition enabled:hover:scale-[1.03] enabled:active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label={capturing ? "Reading frame" : "Capture frame"}
+                  >
+                    <span
+                      className={`flex h-full w-full items-center justify-center rounded-full transition ${
+                        capturing
+                          ? "bg-[var(--accent)] text-white"
+                          : "bg-white text-[#0c0c0c] group-hover:bg-[var(--accent)] group-hover:text-white"
+                      }`}
+                    >
+                      {capturing ? (
+                        <span className="h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                      ) : (
+                        <CaptureIcon />
+                      )}
+                    </span>
+                  </button>
+                </div>
               </div>
             </div>
           </div>,
@@ -1473,6 +1597,63 @@ function ScanIcon() {
         strokeWidth="1.75"
         strokeLinecap="round"
       />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M5 12.5 10 17.5 19 6.5"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M6 6l12 12M18 6 6 18"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function TorchIcon({ on }: { on: boolean }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M9 2h6l1 5H8l1-5ZM9 7h6v3.2c0 .8.3 1.5.9 2.1L18 14.5V22H6v-7.5l2.1-2.2c.6-.6.9-1.3.9-2.1V7Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+        fill={on ? "currentColor" : "none"}
+        fillOpacity={on ? 0.25 : 0}
+      />
+      <path d="M12 14.5v3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function CaptureIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M4 8V6a2 2 0 0 1 2-2h2M20 8V6a2 2 0 0 0-2-2h-2M4 16v2a2 2 0 0 0 2 2h2M20 16v2a2 2 0 0 1-2 2h-2"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinecap="round"
+      />
+      <circle cx="12" cy="12" r="3.25" stroke="currentColor" strokeWidth="1.85" />
     </svg>
   );
 }

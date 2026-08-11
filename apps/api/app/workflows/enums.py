@@ -16,6 +16,7 @@ class DomainEventType(StrEnum):
     INVOICE_PAID = "invoice.paid"
     APPOINTMENT_BOOKED = "appointment.booked"
     APPOINTMENT_CANCELLED = "appointment.cancelled"
+    APPOINTMENT_COMPLETED = "appointment.completed"
     WALK_IN_CREATED = "walk_in.created"
     CUSTOMER_RETURNED = "customer.returned"
     REVIEW_SUBMITTED = "review.submitted"

@@ -362,6 +362,8 @@ export type AdminEditableSettings = {
   notification_retention_days: number;
   toast_enabled: boolean;
   maintenance_mode: boolean;
+  /** Auto-buy/assign a Twilio number when a shop account is created. */
+  twilio_auto_provision_numbers: boolean;
 };
 
 export type AdminSettingsResponse = {

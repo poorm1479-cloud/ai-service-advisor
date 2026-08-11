@@ -24,6 +24,7 @@ class CallMemorySnapshot:
     pending_service: str | None = None
     pending_service_id: str | None = None
     pending_duration_minutes: int | None = None
+    pending_service_price: str | None = None
     pending_cancel: bool = False
     # "book" | "reschedule" | "cancel" — guides YES affirmations
     pending_action: str | None = None
@@ -66,6 +67,7 @@ class CallMemoryPort(Protocol):
         pending_service: str | None = None,
         pending_service_id: str | None = None,
         pending_duration_minutes: int | None = None,
+        pending_service_price: str | None = None,
         pending_cancel: bool | None = None,
         pending_action: str | None = None,
         pending_preferred_start: str | None = None,
@@ -137,6 +139,7 @@ class InMemoryCallMemory:
         pending_service: str | None = None,
         pending_service_id: str | None = None,
         pending_duration_minutes: int | None = None,
+        pending_service_price: str | None = None,
         pending_cancel: bool | None = None,
         pending_action: str | None = None,
         pending_preferred_start: str | None = None,
@@ -167,6 +170,7 @@ class InMemoryCallMemory:
                 snap.pending_service = None
                 snap.pending_service_id = None
                 snap.pending_duration_minutes = None
+                snap.pending_service_price = None
                 snap.pending_cancel = False
                 snap.pending_action = None
                 snap.pending_preferred_start = None
@@ -183,6 +187,8 @@ class InMemoryCallMemory:
                     snap.pending_service_id = pending_service_id or None
                 if pending_duration_minutes is not None:
                     snap.pending_duration_minutes = pending_duration_minutes or None
+                if pending_service_price is not None:
+                    snap.pending_service_price = pending_service_price or None
                 if pending_preferred_start is not None:
                     snap.pending_preferred_start = pending_preferred_start or None
                 if pending_preferred_end is not None:

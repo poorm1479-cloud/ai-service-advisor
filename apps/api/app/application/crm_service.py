@@ -224,6 +224,23 @@ class CrmService:
             raise NotFoundError("Customer not found")
         return customer
 
+    async def get_customer_detail(
+        self, *, shop_id: UUID, customer_id: UUID
+    ) -> tuple[Customer, list[Vehicle], list[CommunicationHistory], list[RepairHistory]]:
+        """Single-pass detail load — avoids repeated customer existence checks."""
+        await self._uow.bind_shop(shop_id)
+        customer = await self._uow.customers.get_by_id(shop_id, customer_id)
+        if customer is None:
+            raise NotFoundError("Customer not found")
+        vehicles = await self._uow.vehicles.list_by_customer(shop_id, customer_id)
+        communications = await self._uow.communications.list_by_customer(
+            shop_id, customer_id
+        )
+        repairs = await self._uow.repair_histories.list_by_vehicle_ids(
+            shop_id, [v.id for v in vehicles]
+        )
+        return customer, vehicles, communications, repairs
+
     async def create_vehicle(
         self,
         *,
@@ -384,11 +401,16 @@ class CrmService:
         description: str,
         cost: Decimal,
         recommendation: str | None,
+        created_at: datetime | None = None,
     ) -> RepairHistory:
         await self._uow.bind_shop(shop_id)
         vehicle = await self._uow.vehicles.get_by_id(shop_id, vehicle_id)
         if vehicle is None:
             raise NotFoundError("Vehicle not found")
+
+        occurred = created_at
+        if occurred is not None and occurred.tzinfo is None:
+            occurred = occurred.replace(tzinfo=timezone.utc)
 
         entry = RepairHistory(
             id=uuid4(),
@@ -399,6 +421,7 @@ class CrmService:
             description=description.strip(),
             cost=_validate_cost(cost),
             recommendation=recommendation.strip() if recommendation else None,
+            created_at=occurred,
         )
         created = await self._uow.repair_histories.add(entry)
         await self._uow.commit()

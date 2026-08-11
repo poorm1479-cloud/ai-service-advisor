@@ -217,6 +217,7 @@ async def add_repair_history(
             description=body.description,
             cost=body.cost,
             recommendation=body.recommendation,
+            created_at=body.created_at,
         )
     except (ValidationError, NotFoundError) as exc:
         raise _http_error(exc) from exc

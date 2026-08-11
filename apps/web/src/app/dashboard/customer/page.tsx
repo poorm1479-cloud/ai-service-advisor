@@ -32,7 +32,6 @@ type CustomerRow = {
   vehicles: Vehicle[];
   lastService: { label: string; at: string | null } | null;
   nextService: { label: string; at: string | null } | null;
-  status: "Active" | "Scheduled" | "Follow-up" | "New";
 };
 
 function vehicleLabel(v: Vehicle): string {
@@ -44,21 +43,6 @@ function formatDate(iso: string | null | undefined): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString();
-}
-
-function deriveStatus(
-  customer: Customer,
-  nextAppt: Appointment | undefined,
-  openOpp: Opportunity | undefined,
-  lastRepair: RepairHistory | null,
-): CustomerRow["status"] {
-  if (openOpp) return "Follow-up";
-  if (nextAppt) return "Scheduled";
-  if (lastRepair?.created_at) return "Active";
-  const created = customer.created_at ? new Date(customer.created_at).getTime() : 0;
-  const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  if (created > weekAgo) return "New";
-  return "Active";
 }
 
 function buildRow(
@@ -104,7 +88,6 @@ function buildRow(
         }
       : null,
     nextService,
-    status: deriveStatus(customer, nextAppt, openOpp, lastRepair),
   };
 }
 
@@ -121,20 +104,6 @@ function matchesQuery(row: CustomerRow, q: string): boolean {
     return vin.includes(needle) || label.includes(needle) || plate.includes(needle);
   });
 }
-
-const STATUS_CLASS: Record<CustomerRow["status"], string> = {
-  Active: "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200/80",
-  Scheduled: "bg-sky-50 text-sky-800 ring-1 ring-sky-200/80",
-  "Follow-up": "bg-amber-50 text-amber-900 ring-1 ring-amber-200/80",
-  New: "bg-slate-100 text-slate-700 ring-1 ring-slate-200/80",
-};
-
-const STATUS_DOT: Record<CustomerRow["status"], string> = {
-  Active: "bg-emerald-500",
-  Scheduled: "bg-sky-500",
-  "Follow-up": "bg-amber-500",
-  New: "bg-slate-400",
-};
 
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -157,23 +126,6 @@ function IconSearch({ className = "h-4 w-4" }: { className?: string }) {
     >
       <circle cx="11" cy="11" r="7" />
       <path d="m20 20-3.5-3.5" />
-    </svg>
-  );
-}
-
-function IconPlus({ className = "h-4 w-4" }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.25"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M12 5v14M5 12h14" />
     </svg>
   );
 }
@@ -212,6 +164,25 @@ function IconUser({ className = "h-3.5 w-3.5" }: { className?: string }) {
     >
       <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
       <circle cx="12" cy="7" r="4" />
+    </svg>
+  );
+}
+
+function IconUserPlus({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M19 8v6M16 11h6" />
     </svg>
   );
 }
@@ -422,15 +393,6 @@ function CustomersPageContent() {
     [rows, appliedQuery],
   );
 
-  const statusCounts = useMemo(() => {
-    const counts = { Active: 0, Scheduled: 0, "Follow-up": 0, New: 0 } as Record<
-      CustomerRow["status"],
-      number
-    >;
-    for (const row of rows) counts[row.status] += 1;
-    return counts;
-  }, [rows]);
-
   function onSearch(e: FormEvent) {
     e.preventDefault();
     setAppliedQuery(query);
@@ -461,66 +423,28 @@ function CustomersPageContent() {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:h-full">
-      <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="page-title">Customer</h1>
-        </div>
-        <button
-          type="button"
-          onClick={() => setCreateMode("known")}
-          className="btn-primary gap-1.5 px-4 py-2"
-        >
-          <IconPlus />
-          Add
-        </button>
-      </div>
-
-      <div className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-4">
-        {(
-          [
-            { label: "Active", key: "Active" as const },
-            { label: "Scheduled", key: "Scheduled" as const },
-            { label: "Follow-up", key: "Follow-up" as const },
-            { label: "New", key: "New" as const },
-          ] as const
-        ).map((item) => (
-          <div
-            key={item.key}
-            className="surface-panel flex items-center gap-2.5 px-3 py-2.5"
-          >
-            <span
-              className={`h-2 w-2 shrink-0 rounded-full ${STATUS_DOT[item.key]}`}
-              aria-hidden="true"
-            />
-            <div className="min-w-0">
-              <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
-                {item.label}
-              </div>
-              <div className="font-display text-lg font-semibold tabular-nums leading-tight">
-                {loading ? "—" : statusCounts[item.key]}
-              </div>
-            </div>
-          </div>
-        ))}
+    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden md:h-full">
+      <div className="flex shrink-0 items-center gap-2">
+        <IconUsers className="h-5 w-5 shrink-0 text-[var(--muted)]" />
+        <h1 className="page-title">Customer</h1>
       </div>
 
       <form
         onSubmit={onSearch}
-        className="surface-panel flex shrink-0 flex-col gap-2 p-2 sm:flex-row sm:items-center"
+        className="surface-panel flex shrink-0 flex-col gap-1.5 p-1.5 sm:flex-row sm:items-center"
       >
         <div className="relative min-w-0 flex-1">
-          <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-[var(--muted)]">
-            <IconSearch />
+          <span className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-[var(--muted)]">
+            <IconSearch className="h-3.5 w-3.5" />
           </span>
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search name, phone, VIN, vehicle…"
-            className="w-full rounded-lg border-0 bg-transparent py-2.5 pl-9 pr-3 text-sm outline-none"
+            className="w-full rounded-lg border-0 bg-transparent py-2 pl-8 pr-3 text-sm outline-none"
           />
         </div>
-        <button type="submit" className="btn-ghost shrink-0 px-4 py-2 text-sm">
+        <button type="submit" className="btn-ghost shrink-0 px-3 py-1.5 text-sm">
           Search
         </button>
       </form>
@@ -534,40 +458,40 @@ function CustomersPageContent() {
         </p>
       )}
 
-      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[300px_1fr]">
+      <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[260px_1fr]">
         <section
           className={`min-h-0 flex-col overflow-hidden ${
             selectedId ? "hidden lg:flex" : "flex"
           }`}
         >
-          <div className="surface-panel flex min-h-0 flex-1 flex-col overflow-hidden">
-            <header className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--line)] px-4 py-3">
-              <div className="flex items-center gap-2 text-sm font-semibold">
-                <IconUsers className="h-4 w-4 text-[var(--muted)]" />
+          <div className="surface-panel relative flex min-h-0 flex-1 flex-col overflow-hidden">
+            <header className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--line)] px-3 py-2.5">
+              <div className="flex items-center gap-1.5 text-sm font-semibold">
+                <IconUsers className="h-3.5 w-3.5 text-[var(--muted)]" />
                 List
               </div>
-              <span className="rounded-full bg-[var(--background)] px-2 py-0.5 text-[11px] font-medium tabular-nums text-[var(--muted)] ring-1 ring-[var(--line)]">
+              <span className="rounded-full bg-[var(--background)] px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-[var(--muted)] ring-1 ring-[var(--line)]">
                 {loading ? "…" : visible.length}
               </span>
             </header>
             <ul className="asa-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain">
               {loading && (
-                <li className="space-y-3 px-4 py-5">
+                <li className="space-y-2.5 px-3 py-4">
                   {[0, 1, 2].map((i) => (
-                    <div key={i} className="flex animate-pulse gap-3">
-                      <div className="h-10 w-10 rounded-full bg-[var(--background)]" />
-                      <div className="min-w-0 flex-1 space-y-2 py-1">
-                        <div className="h-3 w-2/3 rounded bg-[var(--background)]" />
-                        <div className="h-2.5 w-1/2 rounded bg-[var(--background)]" />
+                    <div key={i} className="flex animate-pulse gap-2.5">
+                      <div className="h-8 w-8 rounded-full bg-[var(--background)]" />
+                      <div className="min-w-0 flex-1 space-y-1.5 py-0.5">
+                        <div className="h-2.5 w-2/3 rounded bg-[var(--background)]" />
+                        <div className="h-2 w-1/2 rounded bg-[var(--background)]" />
                       </div>
                     </div>
                   ))}
                 </li>
               )}
               {!loading && visible.length === 0 && (
-                <li className="flex flex-col items-center px-6 py-12 text-center">
-                  <span className="mb-3 inline-flex h-11 w-11 items-center justify-center rounded-full bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)]">
-                    <IconUsers />
+                <li className="flex flex-col items-center px-5 py-10 text-center">
+                  <span className="mb-2.5 inline-flex h-9 w-9 items-center justify-center rounded-full bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)]">
+                    <IconUsers className="h-4 w-4" />
                   </span>
                   <p className="text-sm font-medium">No customers found</p>
                   <p className="mt-1 text-xs text-[var(--muted)]">
@@ -589,7 +513,7 @@ function CustomersPageContent() {
                       type="button"
                       onClick={() => selectCustomer(row.customer.id)}
                       aria-current={selected ? "true" : undefined}
-                      className={`group relative w-full border-b border-[var(--line)] px-4 py-3.5 text-left transition-colors ${
+                      className={`group relative w-full border-b border-[var(--line)] px-3 py-2.5 text-left transition-colors ${
                         selected
                           ? "bg-[var(--accent-soft)]"
                           : "hover:bg-[var(--background)]"
@@ -597,13 +521,13 @@ function CustomersPageContent() {
                     >
                       {selected && (
                         <span
-                          className="absolute inset-y-2 left-0 w-[3px] rounded-r-full bg-[var(--accent)]"
+                          className="absolute inset-y-1.5 left-0 w-0.5 rounded-r-full bg-[var(--accent)]"
                           aria-hidden="true"
                         />
                       )}
-                      <div className="flex items-start gap-3">
+                      <div className="flex items-start gap-2.5">
                         <span
-                          className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-semibold tracking-wide ${
+                          className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold tracking-wide ${
                             selected
                               ? "bg-[var(--accent)] text-white shadow-sm"
                               : "bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)] group-hover:ring-[var(--accent)]/30"
@@ -613,22 +537,15 @@ function CustomersPageContent() {
                           {initials(row.customer.name)}
                         </span>
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0 truncate text-sm font-semibold">
-                              {row.customer.name}
-                            </div>
-                            <span
-                              className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${STATUS_CLASS[row.status]}`}
-                            >
-                              {row.status}
-                            </span>
+                          <div className="min-w-0 truncate text-sm font-semibold leading-snug">
+                            {row.customer.name}
                           </div>
-                          <div className="mt-0.5 truncate text-xs text-[var(--muted)]">
+                          <div className="mt-0.5 truncate text-[11px] text-[var(--muted)]">
                             {row.customer.phone ?? "No phone"}
                             {vehicleHint ? ` · ${vehicleHint}` : ""}
                           </div>
                           {row.lastService && (
-                            <div className="mt-1 truncate text-[11px] text-[var(--muted)]">
+                            <div className="mt-0.5 truncate text-[10px] text-[var(--muted)]">
                               Last · {row.lastService.label} ·{" "}
                               {formatDate(row.lastService.at)}
                             </div>
@@ -640,6 +557,14 @@ function CustomersPageContent() {
                 );
               })}
             </ul>
+            <button
+              type="button"
+              onClick={() => setCreateMode("known")}
+              aria-label="Add customer"
+              className="btn-primary absolute bottom-2.5 right-5 z-10 inline-flex h-11 w-11 items-center justify-center p-0 shadow-md"
+            >
+              <IconUserPlus className="h-5 w-5" />
+            </button>
           </div>
         </section>
 
@@ -660,14 +585,14 @@ function CustomersPageContent() {
               }}
             />
           ) : (
-            <div className="surface-panel flex min-h-0 flex-1 flex-col items-center justify-center px-8 py-16 text-center">
-              <span className="mb-4 inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--accent)]/20">
-                <IconUsers className="h-6 w-6" />
+            <div className="surface-panel flex min-h-0 flex-1 flex-col items-center justify-center px-6 py-12 text-center">
+              <span className="mb-3 inline-flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--accent)]/20">
+                <IconUsers className="h-5 w-5" />
               </span>
-              <p className="font-display text-lg font-semibold tracking-tight">
+              <p className="font-display text-base font-semibold tracking-tight">
                 Select a customer
               </p>
-              <p className="mt-1.5 max-w-xs text-sm text-[var(--muted)]">
+              <p className="mt-1 max-w-xs text-xs text-[var(--muted)]">
                 Open a record from the directory to review profile, vehicles,
                 repairs, and conversations.
               </p>
@@ -686,28 +611,28 @@ function CustomersPageContent() {
             onClick={closeCreateModal}
           >
             <div
-              className="flex max-h-[min(90dvh,40rem)] w-full max-w-[32rem] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]"
+              className="flex max-h-[min(88dvh,36rem)] w-full max-w-[28rem] flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_20px_48px_-16px_rgba(15,23,42,0.4)]"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="relative shrink-0 overflow-hidden border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white px-5 pb-5 pt-6">
+              <div className="relative shrink-0 overflow-hidden border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white px-5 py-4">
                 <div
-                  className="pointer-events-none absolute right-0 top-0 h-40 w-40 translate-x-1/4 -translate-y-1/4 rounded-full bg-[var(--accent-glow)] blur-2xl"
+                  className="pointer-events-none absolute right-0 top-0 h-32 w-32 translate-x-1/4 -translate-y-1/4 rounded-full bg-[var(--accent-glow)] blur-2xl"
                   aria-hidden="true"
                 />
-                <div className="relative flex min-w-0 items-center gap-3">
-                  <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-white shadow-md shadow-[var(--accent-glow)]">
+                <div className="relative flex min-w-0 items-center gap-2.5">
+                  <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] text-white shadow-sm shadow-[var(--accent-glow)]">
                     <IconUsers className="h-4 w-4" />
                   </span>
                   <h2
                     id="add-customer-title"
-                    className="text-lg font-semibold tracking-tight text-[var(--ink)]"
+                    className="text-base font-semibold tracking-tight text-[var(--ink)]"
                   >
                     Customer
                   </h2>
                 </div>
               </div>
 
-              <div className="asa-scroll min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-5">
+              <div className="asa-scroll min-h-0 flex-1 space-y-3.5 overflow-y-auto overscroll-contain px-5 py-4">
                 <div>
                   <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
                     Visit type
@@ -734,17 +659,17 @@ function CustomersPageContent() {
                   <form
                     id="create-customer-form"
                     onSubmit={onCreateKnown}
-                    className="space-y-4"
+                    className="space-y-3.5"
                   >
-                    <div className="flex items-start gap-3 rounded-xl border border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-3.5 py-3">
-                      <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-900 text-[11px] font-semibold tracking-wide text-white">
+                    <div className="flex items-start gap-3 rounded-lg border border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-3.5 py-3">
+                      <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-[11px] font-semibold tracking-wide text-white">
                         {name.trim() ? initials(name) : "?"}
                       </span>
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-semibold text-slate-900">
                           {name.trim() || "New customer"}
                         </p>
-                        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-[var(--muted)]">
+                        <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-[var(--muted)]">
                           {phone.trim() ? (
                             <span className="tabular-nums">{phone.trim()}</span>
                           ) : (
@@ -759,18 +684,18 @@ function CustomersPageContent() {
 
                     {error && (
                       <p
-                        className="rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-700"
+                        className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
                         role="alert"
                       >
                         {error}
                       </p>
                     )}
 
-                    <div className="space-y-3">
+                    <div className="space-y-2.5">
                       <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
                         Contact
                       </p>
-                      <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="grid gap-2.5 sm:grid-cols-2">
                         <Field
                           label="Name"
                           icon={<IconUser />}
@@ -802,14 +727,14 @@ function CustomersPageContent() {
                 )}
 
                 {createMode === "unknown" && (
-                  <div className="rounded-xl border border-dashed border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-4 py-8 text-center">
-                    <span className="mx-auto inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-900 text-white">
-                      <IconDoorOpen className="h-5 w-5" />
+                  <div className="rounded-lg border border-dashed border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-4 py-6 text-center">
+                    <span className="mx-auto inline-flex h-10 w-10 items-center justify-center rounded-xl bg-slate-900 text-white">
+                      <IconDoorOpen className="h-4 w-4" />
                     </span>
-                    <p className="mt-3 text-sm font-semibold text-slate-900">
+                    <p className="mt-2.5 text-sm font-semibold text-slate-900">
                       Skip the customer record
                     </p>
-                    <p className="mx-auto mt-1 max-w-xs text-sm text-[var(--muted)]">
+                    <p className="mx-auto mt-1 max-w-[18rem] text-xs leading-relaxed text-[var(--muted)]">
                       Start a vehicle-first walk-in without a name or phone.
                       You can link a customer later.
                     </p>
@@ -817,12 +742,12 @@ function CustomersPageContent() {
                 )}
               </div>
 
-              <div className="flex shrink-0 flex-col-reverse gap-2 border-t border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-5 py-4 sm:flex-row sm:justify-end">
+              <div className="flex shrink-0 flex-col-reverse gap-2 border-t border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-5 py-3.5 sm:flex-row sm:justify-end">
                 <button
                   type="button"
                   onClick={closeCreateModal}
                   disabled={saving}
-                  className="btn-ghost inline-flex items-center justify-center gap-1.5 px-4 py-2 text-sm disabled:opacity-60"
+                  className="btn-ghost inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-sm disabled:opacity-60"
                 >
                   <IconCancel />
                   Cancel
@@ -832,7 +757,7 @@ function CustomersPageContent() {
                     type="submit"
                     form="create-customer-form"
                     disabled={!canCreateCustomer}
-                    className="btn-primary inline-flex items-center justify-center gap-1.5 px-5 py-2.5 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="btn-primary inline-flex items-center justify-center gap-1.5 px-5 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {!saving && <IconSave />}
                     {saving ? "Saving…" : "Save"}
@@ -840,7 +765,7 @@ function CustomersPageContent() {
                 ) : (
                   <Link
                     href="/dashboard/walk-ins"
-                    className="btn-primary inline-flex items-center justify-center gap-1.5 px-5 py-2.5"
+                    className="btn-primary inline-flex items-center justify-center gap-1.5 px-5 py-2 text-sm"
                   >
                     <IconDoorOpen />
                     Open walk-ins
@@ -873,37 +798,37 @@ function ModeOption({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`group relative rounded-xl border px-3.5 py-3.5 text-left transition ${
+      className={`group relative rounded-lg border px-3 py-3 text-left transition ${
         active
           ? "border-[var(--accent)] bg-[var(--accent-soft)] shadow-sm ring-1 ring-[var(--accent)]/25"
           : "border-[var(--line)] bg-white hover:border-[var(--accent)]/35 hover:bg-[rgba(15,23,42,0.015)]"
       }`}
     >
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-2.5">
         <span
-          className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition ${
+          className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition ${
             active
-              ? "bg-[var(--accent)] text-white shadow-md shadow-[var(--accent-glow)]"
+              ? "bg-[var(--accent)] text-white shadow-sm shadow-[var(--accent-glow)]"
               : "bg-slate-900/90 text-white"
           }`}
         >
           {icon}
         </span>
-        <div className="min-w-0 flex-1 pr-5">
+        <div className="min-w-0 flex-1 pr-4">
           <div className="text-sm font-semibold text-slate-900">{label}</div>
-          <div className="mt-0.5 text-xs leading-relaxed text-[var(--muted)]">
+          <div className="mt-0.5 text-xs leading-snug text-[var(--muted)]">
             {description}
           </div>
         </div>
         <span
-          className={`absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full transition ${
+          className={`absolute right-2.5 top-2.5 inline-flex h-4 w-4 items-center justify-center rounded-full transition ${
             active
               ? "bg-[var(--accent)] text-white"
               : "border border-[var(--line)] bg-white text-transparent"
           }`}
           aria-hidden="true"
         >
-          <IconCheck className="h-3 w-3" />
+          <IconCheck className="h-2.5 w-2.5" />
         </span>
       </div>
     </button>
@@ -946,7 +871,7 @@ function Field({
         required={required}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-sm outline-none transition placeholder:text-slate-400 focus:border-[var(--accent)]/40 focus:ring-2 focus:ring-[var(--accent)]/20"
+        className="w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2.5 text-sm outline-none transition placeholder:text-slate-400 focus:border-[var(--accent)]/40 focus:ring-2 focus:ring-[var(--accent)]/20"
       />
     </label>
   );

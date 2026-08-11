@@ -761,6 +761,24 @@ class VoiceReplyGenerator:
             )
 
         if intent == CustomerIntent.PRICE_QUESTION:
+            service_price = entities.get("service_price")
+            who = f"{address_name}, " if address_name else ""
+            if service_name and service_price is not None:
+                return VoiceReplyDraft(
+                    text=(
+                        f"{who}{service_name} usually runs about ${service_price}. "
+                        "Want me to get you on the schedule?"
+                    ),
+                    follow_up_question=f"Book {service_name}?",
+                )
+            if service_name:
+                return VoiceReplyDraft(
+                    text=(
+                        f"{who}I can check pricing for {service_name}. "
+                        "Want me to get you on the schedule?"
+                    ),
+                    follow_up_question=f"Book {service_name}?",
+                )
             return VoiceReplyDraft(
                 text=counselor.ask_service(customer_name=address_name),
                 follow_up_question="Which service?",

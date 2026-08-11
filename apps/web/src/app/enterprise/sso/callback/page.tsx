@@ -122,7 +122,7 @@ function SsoCallbackInner() {
         </p>
       )}
 
-      <Link href="/login" className="text-sm text-[var(--muted)] underline-offset-2 hover:underline">
+      <Link href="/?login=1" className="text-sm text-[var(--muted)] underline-offset-2 hover:underline">
         Back to login
       </Link>
     </main>

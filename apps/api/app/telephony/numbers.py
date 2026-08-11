@@ -1,8 +1,9 @@
 """Twilio phone number provisioning for shops.
 
-On shop signup we (optionally) search available numbers, purchase one, point SMS/Voice
-webhooks at this API, and persist E.164 on ``shops.sms_phone_e164`` /
-``shops.voice_phone_e164``.
+On shop signup we (optionally) assign a channel number: prefer an IncomingPhoneNumber
+already on the Twilio account that is **not** assigned to any shop, otherwise search
+and purchase a new local number. SMS/Voice webhooks are pointed at this API and the
+E.164 is persisted on ``shops.sms_phone_e164`` / ``shops.voice_phone_e164``.
 
 ``TWILIO_PROVIDER=fake`` assigns a local number without Twilio API calls.
 Platform admins can force-provision / release even when auto-provision is off.
@@ -20,6 +21,7 @@ from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 import httpx
+from sqlalchemy import select
 
 from app.infrastructure.config import settings
 from app.sms.store import normalize_phone
@@ -126,6 +128,83 @@ class TwilioNumberProvisioner:
             raise RuntimeError("Twilio available-number response missing phone_number")
         return phone
 
+    async def _list_owned_incoming(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        page_size: int = 50,
+        max_pages: int = 20,
+    ) -> list[dict[str, Any]]:
+        """List IncomingPhoneNumber resources already on this Twilio account."""
+        owned: list[dict[str, Any]] = []
+        url: str | None = f"{self._root}/IncomingPhoneNumbers.json"
+        params: dict[str, Any] | None = {"PageSize": page_size}
+        pages = 0
+        while url and pages < max_pages:
+            pages += 1
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            payload = response.json()
+            batch = payload.get("incoming_phone_numbers") or []
+            owned.extend(batch)
+            next_uri = payload.get("next_page_uri")
+            if not next_uri or not batch:
+                break
+            url = (
+                next_uri
+                if str(next_uri).startswith("http")
+                else f"https://api.twilio.com{next_uri}"
+            )
+            params = None  # next_page_uri already encodes pagination
+        return owned
+
+    async def _claim_idle_owned(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        shop_id: UUID,
+        friendly_name: str,
+        exclude_phones: set[str],
+    ) -> ProvisionedNumber | None:
+        """Reuse an account-owned number not assigned to any shop (or reserved)."""
+        owned = await self._list_owned_incoming(client)
+        name = (friendly_name or f"Shop {shop_id}")[:64]
+        urls = self._webhook_urls()
+        for row in owned:
+            raw = str(row.get("phone_number") or "")
+            phone = normalize_phone(raw)
+            sid = str(row.get("sid") or "") or None
+            if not phone or not sid:
+                continue
+            if phone in exclude_phones:
+                continue
+            capabilities = row.get("capabilities") or {}
+            # Prefer numbers that can do both; skip if Twilio marks either false.
+            if capabilities.get("sms") is False or capabilities.get("voice") is False:
+                continue
+            data: dict[str, str] = {"FriendlyName": name}
+            data.update(urls)
+            response = await client.post(
+                f"{self._root}/IncomingPhoneNumbers/{sid}.json",
+                data=data,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            claimed = normalize_phone(str(payload.get("phone_number") or phone))
+            claimed_sid = str(payload.get("sid") or sid) or None
+            logger.info(
+                "telephony.provision.twilio.reuse shop=%s phone=%s sid=%s",
+                shop_id,
+                claimed,
+                claimed_sid,
+            )
+            return ProvisionedNumber(
+                phone_e164=claimed,
+                sid=claimed_sid,
+                provider="twilio",
+            )
+        return None
+
     async def provision(
         self,
         *,
@@ -133,7 +212,22 @@ class TwilioNumberProvisioner:
         friendly_name: str,
     ) -> ProvisionedNumber:
         auth = (self._account_sid, self._auth_token)
+        exclude = await assigned_shop_phones()
+        # Never hand out the platform shared From / OTP number.
+        reserved = normalize_phone(settings.twilio_from_number or "")
+        if reserved:
+            exclude.add(reserved)
+
         async with httpx.AsyncClient(timeout=45.0, auth=auth) as client:
+            reused = await self._claim_idle_owned(
+                client,
+                shop_id=shop_id,
+                friendly_name=friendly_name,
+                exclude_phones=exclude,
+            )
+            if reused is not None:
+                return reused
+
             available = await self._search_available(client)
             data: dict[str, str] = {
                 "PhoneNumber": available,
@@ -149,7 +243,7 @@ class TwilioNumberProvisioner:
             phone = normalize_phone(str(payload.get("phone_number") or available))
             sid = str(payload.get("sid") or "") or None
             logger.info(
-                "telephony.provision.twilio shop=%s phone=%s sid=%s",
+                "telephony.provision.twilio.purchase shop=%s phone=%s sid=%s",
                 shop_id,
                 phone,
                 sid,
@@ -308,6 +402,31 @@ class TwilioNumberProvisioner:
         }
 
 
+async def assigned_shop_phones() -> set[str]:
+    """E.164 numbers currently bound to any shop (SMS and/or voice)."""
+    from app.infrastructure.database import SessionLocal
+    from app.infrastructure.models import ShopModel
+
+    phones: set[str] = set()
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(ShopModel.sms_phone_e164, ShopModel.voice_phone_e164).where(
+                    (ShopModel.sms_phone_e164.is_not(None))
+                    | (ShopModel.voice_phone_e164.is_not(None))
+                )
+            )
+        ).all()
+    for sms, voice in rows:
+        for raw in (sms, voice):
+            if not raw:
+                continue
+            phone = normalize_phone(str(raw))
+            if phone:
+                phones.add(phone)
+    return phones
+
+
 def _twilio_provisioner_or_none() -> TwilioNumberProvisioner | None:
     if (
         (settings.twilio_provider or "fake").lower() == "fake"
@@ -372,6 +491,29 @@ async def clear_shop_number_webhooks(phone_e164: str | None) -> dict[str, Any]:
         }
 
 
+def _twilio_api_error_hint(exc: Exception) -> str:
+    """Map Twilio/httpx failures to a short admin-facing hint."""
+    text = str(exc)
+    lower = text.lower()
+    if "401" in text or "authenticate" in lower or "unauthorized" in lower:
+        return (
+            "Twilio authentication failed (401). "
+            "Update TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in .env "
+            "(Console → Account → API keys & tokens → Auth Token), then restart the API."
+        )
+    if "403" in text or "forbidden" in lower:
+        return (
+            "Twilio forbidden (403). This Account SID may lack permission "
+            "for Incoming Phone Numbers — check the Auth Token matches this account."
+        )
+    if "missing_webhook_base_url" in lower:
+        return (
+            "TWILIO_WEBHOOK_PUBLIC_URL is empty. "
+            "Set it to your public API origin (e.g. https://xxxx.ngrok-free.dev)."
+        )
+    return text
+
+
 async def configure_shop_number_webhooks(phone_e164: str | None) -> dict[str, Any]:
     """Best-effort: wire webhooks for an E.164 already on the Twilio account.
 
@@ -416,7 +558,7 @@ async def configure_shop_number_webhooks(phone_e164: str | None) -> dict[str, An
             "sid": None,
             "voice_url": None,
             "sms_url": None,
-            "error": str(exc),
+            "error": _twilio_api_error_hint(exc),
             "skipped": False,
         }
 
@@ -447,13 +589,25 @@ async def provision_shop_number(
     force: bool = False,
     unique: bool = False,
 ) -> ProvisionedNumber | None:
-    """Provision one number for the shop. Never raises — logs and returns None on failure."""
+    """Provision one number for the shop. Never raises — logs and returns None on failure.
+
+    Signup respects platform setting ``twilio_auto_provision_numbers`` (env default until
+    an admin override is saved). Admin assign/reset passes ``force=True`` to bypass.
+    """
     try:
-        client = (
-            provisioner
-            if provisioner is not None
-            else build_number_provisioner(force=force, unique=unique)
-        )
+        if provisioner is None and not force:
+            from app.admin.settings import PlatformSettingsService
+
+            if not await PlatformSettingsService().twilio_auto_provision_numbers():
+                return None
+            # Platform gate already applied — skip env re-check in build_number_provisioner.
+            client = build_number_provisioner(force=True, unique=unique)
+        else:
+            client = (
+                provisioner
+                if provisioner is not None
+                else build_number_provisioner(force=force, unique=unique)
+            )
         if client is None:
             return None
         return await client.provision(shop_id=shop_id, friendly_name=shop_name)

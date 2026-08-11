@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, Sequence
 from uuid import UUID
 
@@ -152,6 +153,7 @@ class CatalogServiceMatch:
     bay: str
     confidence: float
     category: str = ""
+    price: Decimal = Decimal("0")
 
 
 def _norm(text: str) -> str:
@@ -274,6 +276,11 @@ def _score_service_against_query(s: Any, q: str) -> float:
 
 
 def _match_from_score(s: Any, score: float) -> CatalogServiceMatch:
+    raw_price = getattr(s, "price", None)
+    try:
+        price = Decimal(str(raw_price if raw_price is not None else 0))
+    except Exception:  # noqa: BLE001 — bad catalog row must not break matching
+        price = Decimal("0")
     return CatalogServiceMatch(
         service_id=s.id,
         name=str(s.name),
@@ -282,6 +289,7 @@ def _match_from_score(s: Any, score: float) -> CatalogServiceMatch:
         bay=str(getattr(s, "bay", None) or "general"),
         confidence=score,
         category=str(getattr(s, "category", "") or ""),
+        price=price,
     )
 
 

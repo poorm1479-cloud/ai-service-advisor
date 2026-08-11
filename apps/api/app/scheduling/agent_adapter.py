@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from uuid import UUID
 
 from app.agents.base.errors import AgentValidationError
 from app.agents.scheduling.models import AppointmentRecord, TimeSlot
+from app.domain.exceptions import ValidationError
 from app.scheduling.enums import AppointmentStatus
 from app.scheduling.models import BookingRequest
 from app.scheduling.service import AppointmentIntelligenceService
@@ -22,6 +24,25 @@ class IntelligenceSchedulingStore:
         from app.scheduling.catalog import ensure_shop_resources_synced
 
         await ensure_shop_resources_synced(shop_id, self._intel._store)  # noqa: SLF001
+
+    async def _resolve_catalog_revenue(
+        self,
+        shop_id: UUID,
+        *,
+        service_id: UUID | None,
+        estimated_revenue: Decimal | None,
+        repair_type: str | None = None,
+        service_name: str | None = None,
+    ) -> Decimal | None:
+        """Prefer decision revenue; else load shop catalog list price by id/name/skill."""
+        if estimated_revenue is not None:
+            return Decimal(str(estimated_revenue))
+        return await self._intel._catalog_list_price(  # noqa: SLF001
+            shop_id,
+            service_id,
+            skill=repair_type,
+            service_name=service_name,
+        )
 
     async def list_available_slots(
         self,
@@ -125,6 +146,7 @@ class IntelligenceSchedulingStore:
         duration_minutes: int | None = None,
         repair_type: str | None = None,
         required_bay: str | None = None,
+        estimated_revenue: Decimal | None = None,
     ) -> AppointmentRecord:
         await self._ensure_synced(shop_id)
         span = max(1, int((end - start).total_seconds() / 60))
@@ -134,6 +156,13 @@ class IntelligenceSchedulingStore:
             else max(30, span)
         )
         skill = (repair_type or "").strip().lower() or "general"
+        revenue = await self._resolve_catalog_revenue(
+            shop_id,
+            service_id=service_id,
+            estimated_revenue=estimated_revenue,
+            repair_type=skill,
+            service_name=service_name,
+        )
         result = await self._intel.book(
             BookingRequest(
                 shop_id=shop_id,
@@ -148,6 +177,7 @@ class IntelligenceSchedulingStore:
                 notes=notes,
                 service_id=service_id,
                 service_name=service_name,
+                estimated_revenue=revenue,
             )
         )
         if not result.success or result.appointment is None:
@@ -172,8 +202,16 @@ class IntelligenceSchedulingStore:
         duration_minutes: int | None = None,
         repair_type: str | None = None,
         required_bay: str | None = None,
+        estimated_revenue: Decimal | None = None,
     ) -> AppointmentRecord:
         del end  # intelligence path derives end from duration + preferred_start
+        revenue = await self._resolve_catalog_revenue(
+            shop_id,
+            service_id=service_id,
+            estimated_revenue=estimated_revenue,
+            repair_type=repair_type,
+            service_name=service_name,
+        )
         result = await self._intel.reschedule(
             shop_id=shop_id,
             appointment_id=appointment_id,
@@ -183,6 +221,7 @@ class IntelligenceSchedulingStore:
             estimated_duration_min=duration_minutes,
             repair_type=repair_type,
             required_bay=required_bay,
+            estimated_revenue=revenue,
         )
         if not result.success or result.appointment is None:
             raise AgentValidationError(
@@ -194,9 +233,12 @@ class IntelligenceSchedulingStore:
     async def cancel(
         self, shop_id: UUID, appointment_id: UUID, reason: str | None = None
     ) -> AppointmentRecord:
-        appt = await self._intel.cancel(
-            shop_id=shop_id, appointment_id=appointment_id, reason=reason
-        )
+        try:
+            appt = await self._intel.cancel(
+                shop_id=shop_id, appointment_id=appointment_id, reason=reason
+            )
+        except ValidationError as exc:
+            raise AgentValidationError(str(exc), agent="scheduling") from exc
         if appt is None:
             raise AgentValidationError("Appointment not found", agent="scheduling")
         return _to_record(appt)

@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from app.executive.aggregator import ExecutiveAggregator
 from app.executive.monitoring import ExecutiveMonitor
 from app.executive.service import ExecutiveDashboardService
-from app.executive.store import ExecutiveStorePort, InMemoryExecutiveStore
+from app.executive.sql_store import build_default_executive_store
+from app.executive.store import ExecutiveStorePort
 
 
 @dataclass(slots=True)
@@ -25,7 +26,7 @@ def build_executive_runtime(
     *,
     store: ExecutiveStorePort | None = None,
 ) -> ExecutiveRuntime:
-    resource_store = store or InMemoryExecutiveStore()
+    resource_store = store or build_default_executive_store()
     aggregator = ExecutiveAggregator(resource_store)
     service = ExecutiveDashboardService(store=resource_store, aggregator=aggregator)
     return ExecutiveRuntime(

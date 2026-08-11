@@ -476,8 +476,7 @@ class AdminConsoleService:
                     if not webhook_status.get("ok"):
                         err = webhook_status.get("error") or "unknown"
                         raise ValidationError(
-                            f"Could not configure Twilio webhooks for {phone}: {err}. "
-                            "Check TWILIO_WEBHOOK_PUBLIC_URL and Twilio credentials."
+                            f"Could not configure Twilio webhooks for {phone}: {err}"
                         )
 
             taken = await session.scalar(

@@ -90,6 +90,61 @@ function IconPlus({ className = "h-3.5 w-3.5" }: { className?: string }) {
   );
 }
 
+function IconUserPlus({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M19 8v6M16 11h6" />
+    </svg>
+  );
+}
+
+function IconUser({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  );
+}
+
+function IconLock({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="11" width="18" height="11" rx="2" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
+  );
+}
+
 function IconShield({ className = "h-3.5 w-3.5" }: { className?: string }) {
   return (
     <svg
@@ -261,6 +316,25 @@ function IconCheck({ className = "h-3.5 w-3.5" }: { className?: string }) {
   );
 }
 
+function IconSave({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
+      <path d="M17 21v-8H7v8" />
+      <path d="M7 3v5h8" />
+    </svg>
+  );
+}
+
 export function TeamPanel() {
   const { session, loading: authLoading } = useAuth();
   const isOwner = session?.role === "owner";
@@ -359,11 +433,11 @@ export function TeamPanel() {
     setError(null);
     setSuccess(null);
     if (password !== confirmPassword) {
-      setError("Temporary password and confirmation do not match.");
+      setError("Password and confirmation do not match.");
       return;
     }
     if (password.length < 8) {
-      setError("Temporary password must be at least 8 characters.");
+      setError("Password must be at least 8 characters.");
       return;
     }
     setSaving(true);
@@ -508,52 +582,34 @@ export function TeamPanel() {
         </p>
       )}
 
-      <section className="surface-panel flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl">
+      <section className="surface-panel relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl">
         <div className="shrink-0 border-b border-[var(--line)] bg-gradient-to-br from-white via-white to-[var(--accent-soft)]/40 px-4 py-2.5 sm:px-6">
-          <div className="flex min-w-0 items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-2.5">
-              <span
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-white shadow-sm shadow-[var(--accent-glow)]"
-                aria-hidden="true"
-              >
-                <IconUsers className="h-3.5 w-3.5" />
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-white shadow-sm shadow-[var(--accent-glow)]"
+              aria-hidden="true"
+            >
+              <IconUsers className="h-3.5 w-3.5" />
+            </span>
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <h2 className="truncate text-sm font-semibold tracking-tight text-[var(--ink)]">
+                Team
+              </h2>
+              <span className="inline-flex items-center gap-1 rounded-full bg-white/90 px-2 py-0.5 text-[10px] font-semibold text-[var(--ink)] ring-1 ring-[var(--line)]">
+                <IconShield className="h-2.5 w-2.5 text-[var(--accent)]" />
+                Access
               </span>
-              <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                <h2 className="truncate text-sm font-semibold tracking-tight text-[var(--ink)]">
-                  Team
-                </h2>
-                <span className="inline-flex items-center gap-1 rounded-full bg-white/90 px-2 py-0.5 text-[10px] font-semibold text-[var(--ink)] ring-1 ring-[var(--line)]">
-                  <IconShield className="h-2.5 w-2.5 text-[var(--accent)]" />
-                  Access
+              {!loading ? (
+                <span className="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-medium tabular-nums text-[var(--muted)] ring-1 ring-[var(--line)]">
+                  {members.length} {members.length === 1 ? "member" : "members"}
                 </span>
-                {!loading ? (
-                  <span className="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-medium tabular-nums text-[var(--muted)] ring-1 ring-[var(--line)]">
-                    {members.length} {members.length === 1 ? "member" : "members"}
-                  </span>
-                ) : null}
-                {!isOwner ? (
-                  <span className="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-medium text-[var(--muted)] ring-1 ring-[var(--line)]">
-                    View only
-                  </span>
-                ) : null}
-              </div>
+              ) : null}
+              {!isOwner ? (
+                <span className="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-medium text-[var(--muted)] ring-1 ring-[var(--line)]">
+                  View only
+                </span>
+              ) : null}
             </div>
-            {isOwner ? (
-              <button
-                type="button"
-                disabled={seatsFull}
-                title={
-                  seatsFull
-                    ? "Seat limit reached. Upgrade your plan to add more members."
-                    : undefined
-                }
-                onClick={openInvite}
-                className="btn-primary inline-flex shrink-0 items-center gap-1.5 px-3.5 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <IconPlus className="h-3.5 w-3.5" />
-                Add member
-              </button>
-            ) : null}
           </div>
         </div>
 
@@ -692,6 +748,23 @@ export function TeamPanel() {
             })}
           </ul>
         )}
+
+        {isOwner ? (
+          <button
+            type="button"
+            disabled={seatsFull}
+            aria-label="Add member"
+            title={
+              seatsFull
+                ? "Seat limit reached. Upgrade your plan to add more members."
+                : "Add member"
+            }
+            onClick={openInvite}
+            className="btn-primary absolute bottom-2.5 right-4 z-10 inline-flex h-9 w-9 items-center justify-center p-0 shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <IconUserPlus className="h-4 w-4" />
+          </button>
+        ) : null}
       </section>
 
       {portalReady &&
@@ -717,7 +790,7 @@ export function TeamPanel() {
               />
               <div className="relative flex min-w-0 items-center gap-2.5">
                 <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-white shadow-md shadow-[var(--accent-glow)]">
-                  <IconPlus className="h-3.5 w-3.5" />
+                  <IconUserPlus className="h-3.5 w-3.5" />
                 </span>
                 <h2
                   id="invite-member-title"
@@ -730,7 +803,13 @@ export function TeamPanel() {
 
             <div className="asa-scroll min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-4 py-3.5">
               <div className="grid items-start gap-x-4 gap-y-3 sm:grid-cols-2">
-                <Field label="Full name" value={fullName} onChange={setFullName} required />
+                <Field
+                  label="Full name"
+                  icon={<IconUser />}
+                  value={fullName}
+                  onChange={setFullName}
+                  required
+                />
                 <Field
                   label="Phone"
                   icon={<IconPhone />}
@@ -749,17 +828,18 @@ export function TeamPanel() {
                 />
                 <div className="sm:col-span-2 grid items-start gap-x-4 gap-y-3 sm:grid-cols-2">
                   <PasswordField
-                    label="Temporary password"
+                    label="Password"
+                    icon={<IconLock />}
                     value={password}
                     onChange={setPassword}
                     required
                     minLength={8}
                     autoComplete="new-password"
-                    hint="At least 8 characters. Share with the member to sign in."
                   />
                   <div className="space-y-1.5">
                     <PasswordField
-                      label="Confirm temporary password"
+                      label="Confirm password"
+                      icon={<IconLock />}
                       value={confirmPassword}
                       onChange={setConfirmPassword}
                       required
@@ -774,7 +854,12 @@ export function TeamPanel() {
               </div>
 
               <fieldset>
-                <legend className="text-sm font-medium text-[var(--ink)]">Role</legend>
+                <legend className="inline-flex items-center gap-1.5 text-sm font-medium text-[var(--ink)]">
+                  <span className="text-[var(--muted)]">
+                    <IconBriefcase />
+                  </span>
+                  Role
+                </legend>
                 <p className="mt-1 text-xs text-[var(--muted)]">
                   Invited members are always Staff. Access is controlled by permissions below.
                 </p>
@@ -823,7 +908,7 @@ export function TeamPanel() {
                 }
                 className="btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <IconCheck className="h-3.5 w-3.5" />
+                <IconSave className="h-3.5 w-3.5" />
                 {saving ? "Saving…" : "Save"}
               </button>
             </div>
@@ -951,7 +1036,7 @@ export function TeamPanel() {
                 disabled={savingEdit || !editCapsDirty}
                 className="btn-primary inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <IconCheck className="h-3.5 w-3.5" />
+                <IconSave className="h-3.5 w-3.5" />
                 {savingEdit ? "Saving…" : "Save"}
               </button>
             </div>
@@ -1095,7 +1180,12 @@ function CapabilityChecklist({
 }) {
   return (
     <fieldset>
-      <legend className="text-sm font-medium text-[var(--ink)]">Permissions</legend>
+      <legend className="inline-flex items-center gap-1.5 text-sm font-medium text-[var(--ink)]">
+        <span className="text-[var(--muted)]">
+          <IconShield />
+        </span>
+        Permissions
+      </legend>
       <p className="mt-1 text-xs text-[var(--muted)]">
         Choose what this person can do across the shop floor and desk.
       </p>

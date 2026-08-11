@@ -44,6 +44,15 @@ export type AiPreview = {
   reasons?: string[];
 };
 
+export type AudienceMember = {
+  customer_id: string;
+  name: string;
+  phone?: string | null;
+  email?: string | null;
+  vehicle?: string | null;
+  service?: string | null;
+};
+
 export type CampaignMetrics = {
   campaign_id: string;
   shop_id: string;
@@ -159,7 +168,10 @@ export async function listCampaigns(): Promise<Campaign[]> {
 }
 
 export async function createCampaign(body: Record<string, unknown>): Promise<
-  Campaign & { ai_preview?: AiPreview | null }
+  Campaign & {
+    ai_preview?: AiPreview | null;
+    audience?: AudienceMember[];
+  }
 > {
   const res = await authFetch("/v1/marketing/campaigns", {
     method: "POST",
@@ -205,8 +217,13 @@ export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
   return res.json();
 }
 
-export async function getAiPreview(campaignId: string) {
-  const res = await authFetch(`/v1/marketing/campaigns/${campaignId}/ai-preview`);
+export async function getAiPreview(campaignId: string, customerId?: string) {
+  const qs = customerId
+    ? `?customer_id=${encodeURIComponent(customerId)}`
+    : "";
+  const res = await authFetch(
+    `/v1/marketing/campaigns/${campaignId}/ai-preview${qs}`,
+  );
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
 }

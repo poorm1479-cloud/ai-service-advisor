@@ -53,6 +53,7 @@ def _call(m: VoiceCallModel) -> VoiceCall:
         started_at=m.started_at,
         ended_at=m.ended_at,
         created_at=m.created_at,
+        deleted_at=m.deleted_at,
         metadata=meta,
     )
 
@@ -193,7 +194,9 @@ class SqlAlchemyVoiceStore:
             await self._bind(session, shop_id)
             row = await session.scalar(
                 select(VoiceCallModel).where(
-                    VoiceCallModel.shop_id == shop_id, VoiceCallModel.id == call_id
+                    VoiceCallModel.shop_id == shop_id,
+                    VoiceCallModel.id == call_id,
+                    VoiceCallModel.deleted_at.is_(None),
                 )
             )
             return _call(row) if row else None
@@ -259,7 +262,10 @@ class SqlAlchemyVoiceStore:
     ) -> list[VoiceCall]:
         async def _run(session: AsyncSession) -> list[VoiceCall]:
             await self._bind(session, shop_id)
-            stmt = select(VoiceCallModel).where(VoiceCallModel.shop_id == shop_id)
+            stmt = select(VoiceCallModel).where(
+                VoiceCallModel.shop_id == shop_id,
+                VoiceCallModel.deleted_at.is_(None),
+            )
             if status:
                 stmt = stmt.where(VoiceCallModel.status == status)
             stmt = stmt.order_by(VoiceCallModel.started_at.desc().nullslast()).limit(limit)
@@ -287,6 +293,7 @@ class SqlAlchemyVoiceStore:
                     VoiceCallModel.shop_id == shop_id,
                     VoiceCallModel.status.in_(live),
                     VoiceCallModel.ended_at.is_(None),
+                    VoiceCallModel.deleted_at.is_(None),
                 )
                 .order_by(VoiceCallModel.started_at.desc().nullslast())
             )
@@ -367,6 +374,16 @@ class SqlAlchemyVoiceStore:
     async def list_turns(self, shop_id: UUID, call_id: UUID) -> list[VoiceTurn]:
         async def _run(session: AsyncSession) -> list[VoiceTurn]:
             await self._bind(session, shop_id)
+            # Soft-deleted calls are hidden from staff UI (including transcripts).
+            call = await session.scalar(
+                select(VoiceCallModel).where(
+                    VoiceCallModel.shop_id == shop_id,
+                    VoiceCallModel.id == call_id,
+                    VoiceCallModel.deleted_at.is_(None),
+                )
+            )
+            if call is None:
+                return []
             rows = await session.scalars(
                 select(VoiceTurnModel)
                 .where(VoiceTurnModel.shop_id == shop_id, VoiceTurnModel.call_id == call_id)
@@ -381,12 +398,16 @@ class SqlAlchemyVoiceStore:
             return await _run(session)
 
     async def delete_call(self, shop_id: UUID, call_id: UUID) -> bool:
+        """Soft-delete so dashboard 'AI calls handled' keeps counting the call."""
+
         async def _run(session: AsyncSession) -> bool:
             await self._bind(session, shop_id)
-            # Use SQL DELETE so ON DELETE CASCADE drops turns (ORM would null call_id).
             result = await session.execute(
                 text(
-                    "DELETE FROM voice_calls WHERE shop_id = :shop_id AND id = :id"
+                    "UPDATE voice_calls"
+                    " SET deleted_at = COALESCE(deleted_at, NOW()),"
+                    "     ended_at = COALESCE(ended_at, NOW())"
+                    " WHERE shop_id = :shop_id AND id = :id AND deleted_at IS NULL"
                 ),
                 {"shop_id": shop_id, "id": call_id},
             )

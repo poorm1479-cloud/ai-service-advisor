@@ -38,6 +38,18 @@ def _normalize_phone(phone: str | None) -> str | None:
     return digits or None
 
 
+def _phone_match_key(phone: str | None) -> str | None:
+    """US-tolerant key: +1XXXXXXXXXX and XXXXXXXXXX compare equal."""
+    digits = _normalize_phone(phone)
+    if not digits:
+        return None
+    if len(digits) == 11 and digits.startswith("1"):
+        return digits[1:]
+    if len(digits) > 10:
+        return digits[-10:]
+    return digits
+
+
 def _to_profile(c: Customer) -> CustomerProfile:
     return CustomerProfile(
         id=c.id,
@@ -74,7 +86,7 @@ class SqlCustomerDirectory:
             return _to_profile(row) if row else None
 
     async def find_by_phone(self, shop_id: UUID, phone: str) -> list[CustomerProfile]:
-        target = _normalize_phone(phone)
+        target = _phone_match_key(phone)
         if not target:
             return []
         async with SessionLocal() as session:
@@ -84,7 +96,7 @@ class SqlCustomerDirectory:
             return [
                 _to_profile(r)
                 for r in rows
-                if _normalize_phone(r.phone) == target
+                if _phone_match_key(r.phone) == target
             ]
 
     async def find_by_email(self, shop_id: UUID, email: str) -> list[CustomerProfile]:

@@ -276,6 +276,58 @@ class WalkInService:
         await self._uow.commit()
         return await self._detail(shop_id, visit.id)
 
+    async def close(self, *, shop_id: UUID, visit_id: UUID) -> WalkInDetail:
+        """Close a walk-in after reserved work is finished (idempotent)."""
+        await self._uow.bind_shop(shop_id)
+        visit = await self._uow.walk_ins.get_by_id(shop_id, visit_id)
+        if visit is None:
+            raise NotFoundError("Walk-in visit not found")
+        if visit.status == WalkInStatus.CLOSED:
+            return await self._detail(shop_id, visit.id)
+        if visit.status == WalkInStatus.CANCELLED:
+            raise ConflictError("Cannot close a cancelled walk-in")
+
+        visit = await self._uow.walk_ins.update(
+            WalkInVisit(
+                id=visit.id,
+                shop_id=visit.shop_id,
+                vehicle_id=visit.vehicle_id,
+                customer_id=visit.customer_id,
+                complaint=visit.complaint,
+                status=WalkInStatus.CLOSED,
+                arrived_at=visit.arrived_at,
+                created_at=visit.created_at,
+            )
+        )
+        await self._uow.commit()
+        return await self._detail(shop_id, visit.id)
+
+    async def cancel(self, *, shop_id: UUID, visit_id: UUID) -> WalkInDetail:
+        """Cancel a walk-in before/during service (idempotent)."""
+        await self._uow.bind_shop(shop_id)
+        visit = await self._uow.walk_ins.get_by_id(shop_id, visit_id)
+        if visit is None:
+            raise NotFoundError("Walk-in visit not found")
+        if visit.status == WalkInStatus.CANCELLED:
+            return await self._detail(shop_id, visit.id)
+        if visit.status == WalkInStatus.CLOSED:
+            raise ConflictError("Cannot cancel a closed walk-in")
+
+        visit = await self._uow.walk_ins.update(
+            WalkInVisit(
+                id=visit.id,
+                shop_id=visit.shop_id,
+                vehicle_id=visit.vehicle_id,
+                customer_id=visit.customer_id,
+                complaint=visit.complaint,
+                status=WalkInStatus.CANCELLED,
+                arrived_at=visit.arrived_at,
+                created_at=visit.created_at,
+            )
+        )
+        await self._uow.commit()
+        return await self._detail(shop_id, visit.id)
+
     async def attach_repair_history(
         self,
         *,
@@ -290,8 +342,8 @@ class WalkInService:
         visit = await self._uow.walk_ins.get_by_id(shop_id, visit_id)
         if visit is None:
             raise NotFoundError("Walk-in visit not found")
-        if visit.status == WalkInStatus.CLOSED:
-            raise ConflictError("Cannot attach repair history to a closed walk-in")
+        if visit.status in (WalkInStatus.CLOSED, WalkInStatus.CANCELLED):
+            raise ConflictError("Cannot attach repair history to a closed or cancelled walk-in")
 
         vehicle = await self._uow.vehicles.get_by_id(shop_id, visit.vehicle_id)
         if vehicle is None:
@@ -318,6 +370,8 @@ class WalkInService:
             raise NotFoundError("Walk-in visit not found")
         if visit.status == WalkInStatus.CLOSED:
             raise ConflictError("Walk-in visit is closed")
+        if visit.status == WalkInStatus.CANCELLED:
+            raise ConflictError("Walk-in visit is cancelled")
         return visit
 
     async def _detail(self, shop_id: UUID, visit_id: UUID) -> WalkInDetail:

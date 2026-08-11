@@ -53,7 +53,7 @@ export default function StatusPage() {
         <Link href="/" className="font-display text-lg font-semibold tracking-tight">
           AI Service Advisor
         </Link>
-        <Link href="/login" className="text-sm text-[var(--muted)] hover:text-[var(--foreground)]">
+        <Link href="/?login=1" className="text-sm text-[var(--muted)] hover:text-[var(--foreground)]">
           Sign in
         </Link>
       </header>

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import delete, exists, func, or_, select, text, update
@@ -919,10 +919,11 @@ class SqlAlchemyRepairHistoryRepository:
             "description": entry.description,
             "cost": entry.cost,
             "recommendation": entry.recommendation,
+            # Always set explicitly so custom service dates are never replaced by server_default.
+            "created_at": entry.created_at
+            if entry.created_at is not None
+            else datetime.now(timezone.utc),
         }
-        # Only set when provided so server_default=now() still applies for new entries.
-        if entry.created_at is not None:
-            kwargs["created_at"] = entry.created_at
         model = RepairHistoryModel(**kwargs)
         self._session.add(model)
         await self._session.flush()

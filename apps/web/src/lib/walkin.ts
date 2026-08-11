@@ -1,7 +1,7 @@
 import { clearSession, getApiUrl, loadSession, refresh, saveSession } from "@/lib/api";
 import type { Customer, RepairHistory, Vehicle } from "@/lib/crm";
 
-export type WalkInStatus = "open" | "converted" | "closed";
+export type WalkInStatus = "open" | "converted" | "closed" | "cancelled";
 
 export type WalkInVisit = {
   id: string;
@@ -146,6 +146,18 @@ export async function convertWalkIn(
     method: "POST",
     body: JSON.stringify(input),
   });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function closeWalkIn(id: string): Promise<WalkInDetail> {
+  const res = await authFetch(`/v1/walk-ins/${id}/close`, { method: "POST" });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function cancelWalkIn(id: string): Promise<WalkInDetail> {
+  const res = await authFetch(`/v1/walk-ins/${id}/cancel`, { method: "POST" });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
 }

@@ -16,19 +16,24 @@ from app.agents.marketing.models import (
 
 _TEMPLATES = {
     MarketingActionType.SMS_CAMPAIGN: (
-        "Hi{name}, {shop} here — book your next service online or reply to this text."
+        "Hi{name}, it's {shop} — whenever you're ready for your next service, "
+        "just reply here or book online. We're happy to help."
     ),
     MarketingActionType.EMAIL_CAMPAIGN: (
-        "Hello{name}, thanks for trusting {shop}. Here's this month's maintenance tip: {tip}"
+        "Hi{name}, thanks for trusting {shop}. Here's a simple tip that helps "
+        "a lot of drivers like you: {tip}"
     ),
     MarketingActionType.REVIEW_REQUEST: (
-        "Hi{name}, thanks for visiting {shop}! Mind leaving a quick review? {review_link}"
+        "Hi{name}, hope everything's going well since your visit to {shop}! "
+        "If you have a moment, we'd love to hear how we did: {review_link}"
     ),
     MarketingActionType.THANK_YOU: (
-        "Thank you{name} for choosing {shop}. We're glad we could help with your vehicle."
+        "Thank you{name} for choosing {shop}. It meant a lot having you in — "
+        "we're glad we could help with your vehicle."
     ),
     MarketingActionType.MAINTENANCE_REMINDER: (
-        "Hi{name}, your {service} is due soon (around {due_mileage} miles). Reply BOOK to schedule."
+        "Hi{name}, just a friendly heads-up — your {service} is coming up "
+        "(around {due_mileage} miles). Reply BOOK when you'd like us to save a spot."
     ),
 }
 

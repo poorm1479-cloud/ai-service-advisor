@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.domain.exceptions import ValidationError
 from app.scheduling.factory import build_scheduling_runtime, reset_scheduling_runtime
 from app.scheduling.models import Bay, BookingRequest
 from app.scheduling.store import InMemoryShopResourceStore
@@ -221,6 +222,105 @@ async def test_agent_adapter_book(runtime, shop_id):
     )
     assert record.status == "booked"
     assert record.start == slots[0].start or record.start >= slots[0].start
+
+
+@pytest.mark.asyncio
+async def test_agent_adapter_book_uses_catalog_price(runtime, shop_id):
+    """Voice/SMS book path must persist catalog list price, not DEFAULT_REVENUE."""
+    from decimal import Decimal
+
+    slots = await runtime.agent_store.list_available_slots(shop_id, days_ahead=5)
+    assert slots
+    service_id = uuid4()
+    await runtime.agent_store.book(
+        shop_id,
+        start=slots[0].start,
+        end=slots[0].end,
+        customer_id=uuid4(),
+        vehicle_id=None,
+        notes="service:Synthetic Oil Change",
+        service_id=service_id,
+        service_name="Synthetic Oil Change",
+        duration_minutes=45,
+        repair_type="oil_change",
+        estimated_revenue=Decimal("89.50"),
+    )
+    appts = await runtime.service.list_appointments(
+        shop_id,
+        start=slots[0].start - timedelta(hours=1),
+        end=slots[0].end + timedelta(days=1),
+    )
+    booked = next(a for a in appts if a.service_id == service_id)
+    assert booked.estimated_revenue == Decimal("89.50")
+
+
+@pytest.mark.asyncio
+async def test_intelligence_book_resolves_catalog_price_when_override_missing(
+    runtime, shop_id, monkeypatch
+):
+    """When agent omits estimated_revenue, load list price from shop catalog."""
+    from decimal import Decimal
+
+    async def fake_price(
+        shop_id_arg,
+        service_id_arg=None,
+        *,
+        skill=None,
+        service_name=None,
+    ):
+        assert skill == "oil_change" or service_id_arg is not None
+        return Decimal("49.99")
+
+    monkeypatch.setattr(runtime.service, "_catalog_list_price", fake_price)
+
+    slots = await runtime.service.recommend_slots(
+        BookingRequest(shop_id=shop_id, repair_type="oil_change", estimated_duration_min=30),
+        days_ahead=5,
+        limit=5,
+    )
+    assert slots
+    result = await runtime.service.book(
+        BookingRequest(
+            shop_id=shop_id,
+            preferred_start=slots[0].start,
+            repair_type="oil_change",
+            estimated_duration_min=30,
+            service_name="Oil Change",
+            source="agent",
+            # no service_id / estimated_revenue — must still use catalog 49.99
+        )
+    )
+    assert result.success and result.appointment
+    assert result.appointment.estimated_revenue == Decimal("49.99")
+
+
+@pytest.mark.asyncio
+async def test_oil_change_does_not_use_legacy_default_79(runtime, shop_id, monkeypatch):
+    """Regression: oil_change must not silently book at DEFAULT 79.99."""
+    from decimal import Decimal
+
+    async def fake_price(*_a, **_k):
+        return Decimal("49.99")
+
+    monkeypatch.setattr(runtime.service, "_catalog_list_price", fake_price)
+    slots = await runtime.service.recommend_slots(
+        BookingRequest(shop_id=shop_id, repair_type="oil_change", estimated_duration_min=30),
+        days_ahead=5,
+        limit=3,
+    )
+    assert slots
+    result = await runtime.service.book(
+        BookingRequest(
+            shop_id=shop_id,
+            preferred_start=slots[0].start,
+            repair_type="oil_change",
+            estimated_duration_min=30,
+            source="agent",
+        )
+    )
+    assert result.success and result.appointment
+    assert result.appointment.estimated_revenue == Decimal("49.99")
+    assert result.appointment.estimated_revenue != Decimal("79.99")
 
 
 @pytest.mark.asyncio
@@ -802,6 +902,136 @@ async def test_walk_in_start_books_in_progress_during_hours(runtime, shop_id):
     assert result.appointment.walk_in_id == walk_in_id
     assert result.appointment.start == preferred
     assert result.appointment.end == preferred + timedelta(minutes=45)
+
+
+@pytest.mark.asyncio
+async def test_complete_appointment_and_walk_in_active_check(runtime, shop_id):
+    booked = await runtime.service.book(
+        BookingRequest(shop_id=shop_id, repair_type="oil_change", walk_in_id=uuid4())
+    )
+    assert booked.appointment is not None
+    walk_in_id = booked.appointment.walk_in_id
+    assert walk_in_id is not None
+    assert await runtime.service.walk_in_has_active_work(
+        shop_id=shop_id, walk_in_id=walk_in_id
+    )
+
+    done = await runtime.service.complete(
+        shop_id=shop_id, appointment_id=booked.appointment.id, notes="bay clear"
+    )
+    assert done is not None
+    assert done.status == "completed"
+    assert "Completed: bay clear" in (done.notes or "")
+    assert not await runtime.service.walk_in_has_active_work(
+        shop_id=shop_id, walk_in_id=walk_in_id
+    )
+
+    # Idempotent
+    again = await runtime.service.complete(
+        shop_id=shop_id, appointment_id=booked.appointment.id
+    )
+    assert again is not None
+    assert again.status == "completed"
+
+    cancelled = await runtime.service.book(
+        BookingRequest(shop_id=shop_id, repair_type="tires")
+    )
+    assert cancelled.appointment is not None
+    await runtime.service.cancel(
+        shop_id=shop_id, appointment_id=cancelled.appointment.id, reason="nope"
+    )
+    with pytest.raises(ValidationError, match="Cannot complete"):
+        await runtime.service.complete(
+            shop_id=shop_id, appointment_id=cancelled.appointment.id
+        )
+
+
+@pytest.mark.asyncio
+async def test_completed_appointment_cannot_reschedule_or_cancel(runtime, shop_id):
+    booked = await runtime.service.book(
+        BookingRequest(shop_id=shop_id, repair_type="oil_change")
+    )
+    assert booked.appointment is not None
+    done = await runtime.service.complete(
+        shop_id=shop_id, appointment_id=booked.appointment.id
+    )
+    assert done is not None
+    assert done.status == "completed"
+
+    moved = await runtime.service.reschedule(
+        shop_id=shop_id,
+        appointment_id=booked.appointment.id,
+        preferred_start=booked.appointment.start + timedelta(days=1),
+    )
+    assert not moved.success
+    assert "completed" in (moved.message or "").lower()
+
+    with pytest.raises(ValidationError, match="Cannot cancel"):
+        await runtime.service.cancel(
+            shop_id=shop_id, appointment_id=booked.appointment.id, reason="oops"
+        )
+
+    unchanged = await runtime.service.get_appointment(
+        shop_id, booked.appointment.id
+    )
+    assert unchanged is not None
+    assert unchanged.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_complete_elapsed_auto_completes_past_end(runtime, shop_id):
+    hours = await runtime.service._store.list_business_hours(shop_id)
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    preferred = None
+    for offset in range(1, 8):
+        day = (now + timedelta(days=offset)).date()
+        window = runtime.service._availability.day_window(hours, day)
+        if window is None:
+            continue
+        preferred = window[0].replace(hour=10, minute=0)
+        if preferred >= window[0] and preferred + timedelta(minutes=60) <= window[1]:
+            break
+    assert preferred is not None
+
+    booked = await runtime.service.book(
+        BookingRequest(
+            shop_id=shop_id,
+            repair_type="oil_change",
+            preferred_start=preferred,
+            estimated_duration_min=30,
+        )
+    )
+    assert booked.appointment is not None
+
+    # Simulate a job whose scheduled window already ended.
+    past = booked.appointment
+    past.start = now - timedelta(hours=2)
+    past.end = now - timedelta(hours=1)
+    past.estimated_completion = past.end
+    await runtime.store.update_appointment(past)
+
+    future = await runtime.service.book(
+        BookingRequest(
+            shop_id=shop_id,
+            repair_type="tires",
+            preferred_start=preferred + timedelta(hours=2),
+            estimated_duration_min=30,
+        )
+    )
+    assert future.appointment is not None
+
+    done = await runtime.service.complete_elapsed(shop_id=shop_id, now=now)
+    assert any(a.id == past.id for a in done)
+    assert all(a.id != future.appointment.id for a in done)
+
+    updated = await runtime.service.get_appointment(shop_id, past.id)
+    assert updated is not None
+    assert updated.status == "completed"
+    assert "Auto-completed after scheduled end" in (updated.notes or "")
+
+    still = await runtime.service.get_appointment(shop_id, future.appointment.id)
+    assert still is not None
+    assert still.status == "booked"
 
 
 @pytest.mark.asyncio

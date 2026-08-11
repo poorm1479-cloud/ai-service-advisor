@@ -7,10 +7,12 @@ import {
   assignAdminOrganizationTwilioNumber,
   clearAdminOrganizationTwilioNumber,
   getAdminOrganizations,
+  getAdminSettings,
   OrganizationsResponse,
   ShopOrgRow,
   statusTone,
   streamAdminOrganizations,
+  updateAdminSettings,
 } from "@/lib/admin";
 
 const POLL_MS = 3000;
@@ -57,6 +59,8 @@ function TwilioNumbersBody({ accessToken }: { accessToken: string }) {
   const [manualPhone, setManualPhone] = useState<Record<string, string>>({});
   const [removeTarget, setRemoveTarget] = useState<RemoveTarget | null>(null);
   const [centerAlert, setCenterAlert] = useState<CenterAlert | null>(null);
+  const [autoProvision, setAutoProvision] = useState<boolean | null>(null);
+  const [autoProvisionBusy, setAutoProvisionBusy] = useState(false);
 
   const applyData = useCallback((next: OrganizationsResponse) => {
     setData((prev) => {
@@ -72,6 +76,20 @@ function TwilioNumbersBody({ accessToken }: { accessToken: string }) {
     setLive(true);
     setError(null);
   }, []);
+
+  const loadSettings = useCallback(
+    async (quiet = false) => {
+      try {
+        const settings = await getAdminSettings(accessToken);
+        setAutoProvision(Boolean(settings.editable.twilio_auto_provision_numbers));
+      } catch (err) {
+        if (!quiet) {
+          setError(err instanceof Error ? err.message : "Failed to load settings");
+        }
+      }
+    },
+    [accessToken],
+  );
 
   const load = useCallback(
     async (quiet = false) => {
@@ -95,9 +113,16 @@ function TwilioNumbersBody({ accessToken }: { accessToken: string }) {
 
   useEffect(() => {
     void load(false);
-    const id = window.setInterval(() => void load(true), POLL_MS);
+    void loadSettings(false);
+    const id = window.setInterval(() => {
+      void load(true);
+      void loadSettings(true);
+    }, POLL_MS);
     const onVis = () => {
-      if (document.visibilityState === "visible") void load(true);
+      if (document.visibilityState === "visible") {
+        void load(true);
+        void loadSettings(true);
+      }
     };
     const onRefresh = () => void load(true);
     document.addEventListener("visibilitychange", onVis);
@@ -109,7 +134,7 @@ function TwilioNumbersBody({ accessToken }: { accessToken: string }) {
       window.removeEventListener("admin:shops-refresh", onRefresh);
       window.removeEventListener("focus", onRefresh);
     };
-  }, [load]);
+  }, [load, loadSettings]);
 
   useEffect(() => {
     const stop = streamAdminOrganizations(
@@ -161,25 +186,27 @@ function TwilioNumbersBody({ accessToken }: { accessToken: string }) {
       });
   }, [data, filter, query]);
 
-  async function runAction(
-    shopId: string,
-    action: () => Promise<unknown>,
-    okMessage: string | ((result: unknown) => string),
-  ) {
-    setActionId(shopId);
+  async function onToggleAutoProvision(next: boolean) {
+    setAutoProvisionBusy(true);
     setError(null);
     setMessage(null);
+    const previous = autoProvision;
+    setAutoProvision(next);
     try {
-      const result = await action();
-      setMessage(typeof okMessage === "function" ? okMessage(result) : okMessage);
-      await load(true);
-      window.dispatchEvent(new Event("admin:shops-refresh"));
-      return result;
+      const result = await updateAdminSettings(accessToken, {
+        twilio_auto_provision_numbers: next,
+      });
+      setAutoProvision(Boolean(result.editable.twilio_auto_provision_numbers));
+      setMessage(
+        next
+          ? "Auto-create Twilio number on account creation enabled"
+          : "Auto-create Twilio number on account creation disabled",
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Action failed");
-      return null;
+      setAutoProvision(previous);
+      setError(err instanceof Error ? err.message : "Failed to update setting");
     } finally {
-      setActionId(null);
+      setAutoProvisionBusy(false);
     }
   }
 
@@ -190,7 +217,7 @@ function TwilioNumbersBody({ accessToken }: { accessToken: string }) {
       setCenterAlert({
         tone: "error",
         title: "Missing number",
-        body: "Enter an E.164 number (e.g. +12065550100).",
+        body: "Enter an E.164 number already on the Twilio account (e.g. +12065550100).",
       });
       return;
     }
@@ -283,12 +310,13 @@ function TwilioNumbersBody({ accessToken }: { accessToken: string }) {
   }
 
   const removing = Boolean(removeTarget && actionId === removeTarget.shopId);
+  const autoOn = autoProvision === true;
 
   return (
     <div className="flex h-[calc(100dvh-7.25rem)] flex-col gap-4 overflow-hidden sm:h-[calc(100dvh-7.75rem)] md:h-[calc(100dvh-9.25rem)] md:gap-5">
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-[var(--muted)]">
-          Shop Twilio SMS/Voice channel assignment
+          Shop Twilio SMS/Voice channel assignment — enter an E.164 number already on the Twilio account
         </p>
         <span
           className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium ${
@@ -303,6 +331,45 @@ function TwilioNumbersBody({ accessToken }: { accessToken: string }) {
           {live ? "Live" : "Connecting"}
         </span>
       </div>
+
+      <Panel title="Account creation" className="shrink-0">
+        <div className="flex flex-wrap items-start justify-between gap-3 px-5 py-4">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">Auto-create Twilio number on account creation</p>
+            <p className="mt-1 text-xs text-[var(--muted)]">
+              When enabled, new shop signups automatically receive an SMS/Voice number.
+              Manual assign on this page still works when disabled.
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={autoOn}
+            aria-label="Auto-create Twilio number on account creation"
+            disabled={autoProvision === null || autoProvisionBusy}
+            onClick={() => void onToggleAutoProvision(!autoOn)}
+            className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors disabled:opacity-50 ${
+              autoOn
+                ? "border-emerald-300 bg-emerald-500"
+                : "border-[var(--line)] bg-[var(--background)]"
+            }`}
+          >
+            <span
+              className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                autoOn ? "translate-x-6" : "translate-x-1"
+              }`}
+            />
+          </button>
+        </div>
+        <div className="border-t border-[var(--line)] px-5 py-2 text-xs text-[var(--muted)]">
+          {autoProvision === null
+            ? "Loading setting…"
+            : autoOn
+              ? "Status: enabled — new accounts get a number automatically"
+              : "Status: disabled — new accounts start without a number"}
+          {autoProvisionBusy ? " · Saving…" : null}
+        </div>
+      </Panel>
 
       <section className="grid shrink-0 gap-3 sm:grid-cols-3">
         <Stat label="Shops" value={String(stats.total)} />
@@ -441,12 +508,19 @@ function TwilioNumbersBody({ accessToken }: { accessToken: string }) {
                             placeholder="+1…"
                             className="min-w-0 flex-1 rounded-md border border-[var(--line)] px-2 py-1 font-mono text-xs"
                             disabled={rowBusy}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                void onAssignManual(s.shop_id);
+                              }
+                            }}
                           />
                           <button
                             type="button"
                             disabled={rowBusy}
                             onClick={() => void onAssignManual(s.shop_id)}
                             className="rounded-md border border-[var(--line)] px-2 py-1 text-xs disabled:opacity-50"
+                            title="Assign an E.164 number already on this Twilio account"
                           >
                             Set
                           </button>

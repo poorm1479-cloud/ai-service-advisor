@@ -4,12 +4,16 @@ import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import {
+  cancelWalkIn,
+  closeWalkIn,
   convertWalkIn,
   getWalkIn,
   WalkInDetail,
 } from "@/lib/walkin";
 import {
+  Appointment,
   bookAppointment,
+  completeAppointment,
   getCalendar,
   listAppointments,
   recommendSlots,
@@ -64,6 +68,28 @@ function scheduleHrefForAppointment(appt: { id?: string; start?: string } | null
   return `/dashboard/appointments?date=${encodeURIComponent(date)}`;
 }
 
+const ACTIVE_APPT = new Set(["booked", "confirmed", "in_progress"]);
+
+/** Schedule reflection for a walk-in visit. */
+type SchedulePhase = "awaiting" | "scheduled" | "ready" | "done";
+
+function deriveSchedulePhase(
+  visitStatus: string | undefined,
+  linked: Appointment[],
+  nowMs: number,
+): SchedulePhase {
+  if (visitStatus === "closed" || visitStatus === "cancelled") return "done";
+  const active = linked.filter((a) => ACTIVE_APPT.has(a.status));
+  const completed = linked.filter((a) => a.status === "completed");
+  if (active.length === 0 && (completed.length > 0 || visitStatus === "closed")) return "done";
+  if (active.length === 0) return "awaiting";
+  const allEnded = active.every((a) => {
+    const end = new Date(a.end).getTime();
+    return Number.isFinite(end) && end <= nowMs;
+  });
+  return allEnded ? "ready" : "scheduled";
+}
+
 export default function WalkInDetailPage() {
   const params = useParams<{ id: string }>();
   const visitId = params.id;
@@ -72,9 +98,13 @@ export default function WalkInDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [services, setServices] = useState<ShopService[]>([]);
-  const [onSchedule, setOnSchedule] = useState(false);
+  const [linkedAppts, setLinkedAppts] = useState<Appointment[]>([]);
   const [scheduleHref, setScheduleHref] = useState("/dashboard/appointments");
   const [starting, setStarting] = useState(false);
+  const [completing, setCompleting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const [apptOpen, setApptOpen] = useState(false);
   const [preferredStart, setPreferredStart] = useState("");
@@ -126,28 +156,25 @@ export default function WalkInDetailPage() {
       setDetail(next);
       setLoading(false);
 
-      // Schedule badge — do not block first paint
+      // Linked schedule — do not block first paint
       try {
-        // Week calendar first; fall back to full list so future bookings still link.
         const cal = await getCalendar("week");
-        let hit = cal.appointments.find(
-          (a) => a.walk_in_id === visitId && a.status !== "cancelled",
+        let linked = cal.appointments.filter(
+          (a) => a.walk_in_id === visitId && a.status !== "cancelled" && a.status !== "rescheduled",
         );
-        if (!hit) {
+        if (linked.length === 0) {
           const all = await listAppointments();
-          hit = all.find(
-            (a) => a.walk_in_id === visitId && a.status !== "cancelled",
+          linked = all.filter(
+            (a) => a.walk_in_id === visitId && a.status !== "cancelled" && a.status !== "rescheduled",
           );
         }
-        if (hit) {
-          setOnSchedule(true);
-          setScheduleHref(scheduleHrefForAppointment(hit));
-        } else {
-          setOnSchedule(false);
-          setScheduleHref("/dashboard/appointments");
-        }
+        setLinkedAppts(linked);
+        const primary =
+          linked.find((a) => ACTIVE_APPT.has(a.status)) ?? linked[0] ?? null;
+        setScheduleHref(scheduleHrefForAppointment(primary));
+        setNowMs(Date.now());
       } catch {
-        setOnSchedule(false);
+        setLinkedAppts([]);
         setScheduleHref("/dashboard/appointments");
       }
     } catch (err) {
@@ -161,6 +188,24 @@ export default function WalkInDetailPage() {
       void load();
     }
   }, [authLoading, session, visitId, load]);
+
+  // Soft "slot ended" refresh while work is still active.
+  useEffect(() => {
+    const hasActive = linkedAppts.some((a) => ACTIVE_APPT.has(a.status));
+    if (!hasActive) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, [linkedAppts]);
+
+  const schedulePhase = useMemo(
+    () => deriveSchedulePhase(detail?.visit.status, linkedAppts, nowMs),
+    [detail?.visit.status, linkedAppts, nowMs],
+  );
+  const onSchedule = schedulePhase === "scheduled" || schedulePhase === "ready";
+  const workFinished = schedulePhase === "done";
+  const visitClosed = detail?.visit.status === "closed";
+  const visitCancelled = detail?.visit.status === "cancelled";
+  const visitTerminal = visitClosed || visitCancelled;
 
   useEffect(() => {
     if (authLoading || !session) return;
@@ -325,6 +370,65 @@ export default function WalkInDetailPage() {
     return { firstAppt, bookedLabels };
   }
 
+  async function onCompleteWork() {
+    const active = linkedAppts.filter((a) => ACTIVE_APPT.has(a.status));
+    if (active.length === 0) return;
+    setCompleting(true);
+    setError(null);
+    setApptMessage(null);
+    try {
+      for (const appt of active) {
+        await completeAppointment(appt.id, "Completed from walk-in visit");
+      }
+      await load();
+      setApptMessage(
+        active.length > 1
+          ? "All scheduled work marked complete — visit closed."
+          : "Work marked complete — visit closed.",
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to complete work");
+    } finally {
+      setCompleting(false);
+    }
+  }
+
+  async function onCloseVisit() {
+    setCompleting(true);
+    setError(null);
+    setApptMessage(null);
+    try {
+      await closeWalkIn(visitId);
+      await load();
+      setApptMessage("Visit closed.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to close visit");
+    } finally {
+      setCompleting(false);
+    }
+  }
+
+  function openCancelConfirm() {
+    setError(null);
+    setCancelConfirmOpen(true);
+  }
+
+  async function onConfirmCancelVisit() {
+    setCancelling(true);
+    setError(null);
+    setApptMessage(null);
+    try {
+      await cancelWalkIn(visitId);
+      setCancelConfirmOpen(false);
+      await load();
+      setApptMessage("Visit cancelled.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to cancel visit");
+    } finally {
+      setCancelling(false);
+    }
+  }
+
   async function onStartNow() {
     if (!detail || !primaryService) return;
     setStarting(true);
@@ -335,7 +439,6 @@ export default function WalkInDetailPage() {
         startIso: localDateTimeToIso(toLocalDateTimeValue(new Date())),
         startSource: "walk_in",
       });
-      setOnSchedule(true);
       setScheduleHref(scheduleHrefForAppointment(firstAppt));
       setApptOpen(false);
       setApptMessage(
@@ -343,6 +446,7 @@ export default function WalkInDetailPage() {
           ? `Started now — ${bookedLabels.length} services on today’s schedule.`
           : "Started now — on today’s schedule.",
       );
+      await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start now");
     } finally {
@@ -393,7 +497,6 @@ export default function WalkInDetailPage() {
         startSource: "dashboard",
         auto: opts?.auto,
       });
-      setOnSchedule(true);
       setScheduleHref(scheduleHrefForAppointment(firstAppt));
       setApptOpen(false);
       const when = formatSlot(firstAppt?.start || startIso);
@@ -402,6 +505,7 @@ export default function WalkInDetailPage() {
           ? `Auto-booked ${bookedLabels.length} service${bookedLabels.length === 1 ? "" : "s"} for ${when}.`
           : `Booked ${bookedLabels.length} service${bookedLabels.length === 1 ? "" : "s"} for ${when}.`,
       );
+      await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to book appointment");
     } finally {
@@ -474,7 +578,7 @@ export default function WalkInDetailPage() {
   }
 
   const { visit, vehicle, customer } = detail;
-  const busy = starting || bookingAppt || slotsLoading;
+  const busy = starting || bookingAppt || slotsLoading || completing || cancelling;
   const vehicleTitle = `${vehicle.year} ${vehicle.make} ${vehicle.model}`.trim();
   const arrivedLabel = visit.arrived_at
     ? new Date(visit.arrived_at).toLocaleString([], {
@@ -485,6 +589,41 @@ export default function WalkInDetailPage() {
         minute: "2-digit",
       })
     : null;
+
+  const scheduleBadge =
+    visitCancelled ? (
+      <span className="rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-700 ring-1 ring-red-200">
+        Cancelled
+      </span>
+    ) : schedulePhase === "done" ? (
+      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-700 ring-1 ring-slate-200">
+        Work finished
+      </span>
+    ) : schedulePhase === "ready" ? (
+      <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 ring-1 ring-amber-200">
+        Slot ended
+      </span>
+    ) : schedulePhase === "scheduled" ? (
+      <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-200">
+        On schedule
+      </span>
+    ) : (
+      <span className="rounded-full bg-[var(--background)] px-2 py-0.5 text-[10px] font-semibold text-[var(--muted)] ring-1 ring-[var(--line)]">
+        Awaiting bay
+      </span>
+    );
+
+  const scheduleDescription = visitCancelled
+    ? "This visit was cancelled. Linked appointments were released from the schedule."
+    : schedulePhase === "done"
+      ? visitClosed
+        ? "Reserved work is complete and this visit is closed."
+        : "Reserved work is complete."
+      : schedulePhase === "ready"
+        ? "The reserved time window ended — mark work complete to close this visit."
+        : schedulePhase === "scheduled"
+          ? "This visit is already on the shop schedule."
+          : "Start service now during business hours, or book a later appointment.";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:h-full">
@@ -509,15 +648,7 @@ export default function WalkInDetailPage() {
                 <h1 className="page-title mt-1 truncate">{vehicleTitle || "Walk-in visit"}</h1>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   <StatusPill status={visit.status} />
-                  {onSchedule ? (
-                    <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-200">
-                      On schedule
-                    </span>
-                  ) : (
-                    <span className="rounded-full bg-[var(--background)] px-2 py-0.5 text-[10px] font-semibold text-[var(--muted)] ring-1 ring-[var(--line)]">
-                      Awaiting bay
-                    </span>
-                  )}
+                  {scheduleBadge}
                   {arrivedLabel ? (
                     <span className="text-xs text-[var(--muted)]">Arrived {arrivedLabel}</span>
                   ) : null}
@@ -528,7 +659,7 @@ export default function WalkInDetailPage() {
         </div>
       </div>
 
-      {error && !apptOpen ? (
+      {error && !apptOpen && !cancelConfirmOpen ? (
         <p
           className="shrink-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
           role="alert"
@@ -545,7 +676,75 @@ export default function WalkInDetailPage() {
         </p>
       ) : null}
 
-      {apptOpen && !onSchedule ? (
+      {cancelConfirmOpen ? (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-[3px]"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="walkin-cancel-title"
+          onClick={() => !cancelling && setCancelConfirmOpen(false)}
+        >
+          <div
+            className="w-full max-w-[24rem] overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_28px_72px_-18px_rgba(15,23,42,0.5)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="relative overflow-hidden border-b border-[var(--line)] bg-gradient-to-br from-rose-50 via-white to-white px-5 pb-5 pt-6">
+              <div
+                className="pointer-events-none absolute -right-8 -top-10 h-36 w-36 rounded-full bg-rose-200/40 blur-2xl"
+                aria-hidden="true"
+              />
+              <div className="relative flex items-center gap-4">
+                <span className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-rose-600 text-white shadow-lg shadow-rose-600/25">
+                  <IconAlert className="h-5 w-5" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <h3
+                    id="walkin-cancel-title"
+                    className="text-lg font-semibold tracking-tight text-slate-900"
+                  >
+                    Cancel this visit?
+                  </h3>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-4 px-5 py-5">
+              <p className="text-sm leading-relaxed text-[var(--muted)]">
+                Linked appointments will be released from the schedule. This
+                action cannot be undone.
+              </p>
+              {error ? (
+                <p
+                  className="rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-700"
+                  role="alert"
+                >
+                  {error}
+                </p>
+              ) : null}
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setCancelConfirmOpen(false)}
+                  disabled={cancelling}
+                  className="btn-ghost px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
+                >
+                  No
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void onConfirmCancelVisit()}
+                  disabled={cancelling}
+                  className="inline-flex items-center justify-center rounded-full bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm shadow-rose-600/20 transition hover:bg-rose-700 disabled:opacity-60"
+                >
+                  {cancelling ? "Cancelling…" : "Yes"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {apptOpen && schedulePhase === "awaiting" ? (
         <div
           className="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
           role="dialog"
@@ -689,23 +888,8 @@ export default function WalkInDetailPage() {
       <div className="asa-scroll min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain pb-2">
         <section className="surface-panel p-4 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-4">
-            <SectionHeader
-              title="Schedule"
-              description={
-                onSchedule
-                  ? "This visit is already on the shop schedule."
-                  : "Start service now during business hours, or book a later appointment."
-              }
-            />
-            {onSchedule ? (
-              <Link
-                href={scheduleHref}
-                className="btn-ghost inline-flex items-center gap-1.5 px-4 py-2 text-xs"
-              >
-                <IconCalendar className="h-3.5 w-3.5" />
-                Open schedule →
-              </Link>
-            ) : (
+            <SectionHeader title="Schedule" description={scheduleDescription} />
+            {visitCancelled ? null : schedulePhase === "awaiting" ? (
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
@@ -725,6 +909,57 @@ export default function WalkInDetailPage() {
                   <IconCalendar className="h-3.5 w-3.5" />
                   Book
                 </button>
+                <button
+                  type="button"
+                  onClick={openCancelConfirm}
+                  disabled={busy}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-4 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-100 disabled:opacity-60"
+                >
+                  Cancel visit
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {(schedulePhase === "scheduled" || schedulePhase === "ready") && (
+                  <button
+                    type="button"
+                    onClick={() => void onCompleteWork()}
+                    disabled={busy}
+                    className="btn-primary inline-flex items-center gap-1.5 px-4 py-2 text-xs disabled:opacity-60"
+                  >
+                    <IconCheck className="h-3.5 w-3.5" />
+                    {completing ? "Completing…" : "Mark complete"}
+                  </button>
+                )}
+                {workFinished && !visitTerminal ? (
+                  <button
+                    type="button"
+                    onClick={() => void onCloseVisit()}
+                    disabled={busy}
+                    className="btn-primary inline-flex items-center gap-1.5 px-4 py-2 text-xs disabled:opacity-60"
+                  >
+                    {completing ? "Closing…" : "Close visit"}
+                  </button>
+                ) : null}
+                {!visitTerminal && (schedulePhase === "scheduled" || schedulePhase === "ready") ? (
+                  <button
+                    type="button"
+                    onClick={openCancelConfirm}
+                    disabled={busy}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-4 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-100 disabled:opacity-60"
+                  >
+                    Cancel visit
+                  </button>
+                ) : null}
+                {(onSchedule || workFinished) && (
+                  <Link
+                    href={scheduleHref}
+                    className="btn-ghost inline-flex items-center gap-1.5 px-4 py-2 text-xs"
+                  >
+                    <IconCalendar className="h-3.5 w-3.5" />
+                    Open schedule →
+                  </Link>
+                )}
               </div>
             )}
           </div>
@@ -782,6 +1017,7 @@ export default function WalkInDetailPage() {
           {customer ? (
             <Link
               href={`/dashboard/customer/${customer.id}`}
+              prefetch
               className="group flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--background)]/50 px-3.5 py-3 transition hover:border-[var(--accent)]/40 hover:bg-[var(--accent-soft)]/25"
             >
               <span
@@ -805,6 +1041,12 @@ export default function WalkInDetailPage() {
                 →
               </span>
             </Link>
+          ) : visitTerminal ? (
+            <p className="mt-1 text-sm text-[var(--muted)]">
+              {visitCancelled
+                ? "This visit was cancelled — customer conversion is unavailable."
+                : "This visit is closed — customer conversion is unavailable."}
+            </p>
           ) : (
             <form onSubmit={onConvert} className="grid gap-3 sm:grid-cols-2">
               <div className="sm:col-span-2 rounded-xl border border-dashed border-[var(--line)] bg-[var(--background)]/40 px-3.5 py-2.5 text-xs text-[var(--muted)]">
@@ -879,7 +1121,11 @@ function StatusPill({ status }: { status: string }) {
       ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
       : status === "open"
         ? "bg-[var(--accent-soft)] text-[var(--accent)] ring-[var(--accent)]/25"
-        : "bg-[var(--background)] text-[var(--muted)] ring-[var(--line)]";
+        : status === "closed"
+          ? "bg-slate-100 text-slate-700 ring-slate-200"
+          : status === "cancelled"
+            ? "bg-red-50 text-red-700 ring-red-200"
+            : "bg-[var(--background)] text-[var(--muted)] ring-[var(--line)]";
   return (
     <span
       className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize ring-1 ${tone}`}
@@ -938,6 +1184,25 @@ function IconX({ className = "h-4 w-4" }: { className?: string }) {
     >
       <path d="M18 6 6 18" />
       <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
+function IconAlert({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 8v5" />
+      <path d="M12 16h.01" />
     </svg>
   );
 }

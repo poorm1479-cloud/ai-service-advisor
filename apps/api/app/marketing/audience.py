@@ -17,7 +17,7 @@ from app.marketing.enums import CampaignType, Channel
 from app.marketing.models import AudienceMember
 from app.memory.enums import MemoryCategory
 from app.memory.factory import get_memory_runtime
-from app.revenue_intel.catalog import SERVICE_ALIASES, SERVICE_CATALOG
+from app.revenue_intel.catalog import SERVICE_CATALOG, resolve_service_key
 from app.scheduling.enums import AppointmentStatus
 from app.scheduling.factory import get_scheduling_runtime
 from app.scheduling.models import Appointment
@@ -47,6 +47,13 @@ SUGGESTED_ACTION_DEFS: list[dict[str, Any]] = [
         "description": "Customers who turned down a repair estimate — follow up while the need is fresh.",
     },
     {
+        "id": "open_recommendation",
+        "campaign_type": CampaignType.MAINTENANCE_REMINDER.value,
+        "title": "Advisor recommendations",
+        "description": "Open follow-ups from repair notes — real recommendations already on file.",
+        "segment": "open_recommendation",
+    },
+    {
         "id": "inactive_customer",
         "campaign_type": CampaignType.INACTIVE_CUSTOMER.value,
         "title": "Inactive customers",
@@ -57,17 +64,6 @@ SUGGESTED_ACTION_DEFS: list[dict[str, Any]] = [
         "campaign_type": CampaignType.MAINTENANCE_REMINDER.value,
         "title": "Maintenance reminders",
         "description": "Vehicles due for oil, brakes, or other scheduled service.",
-    },
-    {
-        "id": "missed_appointment",
-        "campaign_type": CampaignType.THANK_YOU.value,
-        "title": "Missed appointments",
-        "description": "No-shows who need a quick reschedule nudge.",
-        "custom_message": (
-            "Hi {name}, we noticed you missed your appointment for {service} on your {vehicle}. "
-            "Reply YES to reschedule at {shop}."
-        ),
-        "segment": "missed_appointment",
     },
 ]
 
@@ -132,10 +128,7 @@ def _vehicle_label(vehicle: Vehicle | None) -> str:
 
 
 def _normalize_service_key(service_type: str) -> str | None:
-    key = service_type.strip().lower().replace(" ", "_").replace("-", "_")
-    if key in SERVICE_CATALOG:
-        return key
-    return SERVICE_ALIASES.get(key) or SERVICE_ALIASES.get(service_type.strip().lower())
+    return resolve_service_key(service_type)
 
 
 def _looks_declined(text: str | None) -> bool:
@@ -143,6 +136,31 @@ def _looks_declined(text: str | None) -> bool:
         return False
     lowered = text.lower()
     return any(marker in lowered for marker in _DECLINED_MARKERS)
+
+
+def _open_recommendation_text(repair: RepairHistory) -> str | None:
+    """Return advisor follow-up text when present and not a declined estimate.
+
+    Falls back to the service name (e.g. Brake Repair / Tire Rotation) when no
+    free-text recommendation was saved, so shop-catalog history still surfaces.
+    """
+    if _looks_declined(repair.recommendation) or _looks_declined(repair.description):
+        return None
+    text = (repair.recommendation or "").strip()
+    if not text:
+        service = (repair.service_type or "").strip()
+        if not service:
+            return None
+        key = resolve_service_key(service)
+        # Routine oil changes are too noisy as standalone advisor recommendations.
+        if key == "oil_change":
+            return None
+        if service.casefold() in {"service", "general", "other", "n/a", "na", "inspection"}:
+            return None
+        text = service
+    if len(text) > 120:
+        text = text[:117].rstrip() + "..."
+    return text
 
 
 def _to_member(
@@ -331,6 +349,68 @@ def _resolve_declined(ctx: _ShopAudienceContext) -> list[AudienceMember]:
     return _dedupe(members)
 
 
+def _resolve_open_recommendations(ctx: _ShopAudienceContext) -> list[AudienceMember]:
+    """Customers with open advisor recommendations on repair history.
+
+    Multiple open notes for the same customer are combined (e.g. tire + brake)
+    so Marketing reflects every recommendable item, not only the newest.
+    """
+    repairs = sorted(
+        ctx.repairs,
+        key=lambda r: _aware(r.created_at) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    by_customer: dict[UUID, list[tuple[RepairHistory, str, Vehicle | None]]] = {}
+    for repair in repairs:
+        service = _open_recommendation_text(repair)
+        if not service:
+            continue
+        cid = repair.customer_id
+        vehicle = ctx.vehicles_by_id.get(repair.vehicle_id)
+        if cid is None and vehicle is not None:
+            cid = vehicle.customer_id
+        if cid is None or cid not in ctx.customers:
+            continue
+        by_customer.setdefault(cid, []).append((repair, service, vehicle))
+
+    members: list[AudienceMember] = []
+    for cid, items in by_customer.items():
+        # Dedupe identical recommendation text while preserving order.
+        seen_text: set[str] = set()
+        labels: list[str] = []
+        repair_ids: list[str] = []
+        vehicle = items[0][2]
+        for repair, service, veh in items:
+            key = service.casefold()
+            if key in seen_text:
+                continue
+            seen_text.add(key)
+            labels.append(service)
+            repair_ids.append(str(repair.id))
+            if vehicle is None and veh is not None:
+                vehicle = veh
+        if len(labels) == 1:
+            service_label = labels[0]
+        elif len(labels) == 2:
+            service_label = f"{labels[0]} and {labels[1]}"
+        else:
+            service_label = ", ".join(labels[:-1]) + f", and {labels[-1]}"
+        members.append(
+            _to_member(
+                customer=ctx.customers[cid],
+                shop_name=ctx.shop_name,
+                vehicle=vehicle,
+                service=service_label,
+                extra={
+                    "source": "open_recommendation",
+                    "repair_ids": repair_ids,
+                    "recommendations": labels,
+                },
+            )
+        )
+    return members
+
+
 def _resolve_inactive(ctx: _ShopAudienceContext) -> list[AudienceMember]:
     cutoff = ctx.now - timedelta(days=INACTIVE_DAYS)
     members: list[AudienceMember] = []
@@ -371,28 +451,41 @@ def _resolve_maintenance(ctx: _ShopAudienceContext) -> list[AudienceMember]:
             if prev is None or created > prev:
                 last_by_key[key] = created
 
-        due_service: str | None = None
+        due_labels: list[str] = []
+        due_keys: list[str] = []
         for key, spec in SERVICE_CATALOG.items():
             last = last_by_key.get(key)
             if last is None:
                 # No history for this service — skip unless vehicle itself is older than interval
                 created = _aware(vehicle.created_at)
                 if created and (ctx.now - created).days >= spec.interval_days:
-                    due_service = spec.label
-                    break
+                    due_labels.append(spec.label)
+                    due_keys.append(key)
                 continue
             if (ctx.now - last).days >= spec.interval_days:
-                due_service = spec.label
-                break
-        if not due_service:
+                due_labels.append(spec.label)
+                due_keys.append(key)
+        if not due_labels:
             continue
+        # Prefer history-backed dues (tire/brake etc.) over pure vehicle-age guesses.
+        history_backed = [SERVICE_CATALOG[k].label for k in due_keys if k in last_by_key]
+        labels = history_backed or due_labels
+        if len(labels) == 1:
+            service_label = labels[0]
+        elif len(labels) == 2:
+            service_label = f"{labels[0]} and {labels[1]}"
+        else:
+            service_label = ", ".join(labels[:-1]) + f", and {labels[-1]}"
         members.append(
             _to_member(
                 customer=ctx.customers[vehicle.customer_id],
                 shop_name=ctx.shop_name,
                 vehicle=vehicle,
-                service=due_service,
-                extra={"source": "maintenance_interval"},
+                service=service_label,
+                extra={
+                    "source": "maintenance_interval",
+                    "due_services": labels,
+                },
             )
         )
     return _dedupe(members)
@@ -490,12 +583,17 @@ def resolve_from_context(
 ) -> list[AudienceMember]:
     ctype = campaign_type if isinstance(campaign_type, CampaignType) else CampaignType(campaign_type)
     tag_set = set(tags or [])
-    resolved_segment = segment or (
-        "missed_appointment" if "missed_appointment" in tag_set else None
-    )
+    resolved_segment = segment
+    if resolved_segment is None:
+        if "open_recommendation" in tag_set:
+            resolved_segment = "open_recommendation"
+        elif "missed_appointment" in tag_set:
+            resolved_segment = "missed_appointment"
 
     if resolved_segment == "missed_appointment":
         return _resolve_missed(ctx)
+    if resolved_segment == "open_recommendation":
+        return _resolve_open_recommendations(ctx)
     if ctype == CampaignType.DECLINED_ESTIMATE:
         return _resolve_declined(ctx)
     if ctype == CampaignType.INACTIVE_CUSTOMER:
@@ -554,6 +652,35 @@ async def list_suggested_action_counts(
             )
         )
     return results
+
+
+async def count_follow_up_customers(
+    uow: SqlAlchemyUnitOfWork,
+    shop_id: UUID,
+    *,
+    exclude_customer_ids: Callable[[str], Awaitable[set[UUID]]] | None = None,
+) -> int:
+    """Unique customers across marketing suggested-action audiences.
+
+    Used by the executive dashboard Follow-up Customers KPI so it matches
+    Marketing recommendations (not revenue opportunity rows).
+    """
+    ctx = await _load_context(uow, shop_id)
+    seen: set[UUID] = set()
+    for action in SUGGESTED_ACTION_DEFS:
+        members = resolve_from_context(
+            ctx,
+            action["campaign_type"],
+            tags=[action["id"]],
+            segment=action.get("segment"),
+        )
+        if exclude_customer_ids is not None:
+            suppressed: set[UUID] = await exclude_customer_ids(action["campaign_type"])
+            if suppressed:
+                members = [m for m in members if m.customer_id not in suppressed]
+        for member in members:
+            seen.add(member.customer_id)
+    return len(seen)
 
 
 def audience_to_dicts(members: list[AudienceMember]) -> list[dict[str, Any]]:

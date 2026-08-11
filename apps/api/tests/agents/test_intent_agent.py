@@ -270,6 +270,37 @@ async def test_new_time_after_conversation_booking_is_reschedule(context):
 
 
 @pytest.mark.asyncio
+async def test_prior_visit_does_not_force_new_booking_to_reschedule(context):
+    """CRM upcoming alone must not turn a fresh phone/SMS book into a move.
+
+    Otherwise a customer who already has a visit loses that slot when they
+    book another appointment on a later call.
+    """
+    catalog = InMemoryServiceCatalog()
+    catalog.seed_from_starter(context.shop_id)
+    prior_id = str(uuid4())
+    context.metadata["active_appointment_id"] = prior_id
+    context.metadata["upcoming_appointments"] = [
+        {
+            "id": prior_id,
+            "service_name": "Oil Change",
+            "status": "booked",
+        }
+    ]
+    # No conversation appointment_id — this call has not booked yet.
+    agent = IntentAgent(catalog=catalog)
+    for text in (
+        "I need an oil change Friday at 2pm",
+        "Book oil change next Monday at 9am",
+        "I want to schedule an appointment for Friday at 3",
+    ):
+        result = await agent.detect(_msg(text), context)
+        assert result.data is not None, text
+        assert result.data.intent == CustomerIntent.BOOK_APPOINTMENT, text
+        assert result.data.entities.get("preferred_start"), text
+
+
+@pytest.mark.asyncio
 async def test_time_answer_during_reschedule_hold_stays_reschedule(context):
     """After ask-new-time, a clock answer must continue reschedule (not book)."""
     context.metadata["pending_action"] = "reschedule"

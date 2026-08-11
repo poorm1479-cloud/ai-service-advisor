@@ -8,26 +8,47 @@ import { useAuth } from "@/lib/auth";
 
 type NavIcon = (props: { className?: string }) => ReactNode;
 
-const NAV: { href: string; label: string; Icon: NavIcon; ownerOnly?: boolean }[] = [
+type NavItem = {
+  href: string;
+  label: string;
+  Icon: NavIcon;
+  ownerOnly?: boolean;
+};
+
+const NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", Icon: IconGauge },
   { href: "/dashboard/customer", label: "Customer", Icon: IconUsers },
   { href: "/dashboard/appointments", label: "Schedule", Icon: IconCalendar },
-  { href: "/dashboard/walk-ins", label: "Walk-ins", Icon: IconDoor },
-  { href: "/dashboard/conversations", label: "Conversations", Icon: IconMessage },
-  { href: "/dashboard/marketing", label: "Marketing", Icon: IconMegaphone },
-  { href: "/dashboard/import", label: "Import", Icon: IconUpload, ownerOnly: true },
+  { href: "/dashboard/walk-ins", label: "Walk-ins", Icon: IconDoorOpen },
+  { href: "/dashboard/conversations", label: "Conversations", Icon: IconPhone },
+  { href: "/dashboard/marketing", label: "Marketing", Icon: IconMarketing },
+  { href: "/dashboard/import", label: "Import", Icon: IconImport, ownerOnly: true },
   // Hidden: Connected Services (keep for easy restore)
   // { href: "/dashboard/external", label: "Connected Services", Icon: IconLink, ownerOnly: true },
   { href: "/dashboard/billing", label: "Billing", Icon: IconCard, ownerOnly: true },
-  { href: "/dashboard/settings", label: "Setting", Icon: IconGear },
+  { href: "/dashboard/settings", label: "Setting", Icon: IconSetting },
 ];
 
 type SidebarProps = {
   mobileOpen?: boolean;
   onNavigate?: () => void;
+  /** When true (shop setup wizard), nav links are non-interactive. */
+  navLocked?: boolean;
 };
 
-export function Sidebar({ mobileOpen = false, onNavigate }: SidebarProps) {
+function shopInitials(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "S";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
+}
+
+function isActivePath(pathname: string, href: string) {
+  if (href === "/dashboard") return pathname === href;
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+export function Sidebar({ mobileOpen = false, onNavigate, navLocked = false }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const { session, loading, logout } = useAuth();
@@ -35,7 +56,7 @@ export function Sidebar({ mobileOpen = false, onNavigate }: SidebarProps) {
 
   useEffect(() => {
     if (!loading && !session) {
-      router.replace("/login");
+      router.replace("/");
     }
   }, [loading, session, router]);
 
@@ -48,10 +69,15 @@ export function Sidebar({ mobileOpen = false, onNavigate }: SidebarProps) {
   }, []);
 
   const shellClass = [
-    "flex flex-col",
-    "fixed inset-y-0 left-0 z-50 w-[min(18rem,88vw)] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
-    "bg-[var(--rail)] text-white shadow-[0_24px_64px_-20px_rgba(0,0,0,0.55)]",
-    "md:static md:z-auto md:h-full md:w-[232px] md:shrink-0 md:translate-x-0 md:shadow-none lg:w-[252px]",
+    // fixed on mobile (drawer); relative on md+ so the rail stays in-flow.
+    // Do NOT add bare `relative` here — it can override `fixed` in Tailwind CSS order
+    // and squeeze the main pane to ~12vw on mobile.
+    "flex flex-col overflow-hidden",
+    "fixed inset-y-0 left-0 z-50 w-[min(18rem,88vw)]",
+    "pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]",
+    "transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+    "text-white shadow-[0_28px_80px_-28px_rgba(0,0,0,0.7)]",
+    "md:relative md:inset-auto md:z-auto md:h-full md:w-[232px] md:shrink-0 md:translate-x-0 md:pt-0 md:pb-0 md:shadow-none lg:w-[252px]",
     mobileOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0",
   ].join(" ");
 
@@ -67,57 +93,100 @@ export function Sidebar({ mobileOpen = false, onNavigate }: SidebarProps) {
     );
   }
 
+  const initials = shopInitials(session.shopName);
+
   return (
     <aside id="dashboard-nav" className={shellClass} aria-hidden={hiddenFromA11y}>
-      <div className="shrink-0 border-b border-[var(--rail-line)] px-5 py-5">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--rail-muted)]">
-          Shop
-        </p>
-        <div className="mt-1.5 px-2.5 py-2">
-          <p className="font-display truncate text-sm font-semibold tracking-tight text-white">
-            {session.shopName}
-          </p>
-          <p className="mt-1 truncate text-xs text-[var(--rail-muted)]">
-            {session.fullName} * {ROLE_LABELS[session.role]}
+      <div className="relative shrink-0 border-b border-[var(--rail-line)] px-3.5 pb-3 pt-3.5 md:px-4 md:pb-4 md:pt-5">
+        <div className="flex items-start gap-2.5 md:gap-3">
+          <div
+            className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-[#c94418] md:h-11 md:w-11"
+            aria-hidden
+          >
+            <span className="relative font-display text-[12px] font-semibold tracking-tight text-white md:text-[13px]">
+              {initials}
+            </span>
+          </div>
+          <div className="min-w-0 flex-1 self-center">
+            <p className="font-display truncate text-sm font-semibold leading-snug tracking-tight text-white md:text-[15px]">
+              {session.shopName}
+            </p>
+          </div>
+        </div>
+        <div className="mt-2.5 flex items-center gap-2 rounded-xl border border-[var(--rail-line)] bg-white/[0.03] px-2.5 py-1.5 md:mt-3.5 md:py-2">
+          <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white/[0.06] text-[var(--rail-muted)]">
+            <IconUser className="h-3.5 w-3.5" />
+          </span>
+          <p className="min-w-0 flex-1 truncate text-xs text-[var(--rail-muted)]">
+            <span className="text-white/90">{session.fullName}</span>
+            <span className="mx-1.5 text-white/25">·</span>
+            <span>{ROLE_LABELS[session.role]}</span>
           </p>
         </div>
       </div>
-      <nav className="asa-scroll flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overscroll-contain px-2.5 py-3">
-        {navItems.map((item) => {
-          const active =
-            item.href === "/dashboard"
-              ? pathname === item.href
-              : pathname === item.href || pathname.startsWith(`${item.href}/`);
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              onClick={onNavigate}
-              tabIndex={hiddenFromA11y ? -1 : undefined}
-              className={`flex min-h-10 items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm transition-colors ${
-                active
-                  ? "bg-[var(--rail-active)] font-medium text-[var(--rail-active-fg)]"
-                  : "text-[var(--rail-muted)] hover:bg-[var(--rail-hover)] hover:text-white"
-              }`}
-            >
-              <item.Icon className="h-4 w-4 shrink-0 opacity-90" />
-              <span className="truncate">{item.label}</span>
-            </Link>
-          );
-        })}
+
+      <nav
+        className="asa-scroll flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-2.5 py-3 md:py-4"
+        aria-label="Shop navigation"
+        aria-disabled={navLocked || undefined}
+      >
+        <div className={`flex flex-col gap-0.5 ${navLocked ? "pointer-events-none opacity-45" : ""}`}>
+          {navItems.map((item) => {
+            const active = isActivePath(pathname, item.href);
+            if (navLocked) {
+              return (
+                <span
+                  key={item.href}
+                  aria-disabled="true"
+                  tabIndex={-1}
+                  data-active={active ? "true" : "false"}
+                  className="asa-rail-link flex min-h-10 cursor-not-allowed items-center gap-2.5 rounded-xl px-2 py-2 text-sm text-[var(--rail-muted)]"
+                >
+                  <span className="asa-rail-icon">
+                    <item.Icon className="h-4 w-4 opacity-95" />
+                  </span>
+                  <span className="truncate">{item.label}</span>
+                </span>
+              );
+            }
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={onNavigate}
+                tabIndex={hiddenFromA11y ? -1 : undefined}
+                data-active={active ? "true" : "false"}
+                aria-current={active ? "page" : undefined}
+                className={`asa-rail-link flex min-h-10 items-center gap-2.5 rounded-xl px-2 py-2 text-sm transition-colors ${
+                  active
+                    ? "font-medium"
+                    : "text-[var(--rail-muted)] hover:bg-[var(--rail-hover)] hover:text-white"
+                }`}
+              >
+                <span className="asa-rail-icon">
+                  <item.Icon className="h-4 w-4 opacity-95" />
+                </span>
+                <span className="truncate">{item.label}</span>
+              </Link>
+            );
+          })}
+        </div>
       </nav>
-      <div className="mt-auto shrink-0 border-t border-[var(--rail-line)] p-3.5">
+
+      <div className="mt-auto shrink-0 border-t border-[var(--rail-line)] p-2.5 md:p-3">
         <button
           type="button"
           tabIndex={hiddenFromA11y ? -1 : undefined}
           onClick={async () => {
             onNavigate?.();
             await logout();
-            router.replace("/login");
+            router.replace("/");
           }}
-          className="flex min-h-10 w-full items-center gap-2.5 rounded-xl border border-[var(--rail-line)] px-3 py-2.5 text-left text-sm text-[var(--rail-muted)] hover:bg-[var(--rail-hover)] hover:text-white"
+          className="group flex min-h-10 w-full items-center gap-2.5 rounded-xl border border-[var(--rail-line)] bg-white/[0.02] px-2.5 py-2 text-left text-sm text-[var(--rail-muted)] transition-colors hover:border-white/15 hover:bg-[var(--rail-hover)] hover:text-white"
         >
-          <IconLogout className="h-4 w-4 shrink-0 opacity-90" />
+          <span className="asa-rail-icon text-[var(--rail-muted)] group-hover:text-white">
+            <IconLogout className="h-4 w-4" />
+          </span>
           <span>Sign out</span>
         </button>
       </div>
@@ -138,6 +207,15 @@ function iconProps(className?: string) {
   };
 }
 
+function IconUser({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)}>
+      <circle cx="12" cy="8" r="3.5" />
+      <path d="M5 20a7 7 0 0 1 14 0" />
+    </svg>
+  );
+}
+
 function IconGauge({ className }: { className?: string }) {
   return (
     <svg {...iconProps(className)}>
@@ -148,12 +226,14 @@ function IconGauge({ className }: { className?: string }) {
   );
 }
 
-function IconDoor({ className }: { className?: string }) {
+function IconDoorOpen({ className }: { className?: string }) {
   return (
     <svg {...iconProps(className)}>
-      <path d="M5 21V5a2 2 0 0 1 2-2h7v18H7a2 2 0 0 1-2-2Z" />
-      <path d="M14 3h3a2 2 0 0 1 2 2v16h-5" />
-      <path d="M10 12h.01" />
+      <path d="M13 4h3a2 2 0 0 1 2 2v14" />
+      <path d="M2 20h3" />
+      <path d="M13 20h9" />
+      <path d="M10 12v.01" />
+      <path d="M13 4.562v16.157a1 1 0 0 1-1.242.97L5 20V5.562a2 2 0 0 1 1.515-1.94l4-1A2 2 0 0 1 13 4.561Z" />
     </svg>
   );
 }
@@ -180,33 +260,28 @@ function IconCalendar({ className }: { className?: string }) {
   );
 }
 
-function IconUpload({ className }: { className?: string }) {
+function IconImport({ className }: { className?: string }) {
   return (
     <svg {...iconProps(className)}>
-      <path d="M12 16V5" />
-      <path d="M8 9l4-4 4 4" />
-      <path d="M4 19h16" />
+      <path d="M22 12h-6l-2 3h-4l-2-3H2" />
+      <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z" />
     </svg>
   );
 }
 
-function IconMessage({ className }: { className?: string }) {
+function IconPhone({ className }: { className?: string }) {
   return (
     <svg {...iconProps(className)}>
-      <path d="M21 12a8 8 0 0 1-8 8H7l-4 3V12a8 8 0 1 1 18 0Z" />
-      <path d="M8 12h.01" />
-      <path d="M12 12h.01" />
-      <path d="M16 12h.01" />
+      <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.81.36 1.6.68 2.35a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.75.32 1.54.55 2.35.68A2 2 0 0 1 22 16.92Z" />
     </svg>
   );
 }
 
-function IconMegaphone({ className }: { className?: string }) {
+function IconMarketing({ className }: { className?: string }) {
   return (
     <svg {...iconProps(className)}>
-      <path d="M3 11v2a1 1 0 0 0 1 1h2l7 4V6L6 10H4a1 1 0 0 0-1 1Z" />
-      <path d="M13 8.5c1.5.8 2.5 2.2 2.5 3.5s-1 2.7-2.5 3.5" />
-      <path d="M6 14v4a2 2 0 0 0 2 2h1" />
+      <path d="M4.5 12.5 19.5 5.5 13.5 19.5l-2-5.5-5.5-1.5Z" />
+      <path d="M11.5 14 19.5 5.5" />
     </svg>
   );
 }
@@ -220,11 +295,11 @@ function IconCard({ className }: { className?: string }) {
   );
 }
 
-function IconGear({ className }: { className?: string }) {
+function IconSetting({ className }: { className?: string }) {
   return (
     <svg {...iconProps(className)}>
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
       <circle cx="12" cy="12" r="3" />
-      <path d="M12 2v2.5M12 19.5V22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M2 12h2.5M19.5 12H22M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8" />
     </svg>
   );
 }

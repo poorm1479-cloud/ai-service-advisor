@@ -8,6 +8,7 @@ and proposes AppointmentDecision — never writes appointments to the database.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from uuid import UUID
 
 from app.agents.base.agent import Agent, AgentContext, AgentResult
@@ -25,6 +26,20 @@ from app.agents.scheduling.models import (
     SchedulingResult,
     TimeSlot,
 )
+
+
+def _revenue_for_decision(
+    match: CatalogServiceMatch | None,
+    fallback: Decimal | None,
+) -> Decimal | None:
+    """Prefer catalog list price; fall back to intent/memory price."""
+    if match is not None and match.price is not None and match.price > 0:
+        return match.price
+    if fallback is not None and fallback > 0:
+        return fallback
+    if match is not None:
+        return match.price
+    return fallback
 
 
 class InMemorySchedulingStore:
@@ -104,12 +119,13 @@ class InMemorySchedulingStore:
         duration_minutes: int | None = None,
         repair_type: str | None = None,
         required_bay: str | None = None,
+        estimated_revenue=None,
     ) -> AppointmentRecord:
         from uuid import uuid4
 
         from app.agents.base.errors import AgentValidationError
 
-        del duration_minutes, repair_type, required_bay  # in-memory has no skill matrix
+        del duration_minutes, repair_type, required_bay, estimated_revenue  # in-memory has no skill matrix
 
         for a in self._appointments.values():
             if (
@@ -145,12 +161,18 @@ class InMemorySchedulingStore:
         duration_minutes: int | None = None,
         repair_type: str | None = None,
         required_bay: str | None = None,
+        estimated_revenue=None,
     ) -> AppointmentRecord:
         from app.agents.base.errors import AgentValidationError
 
         existing = await self.get(shop_id, appointment_id)
         if existing is None:
             raise AgentValidationError("Appointment not found", agent="scheduling")
+        if str(existing.status).lower() not in {"booked", "confirmed", "in_progress"}:
+            raise AgentValidationError(
+                f"Cannot reschedule {existing.status} appointment",
+                agent="scheduling",
+            )
         existing.status = "rescheduled"
         # Prefer newly requested catalog service on move (voice/SMS change).
         return await self.book(
@@ -165,6 +187,7 @@ class InMemorySchedulingStore:
             duration_minutes=duration_minutes,
             repair_type=repair_type,
             required_bay=required_bay,
+            estimated_revenue=estimated_revenue,
         )
 
     async def cancel(
@@ -175,6 +198,11 @@ class InMemorySchedulingStore:
         existing = await self.get(shop_id, appointment_id)
         if existing is None:
             raise AgentValidationError("Appointment not found", agent="scheduling")
+        if str(existing.status).lower() not in {"booked", "confirmed", "in_progress"}:
+            raise AgentValidationError(
+                f"Cannot cancel appointment with status '{existing.status}'",
+                agent="scheduling",
+            )
         existing.status = "cancelled"
         existing.notes = reason or existing.notes
         return existing
@@ -1027,6 +1055,7 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
                 duration_minutes=duration,
                 required_skill=match.skill if match else None,
                 required_bay=match.bay if match else None,
+                estimated_revenue=_revenue_for_decision(match, request.estimated_revenue),
                 rationale="Recommend reschedule to exact preferred slot",
             )
             return AgentResult.ok(
@@ -1141,6 +1170,7 @@ class SchedulingAgent(Agent[SchedulingRequest, SchedulingResult]):
             duration_minutes=match.duration_minutes if match else None,
             required_skill=match.skill if match else None,
             required_bay=match.bay if match else None,
+            estimated_revenue=_revenue_for_decision(match, request.estimated_revenue),
             days_ahead=request.days_ahead,
             confidence=confidence,
             rationale=rationale,

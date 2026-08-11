@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from app.executive.models import (
     ChartPoint,
@@ -18,6 +19,9 @@ from app.executive.models import (
 )
 from app.executive.store import ExecutiveStorePort
 
+# Match scheduling / Schedule UI default shop timezone for day deep-links.
+_DEFAULT_SHOP_TZ = ZoneInfo("America/Los_Angeles")
+
 
 class ExecutiveAggregator:
     def __init__(self, store: ExecutiveStorePort) -> None:
@@ -25,6 +29,9 @@ class ExecutiveAggregator:
 
     async def refresh(self, shop_id: UUID, *, now: datetime | None = None) -> ExecutiveSnapshot:
         now = now or datetime.now(timezone.utc)
+        hydrate = getattr(self._store, "ensure_hydrated", None)
+        if callable(hydrate):
+            await hydrate(shop_id)
         live = self._store.get_live(shop_id)
         sources = await self._collect_sources(shop_id, now=now)
         self._apply_sources(live, sources)
@@ -58,7 +65,11 @@ class ExecutiveAggregator:
             },
             sources={k: _safe(v) for k, v in sources.items()},
         )
-        return self._store.save_snapshot(snapshot)
+        saved = self._store.save_snapshot(snapshot)
+        persist = getattr(self._store, "persist", None)
+        if callable(persist):
+            await persist(shop_id)
+        return saved
 
     async def _collect_sources(self, shop_id: UUID, *, now: datetime) -> dict[str, Any]:
         # Orchestration only via Workflow Engine coordinator (no direct module fan-out).
@@ -80,27 +91,36 @@ class ExecutiveAggregator:
             if vals:
                 live.mechanic_productivity = round(sum(vals) / len(vals) * 100, 1)
 
+        # Today's Revenue = sum of estimated_revenue for appointments completed today.
+        # Always overwrite so stale live state cannot linger across refreshes.
+        if "completed_revenue_today" in sched:
+            live.todays_revenue = Decimal(str(sched.get("completed_revenue_today") or 0)).quantize(
+                Decimal("0.01")
+            )
+        elif "appointments" in sched:
+            live.todays_revenue = _completed_revenue_from_appointments(sched.get("appointments") or [])
+        elif "error" not in sched:
+            live.todays_revenue = Decimal("0")
+
         rev = sources.get("revenue") or {}
         dash = rev.get("dashboard")
         if dash is not None:
             daily = Decimal(str(getattr(dash, "expected_revenue_daily", 0) or 0))
             live.expected_revenue = max(live.expected_revenue, daily)
-            # Only attribute "today" when there is real opportunity revenue.
-            if daily > 0:
-                live.todays_revenue = (daily * Decimal("0.62")).quantize(Decimal("0.01"))
-            live.revenue_opportunities = int(getattr(dash, "open_opportunities", 0) or 0)
             health = float(getattr(dash, "avg_customer_health", 0) or 0)
             if health > 0:
                 live.customer_satisfaction = round(min(98.0, 60 + health * 0.35), 1)
 
-        mkt = (sources.get("marketing") or {}).get("summary") or {}
+        mkt_src = sources.get("marketing") or {}
+        mkt = mkt_src.get("summary") or {}
         if mkt.get("roi") is not None:
             live.marketing_roi = float(mkt["roi"])
-        if mkt.get("revenue"):
-            # blend booked marketing attributed revenue into today
-            live.todays_revenue = (live.todays_revenue + Decimal(str(mkt["revenue"])) * Decimal("0.1")).quantize(
-                Decimal("0.01")
-            )
+
+        # Follow-up Customers KPI = marketing suggested audiences (not revenue opp rows).
+        if "follow_up_customers" in mkt_src and "error" not in mkt_src:
+            live.revenue_opportunities = int(mkt_src.get("follow_up_customers") or 0)
+        elif dash is not None:
+            live.revenue_opportunities = int(getattr(dash, "open_opportunities", 0) or 0)
 
         sms = (sources.get("sms") or {}).get("monitor") or {}
         voice = (sources.get("voice") or {}).get("monitor") or {}
@@ -141,7 +161,14 @@ class ExecutiveAggregator:
                 "USD",
                 "positive" if live.expected_revenue else "neutral",
             ),
-            DashboardCard("appointments", "Appointments", str(live.appointments_today), None, None, "neutral", "Today"),
+            DashboardCard(
+                "appointments",
+                "Appointments",
+                str(live.appointments_today),
+                None,
+                None,
+                "neutral",
+            ),
             DashboardCard(
                 "missed_calls",
                 "Missed Calls",
@@ -150,7 +177,7 @@ class ExecutiveAggregator:
                 None,
                 "warning" if live.missed_calls else "positive",
             ),
-            DashboardCard("walk_ins", "Walk-ins", str(live.walk_ins_today), None, None, "neutral", "Today"),
+            DashboardCard("walk_ins", "Walk-ins", str(live.walk_ins_today), None, None, "neutral"),
             DashboardCard(
                 "ai_conversations",
                 "AI Conversations",
@@ -169,7 +196,7 @@ class ExecutiveAggregator:
             ),
             DashboardCard(
                 "revenue_opportunities",
-                "Revenue Opportunities",
+                "Follow-up Customers",
                 str(live.revenue_opportunities),
                 None,
                 None,
@@ -228,17 +255,27 @@ class ExecutiveAggregator:
         sms = (sources.get("sms") or {}).get("monitor") or {}
         voice = (sources.get("voice") or {}).get("monitor") or {}
         sms_handled = float(sms.get("inbound_received") or 0)
-        voice_turns = float(voice.get("turns") or 0)
-        appts_booked = float(sms.get("appointments_booked") or 0)
+        # Prefer durable call count over process-local turn counters.
+        voice_calls = float(
+            voice.get("calls_started") if voice.get("calls_started") is not None else (voice.get("turns") or 0)
+        )
+        sched = sources.get("scheduling") or {}
+        # Prefer durable AI bookings (source=agent/sms/phone created today).
+        # SMS process monitor is ephemeral and also fires on recommendations.
+        appts_booked = float(
+            sched.get("ai_appointments_created_today")
+            if sched.get("ai_appointments_created_today") is not None
+            else (sms.get("appointments_booked") or 0)
+        )
         ai_perf = [
             ChartPoint("SMS handled", sms_handled),
-            ChartPoint("Voice turns", voice_turns),
+            ChartPoint("Voice turns", voice_calls),
             ChartPoint("Escalations", float(live.human_escalations)),
             ChartPoint("Appts booked", appts_booked),
             ChartPoint(
                 "Containment %",
                 round(100 - live.human_escalations * 5, 1)
-                if (sms_handled or voice_turns or live.human_escalations)
+                if (sms_handled or voice_calls or live.human_escalations)
                 else 0.0,
             ),
         ]
@@ -281,7 +318,7 @@ class ExecutiveAggregator:
                 WidgetItem(
                     "t_appointments",
                     "Confirm today's appointments",
-                    f"{live.appointments_today} booked",
+                    f"{live.appointments_today} total",
                     "open",
                     "high",
                     "/dashboard/appointments",
@@ -291,11 +328,11 @@ class ExecutiveAggregator:
             task_items.append(
                 WidgetItem(
                     "t_opportunities",
-                    "Follow up revenue opportunities",
-                    f"{live.revenue_opportunities} open",
+                    "Follow up marketing customers",
+                    f"{live.revenue_opportunities} ready",
                     "open",
                     "normal",
-                    "/dashboard",
+                    "/dashboard/marketing",
                 )
             )
         tasks = Widget(id="todays_tasks", title="Today's Tasks", items=task_items)
@@ -394,7 +431,13 @@ class ExecutiveAggregator:
                     linked_appt_ids.add(str(aid))
                 start = _as_utc(_appt_field(linked, "start"))
                 if start is not None:
-                    time_label = start.strftime("%H:%M")
+                    time_label = start.astimezone(_DEFAULT_SHOP_TZ).strftime("%H:%M")
+
+            # Scheduled (future) linked slots open the day board; otherwise visit detail.
+            if column == "scheduled" and linked is not None:
+                href = _appointment_schedule_href(linked)
+            else:
+                href = f"/dashboard/walk-ins/{wid}"
 
             subtitle_bits = [column, "walk-in"]
             if time_label:
@@ -408,7 +451,7 @@ class ExecutiveAggregator:
                     " · ".join(subtitle_bits),
                     column,
                     "high",
-                    f"/dashboard/walk-ins/{wid}",
+                    href,
                 )
             )
 
@@ -421,16 +464,17 @@ class ExecutiveAggregator:
                 continue
             status = _repair_column_status(a, now=now)
             start = _as_utc(_appt_field(a, "start"))
+            local_start = start.astimezone(_DEFAULT_SHOP_TZ) if start is not None else None
             repair_type = str(_appt_field(a, "repair_type") or "general")
             priority = str(_appt_field(a, "priority") or "normal")
             repair_items.append(
                 WidgetItem(
                     aid or repair_type,
                     repair_type.replace("_", " ").title(),
-                    f"{status} · {start.strftime('%H:%M') if start else ''}",
+                    f"{status} · {local_start.strftime('%H:%M') if local_start else ''}",
                     status,
                     "high" if priority == "emergency" else "normal",
-                    "/dashboard/appointments",
+                    _appointment_schedule_href(a),
                 )
             )
 
@@ -449,6 +493,32 @@ def _appt_field(appt: Any, name: str) -> Any:
     if isinstance(appt, dict):
         return appt.get(name)
     return getattr(appt, name, None)
+
+
+def _completed_revenue_from_appointments(appts: list[Any]) -> Decimal:
+    """Sum estimated_revenue for appointments marked completed."""
+    total = Decimal("0")
+    for a in appts:
+        status = str(_appt_field(a, "status") or "").lower()
+        if status != "completed":
+            continue
+        total += Decimal(str(_appt_field(a, "estimated_revenue") or 0))
+    return total.quantize(Decimal("0.01"))
+
+
+def _appointment_schedule_href(appt: Any) -> str:
+    """Deep-link Schedule to the shop-local day (and appointment) for this slot."""
+    aid = str(_appt_field(appt, "id") or "").strip()
+    start = _as_utc(_appt_field(appt, "start"))
+    params: list[str] = []
+    if start is not None:
+        day = start.astimezone(_DEFAULT_SHOP_TZ).strftime("%Y-%m-%d")
+        params.append(f"date={day}")
+    if aid:
+        params.append(f"appointment={aid}")
+    if not params:
+        return "/dashboard/appointments"
+    return "/dashboard/appointments?" + "&".join(params)
 
 
 def _as_utc(value: Any) -> datetime | None:

@@ -160,6 +160,99 @@ async def test_convert_attach_repair_and_isolation(client: AsyncClient):
     assert get_b.status_code == 404
 
 
+async def test_close_walk_in(client: AsyncClient):
+    suffix = uuid.uuid4().hex[:8]
+    auth = await _register(client, suffix)
+    headers = {"Authorization": f"Bearer {auth['access_token']}"}
+
+    created = await client.post(
+        "/v1/walk-ins",
+        headers=headers,
+        json={
+            "vin": VALID_VIN,
+            "year": 2014,
+            "make": "Ford",
+            "model": "F-150",
+            "mileage": 120000,
+            "complaint": "Oil change",
+        },
+    )
+    assert created.status_code == 201, created.text
+    visit_id = created.json()["visit"]["id"]
+
+    closed = await client.post(f"/v1/walk-ins/{visit_id}/close", headers=headers)
+    assert closed.status_code == 200, closed.text
+    assert closed.json()["visit"]["status"] == "closed"
+
+    again = await client.post(f"/v1/walk-ins/{visit_id}/close", headers=headers)
+    assert again.status_code == 200, again.text
+    assert again.json()["visit"]["status"] == "closed"
+
+    blocked = await client.post(
+        f"/v1/walk-ins/{visit_id}/repair-history",
+        headers=headers,
+        json={
+            "service_type": "Oil Change",
+            "description": "After close",
+            "cost": "49.00",
+        },
+    )
+    assert blocked.status_code == 409, blocked.text
+
+    cannot_cancel = await client.post(f"/v1/walk-ins/{visit_id}/cancel", headers=headers)
+    assert cannot_cancel.status_code == 409, cannot_cancel.text
+
+
+async def test_cancel_walk_in(client: AsyncClient):
+    suffix = uuid.uuid4().hex[:8]
+    auth = await _register(client, suffix)
+    headers = {"Authorization": f"Bearer {auth['access_token']}"}
+
+    created = await client.post(
+        "/v1/walk-ins",
+        headers=headers,
+        json={
+            "vin": VALID_VIN,
+            "year": 2014,
+            "make": "Ford",
+            "model": "F-150",
+            "mileage": 120000,
+            "complaint": "Brake noise",
+        },
+    )
+    assert created.status_code == 201, created.text
+    visit_id = created.json()["visit"]["id"]
+
+    cancelled = await client.post(f"/v1/walk-ins/{visit_id}/cancel", headers=headers)
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["visit"]["status"] == "cancelled"
+
+    again = await client.post(f"/v1/walk-ins/{visit_id}/cancel", headers=headers)
+    assert again.status_code == 200, again.text
+    assert again.json()["visit"]["status"] == "cancelled"
+
+    blocked_repair = await client.post(
+        f"/v1/walk-ins/{visit_id}/repair-history",
+        headers=headers,
+        json={
+            "service_type": "Brakes",
+            "description": "After cancel",
+            "cost": "99.00",
+        },
+    )
+    assert blocked_repair.status_code == 409, blocked_repair.text
+
+    cannot_close = await client.post(f"/v1/walk-ins/{visit_id}/close", headers=headers)
+    assert cannot_close.status_code == 409, cannot_close.text
+
+    cannot_convert = await client.post(
+        f"/v1/walk-ins/{visit_id}/convert-customer",
+        headers=headers,
+        json={"name": "Should Fail"},
+    )
+    assert cannot_convert.status_code == 409, cannot_convert.text
+
+
 async def test_no_vin_match_by_plate_links_customer(client: AsyncClient):
     suffix = uuid.uuid4().hex[:8]
     auth = await _register(client, suffix)

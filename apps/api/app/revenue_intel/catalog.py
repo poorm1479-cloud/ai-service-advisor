@@ -40,22 +40,42 @@ SERVICE_CATALOG: dict[str, ServiceSpec] = {
     ),
 }
 
-# Alias keys often seen in repair history
+# Alias keys often seen in repair history / shop catalog names
 SERVICE_ALIASES: dict[str, str] = {
     "oil": "oil_change",
     "oil_change": "oil_change",
+    "synthetic_oil_change": "oil_change",
     "brake": "brakes",
     "brakes": "brakes",
+    "brake_service": "brakes",
+    "brake_repair": "brakes",
+    "brake_inspection": "brakes",
     "brake_replacement": "brakes",
+    "front_brake_pad_replacement": "brakes",
     "battery": "battery",
     "tire": "tires",
     "tires": "tires",
+    "tire_rotation": "tires",
+    "tire_replacement": "tires",
+    "tire_mount": "tires",
     "alignment": "alignment",
+    "wheel_alignment": "alignment",
     "fluid": "fluids",
     "fluids": "fluids",
     "coolant": "fluids",
     "transmission_service": "fluids",
 }
+
+# Ordered token → catalog key for shop names like "Brake Repair", "Tire Rotation"
+_SERVICE_TOKENS: tuple[tuple[str, str], ...] = (
+    ("oil", "oil_change"),
+    ("brake", "brakes"),
+    ("tire", "tires"),
+    ("battery", "battery"),
+    ("align", "alignment"),
+    ("fluid", "fluids"),
+    ("coolant", "fluids"),
+)
 
 # Month (1-12) → relative demand boost for each service key
 SEASONALITY: dict[str, dict[int, float]] = {
@@ -70,10 +90,20 @@ SEASONALITY: dict[str, dict[int, float]] = {
 
 
 def resolve_service_key(raw: str) -> str | None:
-    key = raw.strip().lower().replace(" ", "_").replace("-", "_")
+    """Map free-text / shop catalog service names onto SERVICE_CATALOG keys."""
+    text = (raw or "").strip().lower()
+    if not text:
+        return None
+    key = text.replace(" ", "_").replace("-", "_")
     if key in SERVICE_CATALOG:
         return key
-    return SERVICE_ALIASES.get(key)
+    aliased = SERVICE_ALIASES.get(key) or SERVICE_ALIASES.get(text)
+    if aliased:
+        return aliased
+    for token, catalog_key in _SERVICE_TOKENS:
+        if token in key or token in text:
+            return catalog_key
+    return None
 
 
 def seasonality_boost(service_key: str, month: int) -> float:

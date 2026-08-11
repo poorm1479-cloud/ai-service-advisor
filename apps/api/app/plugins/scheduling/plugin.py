@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -133,24 +133,55 @@ class SchedulingPlugin:
     async def live_snapshot(self, shop_id: UUID, *, now: datetime | None = None) -> dict[str, Any]:
         """Used by Workflow coordinator live aggregation — no direct scheduling import needed."""
         from datetime import timezone
+        from decimal import Decimal
+
+        from app.scheduling.engines.availability import AvailabilityEngine
 
         now = now or datetime.now(timezone.utc)
-        day = now.date()
-        day_start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
-        day_end = day_start + timedelta(days=1)
+        # Match Schedule board day bounds (shop timezone, default America/Los_Angeles).
+        avail = AvailabilityEngine()
+        day = avail.today(now)
+        day_start, day_end = avail.day_bounds_utc(day)
         out: dict[str, Any] = {}
         if self._monitor is not None and hasattr(self._monitor, "snapshot"):
             out["monitor"] = self._monitor.snapshot()
         if self._intelligence is not None:
             try:
+                # list_appointments already omits cancelled/rescheduled → 총 예약 건수.
                 appts = await self._intelligence.list_appointments(
                     shop_id, start=day_start, end=day_end
                 )
                 forecast = await self._intelligence.capacity_forecast(shop_id, day)
-                out["appointments_today"] = len(
-                    [a for a in appts if getattr(a, "status", None) != "cancelled"]
+                completed = [
+                    a
+                    for a in appts
+                    if str(getattr(a, "status", "") or "").lower() == "completed"
+                ]
+                completed_revenue = sum(
+                    (
+                        Decimal(str(getattr(a, "estimated_revenue", 0) or 0))
+                        for a in completed
+                    ),
+                    Decimal("0"),
+                ).quantize(Decimal("0.01"))
+                # AI Activity "Appointments created" — count by created_at (shop day),
+                # not scheduled start. List without day filter so future bookings count.
+                created_today = await self._intelligence.list_appointments(shop_id)
+                ai_created = sum(
+                    1
+                    for a in created_today
+                    if _is_ai_appointment_source(getattr(a, "source", None))
+                    and _created_in_day_bounds(
+                        getattr(a, "created_at", None),
+                        day_start=day_start,
+                        day_end=day_end,
+                    )
                 )
+                out["appointments_today"] = len(appts)
                 out["appointments"] = appts
+                out["completed_appointments_today"] = len(completed)
+                out["completed_revenue_today"] = str(completed_revenue)
+                out["ai_appointments_created_today"] = ai_created
                 out["expected_daily_revenue"] = str(
                     getattr(forecast, "expected_revenue", 0) or 0
                 )
@@ -162,6 +193,9 @@ class SchedulingPlugin:
                 out["error"] = str(exc)
         slots = await self._calendar.list_slots(shop_id, days_ahead=1)
         out.setdefault("appointments_today", 0)
+        out.setdefault("completed_appointments_today", 0)
+        out.setdefault("completed_revenue_today", "0.00")
+        out.setdefault("ai_appointments_created_today", 0)
         out["slots_today"] = len(slots)
         return out
 
@@ -226,6 +260,7 @@ class SchedulingPlugin:
                 duration_minutes=kwargs.get("duration_minutes"),
                 repair_type=kwargs.get("repair_type") or kwargs.get("required_skill"),
                 required_bay=kwargs.get("required_bay"),
+                estimated_revenue=kwargs.get("estimated_revenue"),
             )
 
         if capability == Capability.RESCHEDULE_APPOINTMENT:
@@ -239,6 +274,7 @@ class SchedulingPlugin:
                 duration_minutes=kwargs.get("duration_minutes"),
                 repair_type=kwargs.get("repair_type") or kwargs.get("required_skill"),
                 required_bay=kwargs.get("required_bay"),
+                estimated_revenue=kwargs.get("estimated_revenue"),
             )
 
         if capability == Capability.CANCEL_APPOINTMENT:
@@ -281,6 +317,39 @@ class SchedulingPlugin:
             return {"success": True, "appointment": appt, "walk_in": True}
 
         raise ValueError(f"Unknown scheduling capability: {capability}")
+
+
+_AI_APPOINTMENT_SOURCES = frozenset({"agent", "sms", "phone"})
+
+
+def _is_ai_appointment_source(source: Any) -> bool:
+    return str(source or "").strip().lower() in _AI_APPOINTMENT_SOURCES
+
+
+def _created_in_day_bounds(
+    created_at: Any,
+    *,
+    day_start: datetime,
+    day_end: datetime,
+) -> bool:
+    """True when created_at falls in [day_start, day_end) (UTC-aware bounds)."""
+    if created_at is None:
+        return False
+    if isinstance(created_at, str):
+        raw = created_at.strip()
+        if not raw:
+            return False
+        try:
+            created_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+    if not isinstance(created_at, datetime):
+        return False
+    if created_at.tzinfo is None:
+        created_utc = created_at.replace(tzinfo=timezone.utc)
+    else:
+        created_utc = created_at.astimezone(timezone.utc)
+    return day_start <= created_utc < day_end
 
 
 def reminders_for(appointment: AppointmentRecord) -> list[Reminder]:

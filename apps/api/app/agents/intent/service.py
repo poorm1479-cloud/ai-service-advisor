@@ -581,14 +581,15 @@ def _refine_with_time_preference(
     if not entities.get("preferred_start"):
         return primary, confidence, secondary
 
-    # Already booked in this conversation + new time → move that visit
+    # Already booked in THIS conversation + new time → move that visit
     # (unless they clearly named a different service for a second booking).
-    # Compound service+time moves use reschedule phrasing or a reschedule hold
-    # above; bare "Brake Friday" after oil may still be a new book.
-    has_appt = bool(
-        meta.get("appointment_id") or meta.get("active_appointment_id")
-    )
-    if has_appt and _is_same_visit_time_change(entities, meta):
+    # Do NOT use active_appointment_id / upcoming alone — CRM enrichment of a
+    # prior visit would turn a second independent booking into a reschedule
+    # and cancel the original. Compound service+time moves use reschedule
+    # phrasing or a reschedule hold above; bare "Brake Friday" after oil may
+    # still be a new book.
+    has_conversation_booking = bool(meta.get("appointment_id"))
+    if has_conversation_booking and _is_same_visit_time_change(entities, meta):
         if primary != CustomerIntent.RESCHEDULE and primary not in secondary:
             secondary = [primary, *secondary][:3]
         return CustomerIntent.RESCHEDULE, max(confidence, 0.9), secondary

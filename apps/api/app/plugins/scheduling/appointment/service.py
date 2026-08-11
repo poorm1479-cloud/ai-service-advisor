@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from uuid import UUID
 
 from app.agents.scheduling.interfaces import SchedulingStorePort
@@ -35,6 +36,7 @@ class AppointmentPluginService:
         duration_minutes: int | None = None,
         repair_type: str | None = None,
         required_bay: str | None = None,
+        estimated_revenue: Decimal | None = None,
     ) -> AppointmentRecord:
         return await self._store.book(
             shop_id,
@@ -48,6 +50,7 @@ class AppointmentPluginService:
             duration_minutes=duration_minutes,
             repair_type=repair_type,
             required_bay=required_bay,
+            estimated_revenue=estimated_revenue,
         )
 
     async def reschedule(
@@ -62,6 +65,7 @@ class AppointmentPluginService:
         duration_minutes: int | None = None,
         repair_type: str | None = None,
         required_bay: str | None = None,
+        estimated_revenue: Decimal | None = None,
     ) -> AppointmentRecord:
         return await self._store.reschedule(
             shop_id,
@@ -73,6 +77,7 @@ class AppointmentPluginService:
             duration_minutes=duration_minutes,
             repair_type=repair_type,
             required_bay=required_bay,
+            estimated_revenue=estimated_revenue,
         )
 
     async def cancel(

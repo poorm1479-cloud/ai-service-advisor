@@ -33,7 +33,7 @@ export default function PricingPage() {
             AI Service Advisor
           </Link>
           <div className="flex items-center gap-2 text-sm">
-            <Link href="/login" className="rounded-full px-3 py-2 text-[#5c5c5c] hover:text-black">
+            <Link href="/?login=1" className="rounded-full px-3 py-2 text-[#5c5c5c] hover:text-black">
               Sign in
             </Link>
             <Link href="/register" className="btn-primary py-2">

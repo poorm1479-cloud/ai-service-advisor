@@ -31,6 +31,7 @@ class VoiceCall:
     started_at: datetime | None = None
     ended_at: datetime | None = None
     created_at: datetime | None = None
+    deleted_at: datetime | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

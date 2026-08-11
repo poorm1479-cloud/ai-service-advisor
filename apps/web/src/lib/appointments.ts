@@ -152,13 +152,26 @@ export async function cancelAppointment(id: string, reason?: string): Promise<Ap
   return res.json();
 }
 
+export async function completeAppointment(id: string, notes?: string): Promise<Appointment> {
+  const res = await authFetch(`/v1/appointments/${id}/complete`, {
+    method: "POST",
+    body: JSON.stringify({ notes }),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
 export async function rescheduleAppointment(
   id: string,
   preferred_start?: string,
+  mechanic_id?: string | null,
 ): Promise<Record<string, unknown>> {
   const res = await authFetch(`/v1/appointments/${id}/reschedule`, {
     method: "POST",
-    body: JSON.stringify({ preferred_start }),
+    body: JSON.stringify({
+      preferred_start,
+      ...(mechanic_id ? { mechanic_id } : {}),
+    }),
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();

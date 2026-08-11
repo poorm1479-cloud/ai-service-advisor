@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 
 type PasswordFieldProps = {
   label: string;
+  icon?: ReactNode;
   value: string;
   onChange: (value: string) => void;
   required?: boolean;
@@ -18,6 +19,7 @@ type PasswordFieldProps = {
 
 export function PasswordField({
   label,
+  icon,
   value,
   onChange,
   required,
@@ -33,7 +35,8 @@ export function PasswordField({
 
   return (
     <label className="block space-y-1.5">
-      <span className="text-sm font-medium">
+      <span className="inline-flex items-center gap-1.5 text-sm font-medium">
+        {icon ? <span className="text-[var(--muted)]">{icon}</span> : null}
         {label}
         {required ? <span className="text-red-600"> *</span> : null}
       </span>
@@ -53,7 +56,7 @@ export function PasswordField({
             if (guardAutofill) e.currentTarget.readOnly = false;
           }}
           onChange={(e) => onChange(e.target.value)}
-          className="w-full rounded-xl border border-[var(--line)] bg-white/90 px-3 py-2.5 pr-10 text-sm outline-none disabled:opacity-60"
+          className="auth-input pr-10 disabled:opacity-60"
         />
         <button
           type="button"

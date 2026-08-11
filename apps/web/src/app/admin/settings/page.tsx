@@ -20,6 +20,7 @@ const DEFAULT_EDITABLE: AdminEditableSettings = {
   notification_retention_days: 90,
   toast_enabled: true,
   maintenance_mode: false,
+  twilio_auto_provision_numbers: true,
 };
 
 const POLL_MS = 3000;
@@ -404,6 +405,28 @@ function SettingsBody({
                 <span className="font-medium">Maintenance mode</span>
                 <span className="mt-0.5 block text-xs text-[var(--muted)]">
                   Show a maintenance banner across the admin console.
+                </span>
+              </span>
+            </label>
+
+            <label className="flex items-start gap-3 text-sm">
+              <input
+                type="checkbox"
+                checked={form.twilio_auto_provision_numbers}
+                onChange={(e) => {
+                  formDirtyRef.current = true;
+                  setForm((f) => ({
+                    ...f,
+                    twilio_auto_provision_numbers: e.target.checked,
+                  }));
+                }}
+                className="mt-1"
+              />
+              <span>
+                <span className="font-medium">Auto-create Twilio number on account creation</span>
+                <span className="mt-0.5 block text-xs text-[var(--muted)]">
+                  When enabled, new shop signups get an SMS/Voice number automatically.
+                  Admin can still assign numbers manually on the Twilio Numbers page.
                 </span>
               </span>
             </label>

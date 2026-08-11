@@ -65,7 +65,7 @@ class InMemoryVoiceStore:
 
     async def get_call(self, shop_id: UUID, call_id: UUID) -> VoiceCall | None:
         call = self.calls.get(call_id)
-        if call and call.shop_id == shop_id:
+        if call and call.shop_id == shop_id and call.deleted_at is None:
             return call
         return None
 
@@ -85,7 +85,11 @@ class InMemoryVoiceStore:
     async def list_calls(
         self, shop_id: UUID, *, status: str | None = None, limit: int = 50
     ) -> list[VoiceCall]:
-        items = [c for c in self.calls.values() if c.shop_id == shop_id]
+        items = [
+            c
+            for c in self.calls.values()
+            if c.shop_id == shop_id and c.deleted_at is None
+        ]
         if status:
             items = [c for c in items if c.status == status]
         items.sort(key=lambda c: c.started_at or c.created_at or datetime.min, reverse=True)
@@ -100,7 +104,10 @@ class InMemoryVoiceStore:
         items = [
             c
             for c in self.calls.values()
-            if c.shop_id == shop_id and c.status in live and not c.ended_at
+            if c.shop_id == shop_id
+            and c.deleted_at is None
+            and c.status in live
+            and not c.ended_at
         ]
         items.sort(key=lambda c: c.started_at or c.created_at or datetime.min, reverse=True)
         return items
@@ -118,18 +125,15 @@ class InMemoryVoiceStore:
     async def list_turns(self, shop_id: UUID, call_id: UUID) -> list[VoiceTurn]:
         call = await self.get_call(shop_id, call_id)
         if call is None:
-            # Allow lookup by sid-only contexts in tests
-            call = self.calls.get(call_id)
-            if call is None or call.shop_id != shop_id:
-                return []
+            return []
         return list(self.turns.get(call_id, []))
 
     async def delete_call(self, shop_id: UUID, call_id: UUID) -> bool:
-        call = await self.get_call(shop_id, call_id)
-        if call is None:
+        call = self.calls.get(call_id)
+        if call is None or call.shop_id != shop_id or call.deleted_at is not None:
             return False
-        if call.twilio_call_sid and self.by_sid.get(call.twilio_call_sid) == call_id:
-            del self.by_sid[call.twilio_call_sid]
-        self.calls.pop(call_id, None)
-        self.turns.pop(call_id, None)
+        now = datetime.now(timezone.utc)
+        call.deleted_at = now
+        if call.ended_at is None:
+            call.ended_at = now
         return True

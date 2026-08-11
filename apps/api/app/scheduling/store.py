@@ -34,11 +34,11 @@ DEFAULT_DURATIONS: dict[str, int] = {
 }
 
 DEFAULT_REVENUE: dict[str, Decimal] = {
-    "oil_change": Decimal("79.99"),
+    "oil_change": Decimal("49.99"),
     "brakes": Decimal("320.00"),
     "tires": Decimal("180.00"),
     "diagnostic": Decimal("149.00"),
-    "inspection": Decimal("99.00"),
+    "inspection": Decimal("89.00"),
     "engine": Decimal("850.00"),
     "transmission": Decimal("1200.00"),
     "electrical": Decimal("250.00"),

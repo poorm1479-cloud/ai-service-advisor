@@ -215,6 +215,8 @@ class SmsAiService:
             booking_meta["pending_service_id"] = memory.pending_service_id
         if memory.pending_duration_minutes is not None:
             booking_meta["pending_duration_minutes"] = memory.pending_duration_minutes
+        if getattr(memory, "pending_service_price", None):
+            booking_meta["pending_service_price"] = memory.pending_service_price
         if memory.pending_cancel:
             booking_meta["pending_cancel"] = True
         if memory.pending_action:
@@ -296,9 +298,10 @@ class SmsAiService:
         # Scheduling metrics + persist offered service/slots for multi-turn booking
         sched = pipeline.stages.get("scheduling")
         if sched and sched.data:
-            if sched.data.success:
-                self._monitor.record_appointment(sched.data.action)
+            # Only count real booking mutations — recommendations use action=book
+            # with success=True before Workflow executes the appointment.
             if sched.data.success and sched.data.appointment:
+                self._monitor.record_appointment(sched.data.action)
                 appt = sched.data.appointment
                 visit_start = ""
                 if getattr(appt, "start", None) is not None:
@@ -369,6 +372,9 @@ class SmsAiService:
                 duration = intent_entities.get("duration_minutes")
                 if duration is None:
                     duration = memory.pending_duration_minutes
+                service_price = intent_entities.get("service_price") or getattr(
+                    memory, "pending_service_price", None
+                )
                 # Prefer catalog fields from the scheduling decision when present.
                 decision = getattr(sched.data, "decision", None)
                 hold_appointment_id: str | None = None
@@ -378,6 +384,8 @@ class SmsAiService:
                         service_id = str(decision.service_id)
                     if getattr(decision, "duration_minutes", None):
                         duration = decision.duration_minutes
+                    if getattr(decision, "estimated_revenue", None) is not None:
+                        service_price = str(decision.estimated_revenue)
                     if getattr(decision, "appointment_id", None):
                         hold_appointment_id = str(decision.appointment_id)
                 if not hold_appointment_id:
@@ -500,6 +508,7 @@ class SmsAiService:
                     pending_service=service_name or "",
                     pending_service_id=str(service_id) if service_id else "",
                     pending_duration_minutes=int(duration) if duration else 0,
+                    pending_service_price=str(service_price) if service_price else "",
                     pending_cancel=False,
                     pending_action=pending_action,
                     pending_preferred_start=stash_start,
@@ -523,6 +532,7 @@ class SmsAiService:
             if soft_service:
                 soft_id = intent_entities.get("service_id")
                 soft_duration = intent_entities.get("duration_minutes")
+                soft_price = intent_entities.get("service_price")
                 await self._memory.update_state(
                     shop_id=shop_id,
                     customer_phone=phone,
@@ -530,6 +540,7 @@ class SmsAiService:
                     pending_service=str(soft_service),
                     pending_service_id=str(soft_id) if soft_id else "",
                     pending_duration_minutes=int(soft_duration) if soft_duration else 0,
+                    pending_service_price=str(soft_price) if soft_price else "",
                     pending_cancel=False,
                     pending_action="book",
                     conversation_id=conversation.id,

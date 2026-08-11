@@ -29,6 +29,18 @@ def _normalize_phone(phone: str | None) -> str | None:
     return digits or None
 
 
+def _phone_match_key(phone: str | None) -> str | None:
+    """US-tolerant key: +1XXXXXXXXXX and XXXXXXXXXX compare equal."""
+    digits = _normalize_phone(phone)
+    if not digits:
+        return None
+    if len(digits) == 11 and digits.startswith("1"):
+        return digits[1:]
+    if len(digits) > 10:
+        return digits[-10:]
+    return digits
+
+
 def _name_update_decision(
     existing: CustomerProfile, request: CustomerResolveRequest
 ) -> CustomerDecision | None:
@@ -62,11 +74,11 @@ class InMemoryCustomerDirectory:
         return None
 
     async def find_by_phone(self, shop_id: UUID, phone: str) -> list[CustomerProfile]:
-        target = _normalize_phone(phone)
+        target = _phone_match_key(phone)
         return [
             p
             for p in self._by_id.values()
-            if p.shop_id == shop_id and _normalize_phone(p.phone) == target
+            if p.shop_id == shop_id and _phone_match_key(p.phone) == target
         ]
 
     async def find_by_email(self, shop_id: UUID, email: str) -> list[CustomerProfile]:

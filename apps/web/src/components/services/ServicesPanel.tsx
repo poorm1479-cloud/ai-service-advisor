@@ -71,6 +71,30 @@ function IconPlus({ className = "h-3.5 w-3.5" }: { className?: string }) {
   );
 }
 
+function IconWrenchPlus({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {/* Center wrench and + on the same midline (y=11), matching UserPlus/CalendarPlus */}
+      <g transform="translate(7, 11) scale(0.55) translate(-12, -12)">
+        <path
+          d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
+          strokeWidth="3.2"
+        />
+      </g>
+      <path d="M19 8v6M16 11h6" />
+    </svg>
+  );
+}
+
 function IconClock({ className = "h-3.5 w-3.5" }: { className?: string }) {
   return (
     <svg
@@ -255,9 +279,33 @@ export function ServicesPanel({
   useEffect(() => {
     if (editing) return;
     setDeleteTarget(null);
-    resetForm();
+    setEditingId(null);
+    setForm(DEFAULT_FORM);
+    setInitialForm(null);
+    setFormOpen(false);
+    setError(null);
     setSuccess(null);
   }, [editing]);
+
+  useEffect(() => {
+    if (!formOpen && !deleteTarget) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (saving || deleting) return;
+      e.preventDefault();
+      if (deleteTarget) {
+        setDeleteTarget(null);
+        return;
+      }
+      setEditingId(null);
+      setForm(DEFAULT_FORM);
+      setInitialForm(null);
+      setFormOpen(false);
+      setError(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [formOpen, deleteTarget, saving, deleting]);
 
   function openAddForm() {
     if (!canEdit) return;
@@ -551,49 +599,62 @@ export function ServicesPanel({
     <>
       {canEdit && deleteTarget && (
         <div
-          className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
+          className="fixed inset-0 z-[100]"
           role="dialog"
           aria-modal="true"
           aria-labelledby="delete-service-title"
-          onClick={closeDeleteConfirm}
+          onPointerDown={(e) => e.stopPropagation()}
+          onPointerUp={(e) => e.stopPropagation()}
+          onPointerCancel={(e) => e.stopPropagation()}
         >
-          <div
-            className="w-full max-w-md overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="relative overflow-hidden border-b border-red-100 bg-gradient-to-br from-red-50 via-white to-white px-5 pb-5 pt-6">
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-label="Close delete dialog"
+            className="absolute inset-0 cursor-default bg-slate-950/55 backdrop-blur-[2px]"
+            disabled={deleting}
+            onPointerDown={(e) => {
+              if (e.button !== 0) return;
+              if (deleting) return;
+              e.preventDefault();
+              closeDeleteConfirm();
+            }}
+          />
+          <div className="pointer-events-none relative flex h-full items-end justify-center p-4 sm:items-center">
+            <div className="pointer-events-auto w-full max-w-sm overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]">
+            <div className="relative overflow-hidden border-b border-red-100 bg-gradient-to-br from-red-50 via-white to-white px-4 pb-4 pt-5">
               <div
-                className="pointer-events-none absolute -right-8 -top-10 h-36 w-36 rounded-full bg-red-100/70 blur-2xl"
+                className="pointer-events-none absolute -right-8 -top-10 h-32 w-32 rounded-full bg-red-100/70 blur-2xl"
                 aria-hidden="true"
               />
-              <div className="relative flex items-center gap-4">
-                <span className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-red-600 text-white shadow-lg shadow-red-600/25">
-                  <IconTrash className="h-5 w-5" />
+              <div className="relative flex items-center gap-3">
+                <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-red-600 text-white shadow-lg shadow-red-600/25">
+                  <IconTrash className="h-4 w-4" />
                 </span>
                 <div className="min-w-0">
                   <h2
                     id="delete-service-title"
-                    className="text-lg font-semibold tracking-tight text-slate-900"
+                    className="text-base font-semibold tracking-tight text-slate-900"
                   >
                     Delete {deleteTarget.name}?
                   </h2>
-                  <p className="mt-1 text-sm text-[var(--muted)]">
-                    This service will be removed from the catalog. This cannot be undone.
-                  </p>
                 </div>
               </div>
             </div>
+            <p className="px-4 pt-3.5 text-sm text-[var(--muted)]">
+              This service will be removed from the catalog. This cannot be undone.
+            </p>
             {error && (
-              <p className="mx-5 mt-4 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+              <p className="mx-4 mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
                 {error}
               </p>
             )}
-            <div className="flex flex-wrap justify-end gap-2 px-5 py-4">
+            <div className="flex flex-wrap justify-end gap-2 px-4 py-3.5">
               <button
                 type="button"
                 onClick={closeDeleteConfirm}
                 disabled={deleting}
-                className="btn-ghost px-4 py-2 text-sm disabled:opacity-60"
+                className="btn-ghost px-3.5 py-2 text-sm disabled:opacity-60"
               >
                 No
               </button>
@@ -601,10 +662,11 @@ export function ServicesPanel({
                 type="button"
                 onClick={() => void onConfirmDelete()}
                 disabled={deleting}
-                className="inline-flex items-center justify-center rounded-full bg-red-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm shadow-red-600/20 hover:bg-red-700 disabled:opacity-60"
+                className="inline-flex items-center justify-center rounded-full bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-red-600/20 hover:bg-red-700 disabled:opacity-60"
               >
                 {deleting ? "Deleting…" : "Yes"}
               </button>
+            </div>
             </div>
           </div>
         </div>
@@ -612,16 +674,31 @@ export function ServicesPanel({
 
       {canEdit && formOpen && (
         <div
-          className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
+          className="fixed inset-0 z-[100]"
           role="dialog"
           aria-modal="true"
           aria-labelledby="service-form-title"
-          onClick={resetForm}
+          onPointerDown={(e) => e.stopPropagation()}
+          onPointerUp={(e) => e.stopPropagation()}
+          onPointerCancel={(e) => e.stopPropagation()}
         >
-          <div
-            className="flex max-h-[min(90dvh,32rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]"
-            onClick={(e) => e.stopPropagation()}
-          >
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-label="Close service dialog"
+            className="absolute inset-0 cursor-default bg-slate-950/55 backdrop-blur-[2px]"
+            disabled={saving}
+            onPointerDown={(e) => {
+              // pointerdown closes more reliably than click on touch (slight
+              // movement often suppresses the click event).
+              if (e.button !== 0) return;
+              if (saving) return;
+              e.preventDefault();
+              resetForm();
+            }}
+          />
+          <div className="pointer-events-none relative flex h-full items-end justify-center p-4 sm:items-center">
+            <div className="pointer-events-auto flex max-h-[min(90dvh,32rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]">
             <div className="relative shrink-0 overflow-hidden border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white px-5 pb-5 pt-6">
               <div
                 className="pointer-events-none absolute right-0 top-0 h-40 w-40 translate-x-1/4 -translate-y-1/4 rounded-full bg-[var(--accent-glow)] blur-2xl"
@@ -849,6 +926,7 @@ export function ServicesPanel({
                 </button>
               </div>
             </form>
+            </div>
           </div>
         </div>
       )}
@@ -856,11 +934,24 @@ export function ServicesPanel({
     document.body,
   );
 
+  const addServiceButton =
+    canEdit && services.length > 0 ? (
+      <button
+        type="button"
+        onClick={openAddForm}
+        aria-label="Add service"
+        title="Add service"
+        className="btn-primary inline-flex h-10 w-10 shrink-0 items-center justify-center p-0"
+      >
+        <IconWrenchPlus className="h-5 w-5" />
+      </button>
+    ) : null;
+
   if (embedded) {
     return (
       <section className="space-y-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
             <h3 className="inline-flex items-center gap-1.5 text-sm font-semibold text-[var(--ink)]">
               <span className="inline-flex h-6 w-6 items-center justify-center rounded-lg bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--accent)]/15">
                 <IconWrench className="h-3.5 w-3.5" />
@@ -877,16 +968,7 @@ export function ServicesPanel({
               Add every service your shop provides.
             </p>
           </div>
-          {canEdit && services.length > 0 && (
-            <button
-              type="button"
-              onClick={openAddForm}
-              className="btn-primary inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs"
-            >
-              <IconPlus className="h-3.5 w-3.5" />
-              Add service
-            </button>
-          )}
+          {addServiceButton}
         </div>
         {error && !formOpen && !deleteTarget && (
           <p
@@ -904,8 +986,10 @@ export function ServicesPanel({
             {success}
           </p>
         )}
-        <div className="overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] px-4 py-3 shadow-[var(--shadow-soft)] sm:px-5">
-          {catalogBody}
+        <div className="relative flex max-h-[min(50vh,22rem)] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[var(--shadow-soft)]">
+          <div className="asa-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3 sm:px-5">
+            {catalogBody}
+          </div>
         </div>
         {modals}
       </section>
@@ -931,7 +1015,7 @@ export function ServicesPanel({
         </p>
       )}
 
-      <section className="surface-panel flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl">
+      <section className="surface-panel relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl">
         <div className="flex shrink-0 flex-wrap items-start justify-between gap-3 border-b border-[var(--line)] bg-gradient-to-br from-white via-white to-[var(--accent-soft)]/35 px-5 py-5 sm:px-6">
           <div>
             <p className="section-label">Catalog</p>
@@ -943,16 +1027,7 @@ export function ServicesPanel({
               Add every service your shop provides.
             </p>
           </div>
-          {isOwner && services.length > 0 && (
-            <button
-              type="button"
-              onClick={openAddForm}
-              className="btn-primary inline-flex items-center gap-1.5"
-            >
-              <IconPlus className="h-3.5 w-3.5" />
-              Add service
-            </button>
-          )}
+          {addServiceButton}
         </div>
         <div className="table-scroll asa-scroll min-h-0 flex-1 overflow-auto overscroll-contain px-5 py-4">
           {catalogBody}

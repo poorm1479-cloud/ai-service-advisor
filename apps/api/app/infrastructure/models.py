@@ -305,6 +305,8 @@ class VoiceCallModel(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     metadata_json: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Soft-delete: hide from staff UI but keep row for today's AI activity metrics.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
     turns: Mapped[list[VoiceTurnModel]] = relationship(back_populates="call")
 

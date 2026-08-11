@@ -94,17 +94,8 @@ async def get_customer_detail(
 ) -> CustomerDetailOut:
     service = CrmService(uow)
     try:
-        customer = await service.get_customer(shop_id=current.shop_id, customer_id=customer_id)
-        vehicles = await service.list_customer_vehicles(
+        customer, vehicles, communications, repairs = await service.get_customer_detail(
             shop_id=current.shop_id, customer_id=customer_id
-        )
-        communications = await service.communication_timeline(
-            shop_id=current.shop_id, customer_id=customer_id
-        )
-        repairs = await service.customer_repair_history(
-            shop_id=current.shop_id,
-            customer_id=customer_id,
-            vehicle_ids=[v.id for v in vehicles],
         )
     except NotFoundError as exc:
         raise _http_error(exc) from exc

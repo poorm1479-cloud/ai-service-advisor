@@ -1,7 +1,98 @@
+"use client";
+
 import Link from "next/link";
 import Image from "next/image";
+import { type MouseEvent, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
+import { useRouter } from "next/navigation";
+import { LoginForm } from "@/components/LoginForm";
+import { RegisterForm } from "@/components/RegisterForm";
+
+function safeNextPath(raw: string | null): string {
+  if (!raw || !raw.startsWith("/") || raw.startsWith("//")) return "/dashboard";
+  if (raw === "/admin" || raw.startsWith("/admin/")) return "/dashboard";
+  return raw;
+}
 
 export default function HomePage() {
+  const router = useRouter();
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [registerOpen, setRegisterOpen] = useState(false);
+  const [loginNext, setLoginNext] = useState("/dashboard");
+  const [portalReady, setPortalReady] = useState(false);
+
+  useEffect(() => {
+    setPortalReady(true);
+    const params = new URLSearchParams(window.location.search);
+    if (params.has("login")) {
+      setLoginNext(safeNextPath(params.get("next")));
+      setRegisterOpen(false);
+      setLoginOpen(true);
+      router.replace("/", { scroll: false });
+    } else if (params.has("register")) {
+      setLoginOpen(false);
+      setRegisterOpen(true);
+      router.replace("/", { scroll: false });
+    }
+  }, [router]);
+
+  useEffect(() => {
+    if (!loginOpen && !registerOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setLoginOpen(false);
+        setRegisterOpen(false);
+      }
+    };
+    const html = document.documentElement;
+    const body = document.body;
+    const prevHtmlOverflow = html.style.overflow;
+    const prevBodyOverflow = body.style.overflow;
+    const prevBodyOverscroll = body.style.overscrollBehavior;
+    html.style.overflow = "hidden";
+    body.style.overflow = "hidden";
+    body.style.overscrollBehavior = "none";
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      html.style.overflow = prevHtmlOverflow;
+      body.style.overflow = prevBodyOverflow;
+      body.style.overscrollBehavior = prevBodyOverscroll;
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [loginOpen, registerOpen]);
+
+  function openLogin(e?: MouseEvent) {
+    e?.preventDefault();
+    setLoginNext("/dashboard");
+    setRegisterOpen(false);
+    setLoginOpen(true);
+  }
+
+  function closeLogin() {
+    setLoginOpen(false);
+  }
+
+  function openRegister(e?: MouseEvent) {
+    e?.preventDefault();
+    setLoginOpen(false);
+    setRegisterOpen(true);
+  }
+
+  function closeRegister() {
+    setRegisterOpen(false);
+  }
+
+  function switchToLogin() {
+    setRegisterOpen(false);
+    setLoginNext("/dashboard");
+    setLoginOpen(true);
+  }
+
+  function switchToRegister() {
+    setLoginOpen(false);
+    setRegisterOpen(true);
+  }
+
   return (
     <main className="min-h-screen bg-white text-black">
       <header className="site-nav">
@@ -16,15 +107,16 @@ export default function HomePage() {
             >
               Pricing
             </Link>
-            <Link
-              href="/login"
+            <button
+              type="button"
+              onClick={openLogin}
               className="rounded-full px-3 py-2 text-sm font-medium text-[#5c5c5c] hover:text-black"
             >
               Sign in
-            </Link>
-            <Link href="/register" className="btn-primary">
+            </button>
+            <button type="button" onClick={openRegister} className="btn-primary">
               Start free
-            </Link>
+            </button>
           </div>
         </div>
       </header>
@@ -201,9 +293,9 @@ export default function HomePage() {
             <Link href="/register" className="btn-primary px-6 py-3 text-base">
               Get started
             </Link>
-            <Link href="/login" className="btn-dark px-6 py-3 text-base">
+            <button type="button" onClick={openLogin} className="btn-dark px-6 py-3 text-base">
               Sign in
-            </Link>
+            </button>
           </div>
         </div>
       </section>
@@ -221,6 +313,55 @@ export default function HomePage() {
           Status
         </Link>
       </footer>
+
+      {portalReady &&
+        loginOpen &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[100] flex items-end justify-center overflow-hidden overscroll-none bg-black/60 p-4 backdrop-blur-[6px] sm:items-center"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="home-login-title"
+            onClick={closeLogin}
+          >
+            <div
+              className="auth-form-motion surface-panel auth-panel max-h-[min(92dvh,42rem)] w-full max-w-[26rem] overflow-y-auto overscroll-contain p-6 pb-5 sm:p-8 sm:pb-6"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <LoginForm
+                variant="modal"
+                nextPath={loginNext}
+                onClose={closeLogin}
+                onSwitchToRegister={switchToRegister}
+              />
+            </div>
+          </div>,
+          document.body,
+        )}
+
+      {portalReady &&
+        registerOpen &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[100] flex items-end justify-center overflow-hidden overscroll-none bg-black/60 p-4 backdrop-blur-[6px] sm:items-center"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="home-register-title"
+            onClick={closeRegister}
+          >
+            <div
+              className="auth-form-motion surface-panel auth-panel max-h-[min(92dvh,48rem)] w-full max-w-[28rem] overflow-y-auto overscroll-contain p-6 pb-5 sm:p-8 sm:pb-6"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <RegisterForm
+                variant="modal"
+                onClose={closeRegister}
+                onSwitchToLogin={switchToLogin}
+              />
+            </div>
+          </div>,
+          document.body,
+        )}
     </main>
   );
 }
