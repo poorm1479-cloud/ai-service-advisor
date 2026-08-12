@@ -305,43 +305,274 @@ export function RegisterForm({
 
   const isPage = variant === "page";
 
-  return (
-    <div
-      className={
-        isPage
-          ? "flex min-h-0 w-full flex-1 flex-col"
-          : "relative w-full"
-      }
-    >
-      <div className={isPage ? "shrink-0" : undefined}>
-        {isPage ? (
-          <Link
-            href="/"
-            className="inline-flex items-center gap-1.5 text-sm text-[var(--muted)] transition-colors hover:text-[var(--ink)]"
-          >
-            <span aria-hidden="true">←</span>
-            Back to home
-          </Link>
-        ) : (
-          <button
-            type="button"
-            onClick={onClose}
-            className="absolute right-0 top-0 z-10 inline-flex h-9 w-9 items-center justify-center rounded-full text-[var(--muted)] transition-colors hover:bg-black/5 hover:text-[var(--ink)]"
-            aria-label="Close register"
-          >
-            <span aria-hidden className="text-xl leading-none">
-              ×
-            </span>
-          </button>
-        )}
+  const signInLink =
+    variant === "modal" && onSwitchToLogin ? (
+      <button
+        type="button"
+        onClick={onSwitchToLogin}
+        className="font-medium text-[var(--accent)] transition-colors hover:text-[var(--accent-hover)]"
+      >
+        Sign in
+      </button>
+    ) : (
+      <Link
+        href="/?login=1"
+        className="font-medium text-[var(--accent)] transition-colors hover:text-[var(--accent-hover)]"
+      >
+        Sign in
+      </Link>
+    );
 
-        <p className={`section-label ${isPage ? "mt-4" : "pr-10"}`}>Get started</p>
-        <h1
-          id={variant === "modal" ? "home-register-title" : undefined}
-          className={`font-display text-[1.5rem] font-extrabold tracking-tight sm:text-[1.75rem] ${
-            variant === "modal" ? "pr-10" : "mt-1.5"
-          }`}
+  if (!isPage) {
+    return (
+      <div className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden">
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute right-0 top-0 z-10 inline-flex h-9 w-9 items-center justify-center rounded-full text-[var(--muted)] transition-colors hover:bg-black/5 hover:text-[var(--ink)]"
+          aria-label="Close register"
         >
+          <span aria-hidden className="text-xl leading-none">
+            ×
+          </span>
+        </button>
+
+        <div className="min-w-0 shrink-0 pr-10">
+          <p className="section-label">Get started</p>
+          <h1
+            id="home-register-title"
+            className="mt-1.5 inline-flex items-center gap-2.5 font-display text-[1.5rem] font-extrabold tracking-tight sm:text-[1.75rem]"
+          >
+            <IconBuilding className="h-6 w-6 shrink-0 text-[var(--accent)] sm:h-7 sm:w-7" />
+            Register your shop
+          </h1>
+
+          <div className="auth-segment mt-5" role="tablist" aria-label="Registration method">
+            {(
+              [
+                ["phone", "Phone", IconPhone],
+                ["email", "Email", IconMail],
+              ] as const
+            ).map(([id, label, Icon]) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={authMethod === id}
+                data-active={authMethod === id}
+                onClick={() => switchMethod(id)}
+                className="auth-segment-btn"
+              >
+                <Icon className="h-3.5 w-3.5 shrink-0" />
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <form
+          onSubmit={onSubmit}
+          noValidate
+          className="mt-5 flex min-h-0 flex-1 flex-col overflow-hidden"
+          autoComplete="off"
+        >
+          <div className="auth-form-scroll min-h-0 flex-1 space-y-3.5 overflow-y-auto overscroll-contain pr-1 [-webkit-overflow-scrolling:touch]">
+            <div aria-hidden="true" className="pointer-events-none absolute -left-[9999px] h-0 w-0 opacity-0">
+              <input type="text" name="username" tabIndex={-1} defaultValue="" />
+              <input type="email" name="email" tabIndex={-1} defaultValue="" />
+              <input type="password" name="password" tabIndex={-1} defaultValue="" />
+            </div>
+
+            <Field
+              label="Shop name"
+              icon={<IconBuilding />}
+              name="asa-reg-shop-name"
+              autoComplete="off"
+              value={shopName}
+              onChange={(v) => {
+                userEditedShopName.current = true;
+                setShopName(v);
+              }}
+              placeholder="Your shop name"
+              required
+              guardAutofill
+            />
+            <Field
+              label="Owner full name"
+              icon={<IconUser />}
+              name={`asa-reg-owner-name-${authMethod}-${fieldEpoch}`}
+              autoComplete="off"
+              value={ownerFullName}
+              onChange={setOwnerFullName}
+              placeholder="Full name"
+              required
+              guardAutofill
+            />
+            {hydrated ? (
+              <div key={`contact-${authMethod}-${fieldEpoch}`}>
+                {authMethod === "phone" ? (
+                  <Field
+                    label="Owner phone"
+                    icon={<IconPhone />}
+                    name={`asa-reg-owner-phone-${fieldEpoch}`}
+                    type="tel"
+                    autoComplete="off"
+                    value={ownerPhone}
+                    onChange={(v) => setOwnerPhone(formatPhoneInput(v))}
+                    placeholder={PHONE_PLACEHOLDER}
+                    required
+                    guardAutofill
+                  />
+                ) : (
+                  <Field
+                    label="Owner email"
+                    icon={<IconMail />}
+                    name={`asa-reg-owner-email-${fieldEpoch}`}
+                    type="email"
+                    autoComplete="off"
+                    value={ownerEmail}
+                    onChange={setOwnerEmail}
+                    placeholder="you@shop.com"
+                    required
+                    guardAutofill
+                  />
+                )}
+              </div>
+            ) : null}
+
+            <div key={`password-${authMethod}-${fieldEpoch}`}>
+              <PasswordField
+                label="Password"
+                icon={<IconLock />}
+                name={`asa-reg-new-password-${authMethod}-${fieldEpoch}`}
+                value={password}
+                onChange={(v) => {
+                  userEditedPassword.current = true;
+                  setPassword(v);
+                }}
+                required
+                minLength={8}
+                autoComplete="new-password"
+                hint="At least 8 characters"
+              />
+            </div>
+            <div key={`confirm-${authMethod}-${fieldEpoch}`}>
+              <PasswordField
+                label="Confirm password"
+                icon={<IconLock />}
+                name={`asa-reg-confirm-password-${authMethod}-${fieldEpoch}`}
+                value={confirmPassword}
+                onChange={(v) => {
+                  userEditedPassword.current = true;
+                  setConfirmPassword(v);
+                }}
+                required
+                minLength={8}
+                autoComplete="new-password"
+              />
+              {confirmPassword && password !== confirmPassword ? (
+                <p className="mt-1.5 text-xs text-red-600">Passwords do not match.</p>
+              ) : null}
+            </div>
+
+            <div className="space-y-2 pb-1 pt-0.5">
+              <label className="flex items-center gap-2 text-sm text-[var(--muted)]">
+                <input
+                  type="checkbox"
+                  checked={rememberInfo}
+                  onChange={(e) => {
+                    const next = e.target.checked;
+                    setRememberInfo(next);
+                    if (!next) {
+                      clearRememberedRegister();
+                      setDraftStore(null);
+                    }
+                  }}
+                  className="h-4 w-4 rounded border-[var(--line)] accent-[var(--accent)]"
+                />
+                <span>Remember signup info</span>
+              </label>
+              <label className="flex items-center gap-2 text-sm text-[var(--muted)]">
+                <input
+                  type="checkbox"
+                  checked={rememberPassword}
+                  onChange={(e) => {
+                    const next = e.target.checked;
+                    setRememberPassword(next);
+                    if (!next && draftStore) {
+                      const cleared: RememberedRegisterStore = {
+                        ...draftStore,
+                        phone: draftStore.phone
+                          ? { ...draftStore.phone, password: undefined }
+                          : undefined,
+                        email: draftStore.email
+                          ? { ...draftStore.email, password: undefined }
+                          : undefined,
+                      };
+                      saveRememberedRegisterStore(cleared);
+                      setDraftStore(cleared);
+                    }
+                  }}
+                  className="h-4 w-4 rounded border-[var(--line)] accent-[var(--accent)]"
+                />
+                <span>Remember password</span>
+              </label>
+            </div>
+          </div>
+
+          <div className="shrink-0 space-y-3 border-t border-[var(--line)]/70 pt-3">
+            {error && (
+              <p
+                className="rounded-xl border border-red-200/80 bg-red-50 px-3.5 py-2.5 text-sm text-red-700"
+                role="alert"
+              >
+                {error}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={!hydrated || submitting}
+              className="btn-primary mt-1 w-full gap-2 py-3 text-base disabled:opacity-60"
+            >
+              {submitting ? (
+                "Creating shop…"
+              ) : (
+                <>
+                  <IconRocket className="h-4 w-4" />
+                  Create shop
+                </>
+              )}
+            </button>
+
+            <p className="text-center text-sm text-[var(--muted)]">
+              Already registered? {signInLink}
+            </p>
+          </div>
+        </form>
+      </div>
+    );
+  }
+
+  return (
+    <form
+      onSubmit={onSubmit}
+      noValidate
+      autoComplete="off"
+      className="flex min-h-0 flex-1 flex-col overflow-hidden"
+    >
+      <div className="min-w-0 shrink-0">
+        <Link
+          href="/"
+          className="inline-flex items-center gap-1.5 text-sm text-[var(--muted)] transition-colors hover:text-[var(--ink)]"
+        >
+          <span aria-hidden="true">←</span>
+          Back to home
+        </Link>
+
+        <p className="section-label mt-4">Get started</p>
+        <h1 className="mt-1.5 inline-flex items-center gap-2.5 font-display text-[1.5rem] font-extrabold tracking-tight sm:text-[1.75rem]">
+          <IconBuilding className="h-6 w-6 shrink-0 text-[var(--accent)] sm:h-7 sm:w-7" />
           Register your shop
         </h1>
 
@@ -368,198 +599,176 @@ export function RegisterForm({
         </div>
       </div>
 
-      <form
-        onSubmit={onSubmit}
-        noValidate
-        className={isPage ? "mt-5 flex min-h-0 flex-1 flex-col" : "mt-5 space-y-3.5"}
-        autoComplete="off"
-      >
+      <div className="auth-form-scroll mt-5 min-h-0 flex-1 space-y-3.5 overflow-y-auto overscroll-contain pr-1 [-webkit-overflow-scrolling:touch]">
         <div aria-hidden="true" className="pointer-events-none absolute -left-[9999px] h-0 w-0 opacity-0">
           <input type="text" name="username" tabIndex={-1} defaultValue="" />
           <input type="email" name="email" tabIndex={-1} defaultValue="" />
           <input type="password" name="password" tabIndex={-1} defaultValue="" />
         </div>
 
-        <div
-          className={
-            isPage
-              ? "min-h-0 flex-1 space-y-3.5 overflow-y-auto overscroll-contain pr-1"
-              : "contents"
-          }
-        >
-          <Field
-            label="Shop name"
-            icon={<IconBuilding />}
-            name="asa-reg-shop-name"
-            autoComplete="off"
-            value={shopName}
+        <Field
+          label="Shop name"
+          icon={<IconBuilding />}
+          name="asa-reg-shop-name"
+          autoComplete="off"
+          value={shopName}
+          onChange={(v) => {
+            userEditedShopName.current = true;
+            setShopName(v);
+          }}
+          placeholder="Your shop name"
+          required
+          guardAutofill
+        />
+        <Field
+          label="Owner full name"
+          icon={<IconUser />}
+          name={`asa-reg-owner-name-${authMethod}-${fieldEpoch}`}
+          autoComplete="off"
+          value={ownerFullName}
+          onChange={setOwnerFullName}
+          placeholder="Full name"
+          required
+          guardAutofill
+        />
+        {hydrated ? (
+          <div key={`contact-${authMethod}-${fieldEpoch}`}>
+            {authMethod === "phone" ? (
+              <Field
+                label="Owner phone"
+                icon={<IconPhone />}
+                name={`asa-reg-owner-phone-${fieldEpoch}`}
+                type="tel"
+                autoComplete="off"
+                value={ownerPhone}
+                onChange={(v) => setOwnerPhone(formatPhoneInput(v))}
+                placeholder={PHONE_PLACEHOLDER}
+                required
+                guardAutofill
+              />
+            ) : (
+              <Field
+                label="Owner email"
+                icon={<IconMail />}
+                name={`asa-reg-owner-email-${fieldEpoch}`}
+                type="email"
+                autoComplete="off"
+                value={ownerEmail}
+                onChange={setOwnerEmail}
+                placeholder="you@shop.com"
+                required
+                guardAutofill
+              />
+            )}
+          </div>
+        ) : null}
+
+        <div key={`password-${authMethod}-${fieldEpoch}`}>
+          <PasswordField
+            label="Password"
+            icon={<IconLock />}
+            name={`asa-reg-new-password-${authMethod}-${fieldEpoch}`}
+            value={password}
             onChange={(v) => {
-              userEditedShopName.current = true;
-              setShopName(v);
+              userEditedPassword.current = true;
+              setPassword(v);
             }}
-            placeholder="Your shop name"
             required
-            guardAutofill
+            minLength={8}
+            autoComplete="new-password"
+            hint="At least 8 characters"
           />
-          <Field
-            label="Owner full name"
-            icon={<IconUser />}
-            name={`asa-reg-owner-name-${authMethod}-${fieldEpoch}`}
-            autoComplete="off"
-            value={ownerFullName}
-            onChange={setOwnerFullName}
-            placeholder="Full name"
+        </div>
+        <div key={`confirm-${authMethod}-${fieldEpoch}`}>
+          <PasswordField
+            label="Confirm password"
+            icon={<IconLock />}
+            name={`asa-reg-confirm-password-${authMethod}-${fieldEpoch}`}
+            value={confirmPassword}
+            onChange={(v) => {
+              userEditedPassword.current = true;
+              setConfirmPassword(v);
+            }}
             required
-            guardAutofill
+            minLength={8}
+            autoComplete="new-password"
           />
-          {hydrated ? (
-            <div key={`contact-${authMethod}-${fieldEpoch}`}>
-              {authMethod === "phone" ? (
-                <Field
-                  label="Owner phone"
-                  icon={<IconPhone />}
-                  name={`asa-reg-owner-phone-${fieldEpoch}`}
-                  type="tel"
-                  autoComplete="off"
-                  value={ownerPhone}
-                  onChange={(v) => setOwnerPhone(formatPhoneInput(v))}
-                  placeholder={PHONE_PLACEHOLDER}
-                  required
-                  guardAutofill
-                />
-              ) : (
-                <Field
-                  label="Owner email"
-                  icon={<IconMail />}
-                  name={`asa-reg-owner-email-${fieldEpoch}`}
-                  type="email"
-                  autoComplete="off"
-                  value={ownerEmail}
-                  onChange={setOwnerEmail}
-                  placeholder="you@shop.com"
-                  required
-                  guardAutofill
-                />
-              )}
-            </div>
+          {confirmPassword && password !== confirmPassword ? (
+            <p className="mt-1.5 text-xs text-red-600">Passwords do not match.</p>
           ) : null}
-
-          <div key={`password-${authMethod}-${fieldEpoch}`}>
-            <PasswordField
-              label="Password"
-              icon={<IconLock />}
-              name={`asa-reg-new-password-${authMethod}-${fieldEpoch}`}
-              value={password}
-              onChange={(v) => {
-                userEditedPassword.current = true;
-                setPassword(v);
-              }}
-              required
-              minLength={8}
-              autoComplete="new-password"
-              hint="At least 8 characters"
-            />
-          </div>
-          <div key={`confirm-${authMethod}-${fieldEpoch}`}>
-            <PasswordField
-              label="Confirm password"
-              icon={<IconLock />}
-              name={`asa-reg-confirm-password-${authMethod}-${fieldEpoch}`}
-              value={confirmPassword}
-              onChange={(v) => {
-                userEditedPassword.current = true;
-                setConfirmPassword(v);
-              }}
-              required
-              minLength={8}
-              autoComplete="new-password"
-            />
-            {confirmPassword && password !== confirmPassword ? (
-              <p className="mt-1.5 text-xs text-red-600">Passwords do not match.</p>
-            ) : null}
-          </div>
-
-          <div className="space-y-2 pt-0.5">
-            <label className="flex items-center gap-2 text-sm text-[var(--muted)]">
-              <input
-                type="checkbox"
-                checked={rememberInfo}
-                onChange={(e) => {
-                  const next = e.target.checked;
-                  setRememberInfo(next);
-                  if (!next) {
-                    clearRememberedRegister();
-                    setDraftStore(null);
-                  }
-                }}
-                className="h-4 w-4 rounded border-[var(--line)] accent-[var(--accent)]"
-              />
-              <span>Remember signup info</span>
-            </label>
-            <label className="flex items-center gap-2 text-sm text-[var(--muted)]">
-              <input
-                type="checkbox"
-                checked={rememberPassword}
-                onChange={(e) => {
-                  const next = e.target.checked;
-                  setRememberPassword(next);
-                  if (!next && draftStore) {
-                    const cleared: RememberedRegisterStore = {
-                      ...draftStore,
-                      phone: draftStore.phone ? { ...draftStore.phone, password: undefined } : undefined,
-                      email: draftStore.email ? { ...draftStore.email, password: undefined } : undefined,
-                    };
-                    saveRememberedRegisterStore(cleared);
-                    setDraftStore(cleared);
-                  }
-                }}
-                className="h-4 w-4 rounded border-[var(--line)] accent-[var(--accent)]"
-              />
-              <span>Remember password</span>
-            </label>
-          </div>
         </div>
 
-        <div className={isPage ? "shrink-0 space-y-3 pt-3" : "contents"}>
-          {error && (
-            <p
-              className="rounded-xl border border-red-200/80 bg-red-50 px-3.5 py-2.5 text-sm text-red-700"
-              role="alert"
-            >
-              {error}
-            </p>
-          )}
-
-          <button
-            type="submit"
-            disabled={!hydrated || submitting}
-            className="btn-primary mt-1 w-full py-3 text-base disabled:opacity-60"
-          >
-            {submitting ? "Creating shop…" : "Create shop"}
-          </button>
+        <div className="space-y-2 pb-1 pt-0.5">
+          <label className="flex items-center gap-2 text-sm text-[var(--muted)]">
+            <input
+              type="checkbox"
+              checked={rememberInfo}
+              onChange={(e) => {
+                const next = e.target.checked;
+                setRememberInfo(next);
+                if (!next) {
+                  clearRememberedRegister();
+                  setDraftStore(null);
+                }
+              }}
+              className="h-4 w-4 rounded border-[var(--line)] accent-[var(--accent)]"
+            />
+            <span>Remember signup info</span>
+          </label>
+          <label className="flex items-center gap-2 text-sm text-[var(--muted)]">
+            <input
+              type="checkbox"
+              checked={rememberPassword}
+              onChange={(e) => {
+                const next = e.target.checked;
+                setRememberPassword(next);
+                if (!next && draftStore) {
+                  const cleared: RememberedRegisterStore = {
+                    ...draftStore,
+                    phone: draftStore.phone ? { ...draftStore.phone, password: undefined } : undefined,
+                    email: draftStore.email ? { ...draftStore.email, password: undefined } : undefined,
+                  };
+                  saveRememberedRegisterStore(cleared);
+                  setDraftStore(cleared);
+                }
+              }}
+              className="h-4 w-4 rounded border-[var(--line)] accent-[var(--accent)]"
+            />
+            <span>Remember password</span>
+          </label>
         </div>
-      </form>
-
-      <div className={`mt-4 text-center text-sm text-[var(--muted)] ${isPage ? "shrink-0" : ""}`}>
-        Already registered?{" "}
-        {variant === "modal" && onSwitchToLogin ? (
-          <button
-            type="button"
-            onClick={onSwitchToLogin}
-            className="font-medium text-[var(--accent)] transition-colors hover:text-[var(--accent-hover)]"
-          >
-            Sign in
-          </button>
-        ) : (
-          <Link
-            href="/?login=1"
-            className="font-medium text-[var(--accent)] transition-colors hover:text-[var(--accent-hover)]"
-          >
-            Sign in
-          </Link>
-        )}
       </div>
-    </div>
+
+      <div className="shrink-0 space-y-3 border-t border-[var(--line)]/70 pt-3">
+        {error && (
+          <p
+            className="rounded-xl border border-red-200/80 bg-red-50 px-3.5 py-2.5 text-sm text-red-700"
+            role="alert"
+          >
+            {error}
+          </p>
+        )}
+
+        <button
+          type="submit"
+          disabled={!hydrated || submitting}
+          className="btn-primary mt-1 w-full gap-2 py-3 text-base disabled:opacity-60"
+        >
+          {submitting ? (
+            "Creating shop…"
+          ) : (
+            <>
+              <IconRocket className="h-4 w-4" />
+              Create shop
+            </>
+          )}
+        </button>
+
+        <p className="text-center text-sm text-[var(--muted)]">
+          Already registered? {signInLink}
+        </p>
+      </div>
+    </form>
   );
 }
 
@@ -700,6 +909,26 @@ function IconLock({ className = "h-3.5 w-3.5" }: { className?: string }) {
     >
       <rect x="3" y="11" width="18" height="11" rx="2" />
       <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
+  );
+}
+
+function IconRocket({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" />
+      <path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z" />
+      <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" />
+      <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
     </svg>
   );
 }

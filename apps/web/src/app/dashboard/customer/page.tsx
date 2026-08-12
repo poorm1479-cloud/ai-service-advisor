@@ -431,7 +431,9 @@ function CustomersPageContent() {
 
       <form
         onSubmit={onSearch}
-        className="surface-panel flex shrink-0 flex-col gap-1.5 p-1.5 sm:flex-row sm:items-center"
+        className={`surface-panel shrink-0 flex-row items-center gap-1.5 p-1.5 ${
+          selectedId ? "hidden lg:flex" : "flex"
+        }`}
       >
         <div className="relative min-w-0 flex-1">
           <span className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-[var(--muted)]">
@@ -594,7 +596,7 @@ function CustomersPageContent() {
               </p>
               <p className="mt-1 max-w-xs text-xs text-[var(--muted)]">
                 Open a record from the directory to review profile, vehicles,
-                repairs, and conversations.
+                repairs, and calls.
               </p>
             </div>
           )}
@@ -604,7 +606,7 @@ function CustomersPageContent() {
       {createMode !== null &&
         createPortal(
           <div
-            className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-[2px]"
             role="dialog"
             aria-modal="true"
             aria-labelledby="add-customer-title"
@@ -637,7 +639,7 @@ function CustomersPageContent() {
                   <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
                     Visit type
                   </p>
-                  <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="grid grid-cols-2 gap-2">
                     <ModeOption
                       active={createMode === "known"}
                       icon={<IconUser className="h-4 w-4" />}
@@ -695,7 +697,7 @@ function CustomersPageContent() {
                       <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
                         Contact
                       </p>
-                      <div className="grid gap-2.5 sm:grid-cols-2">
+                      <div className="grid grid-cols-2 gap-2.5">
                         <Field
                           label="Name"
                           icon={<IconUser />}
@@ -703,7 +705,7 @@ function CustomersPageContent() {
                           onChange={setName}
                           required
                           placeholder="Full name"
-                          className="sm:col-span-2"
+                          className="col-span-2"
                         />
                         <Field
                           label="Phone"
@@ -742,7 +744,7 @@ function CustomersPageContent() {
                 )}
               </div>
 
-              <div className="flex shrink-0 flex-col-reverse gap-2 border-t border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-5 py-3.5 sm:flex-row sm:justify-end">
+              <div className="flex shrink-0 flex-row justify-end gap-2 border-t border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-5 py-3.5">
                 <button
                   type="button"
                   onClick={closeCreateModal}

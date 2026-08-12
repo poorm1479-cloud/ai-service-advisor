@@ -25,6 +25,7 @@ from app.domain.enums import UserRole, normalize_user_role
 from app.domain.exceptions import ValidationError
 from app.infrastructure.security import hash_password, verify_password
 from app.infrastructure.unit_of_work import SqlAlchemyUnitOfWork
+from app.saas.quotas import QuotaService
 
 router = APIRouter(prefix="/v1/tenant", tags=["tenant"])
 
@@ -65,6 +66,8 @@ class ShopSettingsOut(BaseModel):
     sms_phone_e164: str | None = None
     voice_phone_e164: str | None = None
     ai_paused: bool = False
+    # True when monthly AI call quota still has remaining capacity.
+    ai_usage_available: bool = True
 
 
 class UpdateShopSettingsRequest(BaseModel):
@@ -304,15 +307,13 @@ async def my_permissions(current: CurrentUser = Depends(get_current_user)) -> di
     }
 
 
-@router.get("/shop", response_model=ShopSettingsOut)
-async def get_shop_settings(
-    current: CurrentUser = Depends(get_current_user),
-    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
-) -> ShopSettingsOut:
-    shop = await uow.shops.get_by_id(current.shop_id)
-    if shop is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+async def _shop_settings_out(uow: SqlAlchemyUnitOfWork, shop) -> ShopSettingsOut:
     sms_phone, voice_phone = await uow.shops.get_channel_phones(shop.id)
+    try:
+        ai_ok = await QuotaService().ai_usage_available(shop.id)
+    except Exception:
+        # Fail open for settings reads so quota outages don't break the dashboard.
+        ai_ok = True
     return ShopSettingsOut(
         shop_id=shop.id,
         name=shop.name,
@@ -321,7 +322,19 @@ async def get_shop_settings(
         sms_phone_e164=sms_phone,
         voice_phone_e164=voice_phone,
         ai_paused=bool(shop.ai_paused),
+        ai_usage_available=bool(ai_ok),
     )
+
+
+@router.get("/shop", response_model=ShopSettingsOut)
+async def get_shop_settings(
+    current: CurrentUser = Depends(get_current_user),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+) -> ShopSettingsOut:
+    shop = await uow.shops.get_by_id(current.shop_id)
+    if shop is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+    return await _shop_settings_out(uow, shop)
 
 
 @router.patch("/shop", response_model=ShopSettingsOut)
@@ -351,16 +364,7 @@ async def update_shop_settings(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid timezone")
     updated = await uow.shops.update(shop)
     await uow.commit()
-    sms_phone, voice_phone = await uow.shops.get_channel_phones(updated.id)
-    return ShopSettingsOut(
-        shop_id=updated.id,
-        name=updated.name,
-        slug=updated.slug,
-        timezone=updated.timezone,
-        sms_phone_e164=sms_phone,
-        voice_phone_e164=voice_phone,
-        ai_paused=bool(updated.ai_paused),
-    )
+    return await _shop_settings_out(uow, updated)
 
 
 @router.patch("/shop/ai-paused", response_model=ShopSettingsOut)
@@ -373,19 +377,16 @@ async def set_shop_ai_paused(
     shop = await uow.shops.get_by_id(current.shop_id)
     if shop is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+    # Resuming AI requires remaining monthly AI call quota.
+    if not body.ai_paused and not await QuotaService().ai_usage_available(shop.id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="AI monthly quota exceeded. Upgrade your plan to resume AI.",
+        )
     shop.ai_paused = bool(body.ai_paused)
     updated = await uow.shops.update(shop)
     await uow.commit()
-    sms_phone, voice_phone = await uow.shops.get_channel_phones(updated.id)
-    return ShopSettingsOut(
-        shop_id=updated.id,
-        name=updated.name,
-        slug=updated.slug,
-        timezone=updated.timezone,
-        sms_phone_e164=sms_phone,
-        voice_phone_e164=voice_phone,
-        ai_paused=bool(updated.ai_paused),
-    )
+    return await _shop_settings_out(uow, updated)
 
 
 @router.patch("/me/profile", response_model=ProfileOut)

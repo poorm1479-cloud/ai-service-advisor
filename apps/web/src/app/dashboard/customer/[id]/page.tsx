@@ -61,7 +61,7 @@ const VinInput = dynamic(
 const DETAIL_TABS = [
   { id: "profile", label: "Profile" },
   { id: "repairs", label: "Repair history" },
-  { id: "conversations", label: "Conversations" },
+  { id: "calls", label: "Calls" },
 ] as const;
 
 /** Minimum horizontal drag distance (px) to change detail tabs. */
@@ -70,7 +70,8 @@ const TAB_SWIPE_THRESHOLD_PX = 56;
 type DetailTab = (typeof DETAIL_TABS)[number]["id"];
 
 function parseDetailTab(value: string | null): DetailTab {
-  if (value === "repairs" || value === "conversations" || value === "profile") {
+  if (value === "calls" || value === "conversations") return "calls";
+  if (value === "repairs" || value === "profile") {
     return value;
   }
   return "profile";
@@ -657,7 +658,7 @@ export function CustomerDetailContent({
   const loadConversations = useCallback(async () => {
     if (!detail) return;
     setConversationsLoading(true);
-    // Match Conversations by customer_id OR phone (many calls/SMS lack customer_id).
+    // Match Calls by customer_id OR phone (many calls/SMS lack customer_id).
     const customerPhone = detail.customer.phone;
     const belongsToCustomer = (opts: {
       customer_id: string | null;
@@ -698,9 +699,9 @@ export function CustomerDetailContent({
     }
   }, [authLoading, session, customerId, load]);
 
-  // Conversations tab only — avoid listing all calls/SMS on every profile open.
+  // Calls tab only — avoid listing all calls/SMS on every profile open.
   useEffect(() => {
-    if (tab !== "conversations" || !detail || authLoading || !session) return;
+    if (tab !== "calls" || !detail || authLoading || !session) return;
     void loadConversations();
   }, [tab, detail, authLoading, session, loadConversations]);
 
@@ -1394,7 +1395,14 @@ export function CustomerDetailContent({
                     : "text-[var(--muted)] hover:text-[var(--foreground)]"
                 }`}
               >
-                {t.label}
+                {t.id === "repairs" ? (
+                  <>
+                    <span className="md:hidden">Repairs</span>
+                    <span className="hidden md:inline">{t.label}</span>
+                  </>
+                ) : (
+                  t.label
+                )}
               </button>
             ))}
           </div>
@@ -1435,10 +1443,10 @@ export function CustomerDetailContent({
       )}
 
       <div
-        className={`min-h-0 flex-1 overscroll-contain [scrollbar-gutter:auto] ${
+        className={`min-h-0 flex-1 overscroll-contain ${
           tab === "profile" || tab === "repairs"
             ? "flex flex-col overflow-hidden"
-            : "asa-scroll overflow-y-auto"
+            : "asa-scroll overflow-y-auto [scrollbar-gutter:stable]"
         } ${
           embedded
             ? tab === "profile"
@@ -1454,11 +1462,15 @@ export function CustomerDetailContent({
         }`}
       >
       {tab === "profile" && (
-        <div className={`flex min-h-0 flex-1 flex-col ${embedded ? "gap-4" : "gap-6"}`}>
+        <div
+          className={`asa-scroll flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain [scrollbar-gutter:stable] ${
+            embedded ? "gap-4" : "gap-6"
+          }`}
+        >
           <section className={`shrink-0 ${embedded ? "space-y-3" : "surface-panel p-4 sm:p-5"}`}>
             <form
               onSubmit={onSaveCustomer}
-              className="grid gap-3 sm:grid-cols-2"
+              className="grid grid-cols-2 gap-3"
             >
               <Field
                 label="Name"
@@ -1492,7 +1504,7 @@ export function CustomerDetailContent({
                 onChange={setEditAddress}
                 disabled={!profileEditing}
               />
-              <div className="sm:col-span-2 flex flex-wrap items-center gap-3">
+              <div className="col-span-2 flex flex-wrap items-center gap-3">
                 {profileEditing ? (
                   <>
                     <button
@@ -1541,7 +1553,7 @@ export function CustomerDetailContent({
             </form>
           </section>
 
-          <section className="flex flex-col gap-2 max-md:shrink-0 md:min-h-0 md:flex-1">
+          <section className="flex shrink-0 flex-col gap-2">
             <div className="flex shrink-0 items-start justify-between gap-3">
               <div className="min-w-0">
                 <h2 className="text-sm font-semibold">Vehicles</h2>
@@ -1559,86 +1571,84 @@ export function CustomerDetailContent({
               </button>
             </div>
 
-            <div className="overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--background)]/30 p-2.5 md:flex md:min-h-0 md:flex-1 md:flex-col">
-              <div className="asa-scroll max-h-[9.5rem] overflow-y-auto overscroll-contain [scrollbar-gutter:auto] md:max-h-none md:min-h-0 md:flex-1">
-                {detail.vehicles.length === 0 ? (
-                  <div className="flex h-[9.5rem] flex-col items-center justify-center px-3 text-center md:h-full md:min-h-[9.5rem]">
-                    <span className="mb-2 inline-flex h-9 w-9 items-center justify-center rounded-full bg-white text-[var(--muted)] ring-1 ring-[var(--line)]">
-                      <IconCar className="h-4 w-4" />
-                    </span>
-                    <p className="text-sm font-medium">No vehicles yet</p>
-                    <p className="mt-0.5 text-xs text-[var(--muted)]">
-                      Add a vehicle to log repair history and service visits.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    {detail.vehicles.map((v) => (
-                      <article
-                        key={v.id}
-                        className="group rounded-xl border border-[var(--line)] bg-[var(--panel)] p-3 shadow-[var(--shadow-soft)] transition hover:border-[var(--accent)]/35"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex min-w-0 items-start gap-2.5">
-                            <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)]">
-                              <IconCar className="h-3.5 w-3.5" />
-                            </span>
-                            <div className="min-w-0">
-                              <h3 className="truncate text-sm font-semibold">
-                                {vehicleLabel(v)}
-                              </h3>
-                              <p className="mt-0.5 font-mono text-[11px] text-[var(--muted)]">
-                                {v.vin}
-                              </p>
-                            </div>
+            <div className="rounded-xl border border-[var(--line)] bg-[var(--background)]/30 p-2.5">
+              {detail.vehicles.length === 0 ? (
+                <div className="flex min-h-[9.5rem] flex-col items-center justify-center px-3 text-center">
+                  <span className="mb-2 inline-flex h-9 w-9 items-center justify-center rounded-full bg-white text-[var(--muted)] ring-1 ring-[var(--line)]">
+                    <IconCar className="h-4 w-4" />
+                  </span>
+                  <p className="text-sm font-medium">No vehicles yet</p>
+                  <p className="mt-0.5 text-xs text-[var(--muted)]">
+                    Add a vehicle to log repair history and service visits.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {detail.vehicles.map((v) => (
+                    <article
+                      key={v.id}
+                      className="group rounded-xl border border-[var(--line)] bg-[var(--panel)] p-3 shadow-[var(--shadow-soft)] transition hover:border-[var(--accent)]/35"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex min-w-0 items-start gap-2.5">
+                          <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--background)] text-[var(--muted)] ring-1 ring-[var(--line)]">
+                            <IconCar className="h-3.5 w-3.5" />
+                          </span>
+                          <div className="min-w-0">
+                            <h3 className="truncate text-sm font-semibold">
+                              {vehicleLabel(v)}
+                            </h3>
+                            <p className="mt-0.5 font-mono text-[11px] text-[var(--muted)]">
+                              {v.vin}
+                            </p>
                           </div>
                         </div>
-                        <dl className="mt-2 grid grid-cols-2 gap-1.5 text-xs">
-                          <div className="rounded-lg bg-[var(--background)]/70 px-2 py-1.5">
-                            <dt className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--muted)]">
-                              Plate
-                            </dt>
-                            <dd className="mt-0.5 font-medium">
-                              {v.license_plate ?? "—"}
-                            </dd>
-                          </div>
-                          <div className="rounded-lg bg-[var(--background)]/70 px-2 py-1.5">
-                            <dt className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--muted)]">
-                              Mileage
-                            </dt>
-                            <dd className="mt-0.5 font-medium tabular-nums">
-                              {v.mileage.toLocaleString()}
-                            </dd>
-                          </div>
-                        </dl>
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => openEditVehicleModal(v)}
-                            disabled={deletingVehicleId === v.id}
-                            className="inline-flex items-center gap-1.5 rounded-full border border-[var(--line)] px-2.5 py-0.5 text-xs font-medium hover:border-[var(--accent)]/40 disabled:opacity-60"
-                          >
-                            <IconPencil />
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setError(null);
-                              setDeleteVehicleTarget(v);
-                            }}
-                            disabled={deletingVehicleId === v.id}
-                            className="inline-flex items-center gap-1.5 rounded-full border border-red-200 px-2.5 py-0.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60"
-                          >
-                            <IconTrash className="h-3.5 w-3.5" />
-                            {deletingVehicleId === v.id ? "Deleting…" : "Delete"}
-                          </button>
+                      </div>
+                      <dl className="mt-2 grid grid-cols-2 gap-1.5 text-xs">
+                        <div className="rounded-lg bg-[var(--background)]/70 px-2 py-1.5">
+                          <dt className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--muted)]">
+                            Plate
+                          </dt>
+                          <dd className="mt-0.5 font-medium">
+                            {v.license_plate ?? "—"}
+                          </dd>
                         </div>
-                      </article>
-                    ))}
-                  </div>
-                )}
-              </div>
+                        <div className="rounded-lg bg-[var(--background)]/70 px-2 py-1.5">
+                          <dt className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--muted)]">
+                            Mileage
+                          </dt>
+                          <dd className="mt-0.5 font-medium tabular-nums">
+                            {v.mileage.toLocaleString()}
+                          </dd>
+                        </div>
+                      </dl>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => openEditVehicleModal(v)}
+                          disabled={deletingVehicleId === v.id}
+                          className="inline-flex items-center gap-1.5 rounded-full border border-[var(--line)] px-2.5 py-0.5 text-xs font-medium hover:border-[var(--accent)]/40 disabled:opacity-60"
+                        >
+                          <IconPencil />
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setError(null);
+                            setDeleteVehicleTarget(v);
+                          }}
+                          disabled={deletingVehicleId === v.id}
+                          className="inline-flex items-center gap-1.5 rounded-full border border-red-200 px-2.5 py-0.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60"
+                        >
+                          <IconTrash className="h-3.5 w-3.5" />
+                          {deletingVehicleId === v.id ? "Deleting…" : "Delete"}
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
             </div>
           </section>
         </div>
@@ -1646,8 +1656,96 @@ export function CustomerDetailContent({
 
       {tab === "repairs" && (
         <section className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+          {/* Mobile: stacked cards so each repair fits the viewport width */}
           <div
-            className={`table-scroll asa-scroll min-h-0 flex-1 overflow-auto overscroll-contain pb-16 [scrollbar-gutter:auto] ${
+            className={`asa-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain pb-16 [scrollbar-gutter:auto] md:hidden ${
+              embedded ? "px-3 py-3" : "px-0 py-1"
+            }`}
+          >
+            {repairs.length === 0 ? (
+              <div className="flex min-h-[12rem] flex-col items-center justify-center px-4 text-center text-sm text-[var(--muted)]">
+                {detail.vehicles.length === 0 ? (
+                  <span>
+                    No repair history yet.{" "}
+                    <button
+                      type="button"
+                      onClick={openAddRepairModal}
+                      className="font-medium text-[var(--accent)] hover:underline"
+                    >
+                      Add a vehicle
+                    </button>{" "}
+                    to log the first service.
+                  </span>
+                ) : (
+                  <span>
+                    No repair history yet.{" "}
+                    <button
+                      type="button"
+                      onClick={openAddRepairModal}
+                      className="font-medium text-[var(--accent)] hover:underline"
+                    >
+                      Add the first entry
+                    </button>
+                    .
+                  </span>
+                )}
+              </div>
+            ) : (
+              <ul className="space-y-2.5">
+                {repairs.map((r) => (
+                  <li
+                    key={r.id}
+                    className="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-3 shadow-[var(--shadow-soft)]"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                          <p className="text-sm font-semibold leading-snug">
+                            {r.service_type || "Service"}
+                          </p>
+                          <p className="text-xs tabular-nums text-[var(--muted)]">
+                            {r.created_at
+                              ? new Date(r.created_at).toLocaleDateString()
+                              : "—"}
+                          </p>
+                        </div>
+                        <p className="mt-0.5 truncate text-xs text-[var(--muted)]">
+                          {r.vehicle_label}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <span className="text-sm font-semibold tabular-nums">
+                          ${r.cost}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setError(null);
+                            setDeleteRepairTarget(r);
+                          }}
+                          disabled={deletingRepairId === r.id}
+                          aria-label="Delete repair history"
+                          title="Delete"
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-60"
+                        >
+                          <IconTrash className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                    {r.description ? (
+                      <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-snug text-[var(--muted)]">
+                        {r.description}
+                      </p>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* Desktop: wide table */}
+          <div
+            className={`table-scroll asa-scroll hidden min-h-0 flex-1 overflow-auto overscroll-contain pb-16 [scrollbar-gutter:auto] md:block ${
               embedded ? "rounded-none border-0 shadow-none" : ""
             }`}
           >
@@ -1740,7 +1838,7 @@ export function CustomerDetailContent({
         </section>
       )}
 
-      {tab === "conversations" && (
+      {tab === "calls" && (
         <section className="space-y-5">
           {conversationsLoading && conversationTimeline.length === 0 ? (
             <div className="animate-pulse space-y-3 rounded-xl border border-[var(--line)] bg-[var(--background)]/50 p-5">
@@ -1779,15 +1877,15 @@ export function CustomerDetailContent({
               <span className="mb-3 inline-flex h-12 w-12 items-center justify-center rounded-full bg-white text-[var(--muted)] shadow-sm ring-1 ring-[var(--line)]">
                 <IconMessage className="h-5 w-5" />
               </span>
-              <p className="text-sm font-medium">No conversations yet</p>
+              <p className="text-sm font-medium">No calls yet</p>
               <p className="mt-1 max-w-xs text-xs text-[var(--muted)]">
                 Call history and messages will appear here once this customer starts contacting the shop.
               </p>
               <Link
-                href="/dashboard/conversations?tab=calls"
+                href="/dashboard/calls?tab=calls"
                 className="mt-4 inline-flex items-center gap-1 text-xs font-medium text-[var(--accent)] hover:underline"
               >
-                Open Conversations
+                Open Calls
                 <IconChevronRight className="h-3.5 w-3.5" />
               </Link>
             </div>
@@ -1805,7 +1903,7 @@ export function CustomerDetailContent({
                       </span>
                       <div className="group relative min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-[var(--shadow-soft)] transition hover:border-[var(--accent)]/40 hover:shadow-md">
                         <Link
-                          href={`/dashboard/conversations?tab=calls&id=${encodeURIComponent(c.id)}`}
+                          href={`/dashboard/calls?tab=calls&id=${encodeURIComponent(c.id)}`}
                           className="flex min-h-9 items-center px-4 py-2.5 pr-14"
                         >
                           <p className="text-sm font-medium tabular-nums leading-none">
@@ -1855,7 +1953,7 @@ export function CustomerDetailContent({
                       </span>
                       <div className="group relative min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-[var(--shadow-soft)] transition hover:border-[var(--accent)]/40 hover:shadow-md">
                         <Link
-                          href={`/dashboard/conversations?tab=sms&id=${encodeURIComponent(s.id)}`}
+                          href={`/dashboard/calls?tab=sms&id=${encodeURIComponent(s.id)}`}
                           className="block cursor-pointer px-4 py-2.5 pr-14"
                         >
                           <p className="flex min-h-9 items-center text-sm font-medium tabular-nums leading-none">
@@ -1969,7 +2067,7 @@ export function CustomerDetailContent({
 
             return (
               <div
-                className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
+                className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-[2px]"
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="add-repair-title"
@@ -2014,7 +2112,7 @@ export function CustomerDetailContent({
                           </p>
                         </div>
                       </div>
-                      <div className="flex shrink-0 flex-col-reverse gap-2 border-t border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-4 py-3 sm:flex-row sm:justify-end">
+                      <div className="flex shrink-0 flex-row justify-end gap-2 border-t border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-4 py-3">
                         <button
                           type="button"
                           onClick={closeRepairModal}
@@ -2207,7 +2305,7 @@ export function CustomerDetailContent({
                                     <IconTrash className="h-3.5 w-3.5" />
                                   </button>
                                 </div>
-                                <div className="grid gap-2.5 sm:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)_6rem]">
+                                <div className="grid grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)_6rem] gap-2.5">
                                   <label className="block space-y-1">
                                     <span className="text-xs text-[var(--muted)]">Catalog</span>
                                     <select
@@ -2330,8 +2428,8 @@ export function CustomerDetailContent({
                         </div>
                       </div>
 
-                      <div className="flex shrink-0 flex-col-reverse gap-2 border-t border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-                        <p className="text-center text-xs text-[var(--muted)] sm:text-left">
+                      <div className="flex shrink-0 flex-row items-center justify-between gap-2 border-t border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-4 py-3">
+                        <p className="text-left text-xs text-[var(--muted)]">
                           {filledLines.length > 0 ? (
                             <>
                               <span className="font-medium text-slate-800">
@@ -2347,7 +2445,7 @@ export function CustomerDetailContent({
                             "Select at least one service to save"
                           )}
                         </p>
-                        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                        <div className="flex flex-row justify-end gap-2">
                           <button
                             type="button"
                             onClick={closeRepairModal}
@@ -2383,7 +2481,7 @@ export function CustomerDetailContent({
       {deleteRepairTarget &&
         createPortal(
           <div
-            className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-[2px]"
             role="dialog"
             aria-modal="true"
             aria-labelledby="delete-repair-title"
@@ -2453,7 +2551,7 @@ export function CustomerDetailContent({
                   </p>
                 )}
 
-                <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <div className="flex flex-row justify-end gap-2">
                   <button
                     type="button"
                     onClick={() => setDeleteRepairTarget(null)}
@@ -2480,7 +2578,7 @@ export function CustomerDetailContent({
       {deleteConversationTarget &&
         createPortal(
           <div
-            className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-[2px]"
             role="dialog"
             aria-modal="true"
             aria-labelledby="delete-conversation-title"
@@ -2534,7 +2632,7 @@ export function CustomerDetailContent({
                   </p>
                 )}
 
-                <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <div className="flex flex-row justify-end gap-2">
                   <button
                     type="button"
                     onClick={() => setDeleteConversationTarget(null)}
@@ -2561,7 +2659,7 @@ export function CustomerDetailContent({
       {deleteVehicleTarget &&
         createPortal(
           <div
-            className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-[2px]"
             role="dialog"
             aria-modal="true"
             aria-labelledby="delete-vehicle-title"
@@ -2630,7 +2728,7 @@ export function CustomerDetailContent({
                   </p>
                 )}
 
-                <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <div className="flex flex-row justify-end gap-2">
                   <button
                     type="button"
                     onClick={() => setDeleteVehicleTarget(null)}
@@ -2658,7 +2756,7 @@ export function CustomerDetailContent({
         detail &&
         createPortal(
           <div
-            className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-[2px]"
             role="dialog"
             aria-modal="true"
             aria-labelledby="delete-customer-title"
@@ -2703,7 +2801,7 @@ export function CustomerDetailContent({
                   </p>
                 )}
 
-                <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <div className="flex flex-row justify-end gap-2">
                   <button
                     type="button"
                     onClick={() => setDeleteCustomerOpen(false)}
@@ -2755,7 +2853,7 @@ export function CustomerDetailContent({
                 closeVehicleModal();
               }}
             />
-            <div className="pointer-events-none relative flex h-full items-end justify-center p-4 sm:items-center">
+            <div className="pointer-events-none relative flex h-full items-center justify-center p-4">
               <div className="pointer-events-auto flex max-h-[min(90dvh,42rem)] w-full max-w-[28rem] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]">
               <div className="relative shrink-0 overflow-hidden border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white px-5 pb-5 pt-6">
                 <div
@@ -2848,7 +2946,7 @@ export function CustomerDetailContent({
                     <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
                       Specs
                     </p>
-                    <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="grid grid-cols-2 gap-3">
                       <Field
                         label="Year"
                         value={year}
@@ -2881,7 +2979,7 @@ export function CustomerDetailContent({
                   </div>
                 </div>
 
-                <div className="flex shrink-0 flex-col-reverse gap-2 border-t border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-5 py-4 sm:flex-row sm:justify-end">
+                <div className="flex shrink-0 flex-row justify-end gap-2 border-t border-[var(--line)] bg-[rgba(15,23,42,0.02)] px-5 py-4">
                   <button
                     type="button"
                     onClick={closeVehicleModal}

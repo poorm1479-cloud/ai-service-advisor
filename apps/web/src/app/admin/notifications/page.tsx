@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AdminShell, Panel, Stat } from "@/components/admin/AdminShell";
+import { AdminShell } from "@/components/admin/AdminShell";
 import {
   ADMIN_NOTIFICATION_EVENT_LABELS,
   AdminNotification,
@@ -61,7 +61,6 @@ export default function AdminNotificationsPage() {
 function NotificationsBody({ accessToken }: { accessToken: string }) {
   const [feed, setFeed] = useState<NotificationsFeed | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [live, setLive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [bulkDeleting, setBulkDeleting] = useState(false);
@@ -88,7 +87,6 @@ function NotificationsBody({ accessToken }: { accessToken: string }) {
       }
       return { ...next, notifications };
     });
-    setLive(true);
     setError(null);
   }, []);
 
@@ -108,7 +106,6 @@ function NotificationsBody({ accessToken }: { accessToken: string }) {
         );
       } catch (err) {
         if (!quiet) {
-          setLive(false);
           setError(err instanceof Error ? err.message : "Failed to load notifications");
         }
       } finally {
@@ -259,22 +256,12 @@ function NotificationsBody({ accessToken }: { accessToken: string }) {
   }
 
   return (
-    <div className="flex h-[calc(100dvh-7.25rem)] flex-col gap-4 overflow-hidden sm:h-[calc(100dvh-7.75rem)] md:h-[calc(100dvh-9.25rem)] md:gap-5">
-      <section className="grid shrink-0 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat
-          label="Live feed"
-          value={live ? "connected" : "connecting"}
-          tone={live ? "text-emerald-700" : "text-[var(--muted)]"}
-        />
-        <Stat label="Unread" value={String(counts?.unread ?? 0)} />
-        <Stat label="Stored" value={String(counts?.total ?? 0)} />
-        <Stat label="SMS escalations" value={String(feed?.sms?.escalations ?? 0)} />
-      </section>
-
-      <Panel
-        className="flex min-h-0 flex-1 flex-col"
-        title="Notification Center"
-        action={
+    <div className="flex h-[calc(100dvh-7.25rem)] flex-col overflow-hidden sm:h-[calc(100dvh-7.75rem)] md:h-[calc(100dvh-9.25rem)]">
+      <section className="flex min-h-0 flex-1 flex-col">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] pb-3">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+            Notification Center
+          </h2>
           <div className="flex flex-wrap items-center gap-2">
             <select
               value={eventType}
@@ -314,11 +301,10 @@ function NotificationsBody({ accessToken }: { accessToken: string }) {
               {bulkDeleting ? "Deleting…" : `Delete selected${selectedCount ? ` (${selectedCount})` : ""}`}
             </button>
           </div>
-        }
-      >
-        {error && <p className="shrink-0 px-5 py-2 text-sm text-red-700">{error}</p>}
+        </div>
+        {error && <p className="shrink-0 py-2 text-sm text-red-700">{error}</p>}
         {durableIds.length > 0 ? (
-          <div className="flex shrink-0 items-center gap-2 border-b border-[var(--line)] px-5 py-2.5">
+          <div className="flex shrink-0 items-center gap-2 border-b border-[var(--line)] py-2.5">
             <label className="flex items-center gap-2 text-sm text-[var(--muted)]">
               <input
                 type="checkbox"
@@ -342,7 +328,7 @@ function NotificationsBody({ accessToken }: { accessToken: string }) {
             return (
               <li
                 key={n.id}
-                className={`border-l-4 px-5 py-3 ${severityClass(n.severity)} ${
+                className={`border-l-4 px-4 py-3 ${severityClass(n.severity)} ${
                   unread ? "" : "opacity-75"
                 }`}
               >
@@ -415,13 +401,13 @@ function NotificationsBody({ accessToken }: { accessToken: string }) {
             );
           })}
           {(feed?.notifications.length ?? 0) === 0 && (
-            <li className="px-5 py-8 text-center text-sm text-[var(--muted)]">
+            <li className="py-8 text-center text-sm text-[var(--muted)]">
               No notifications yet. New signups, member joins, payments, quota warnings, and system
               errors appear here.
             </li>
           )}
         </ul>
-      </Panel>
+      </section>
     </div>
   );
 }

@@ -42,7 +42,7 @@ class AdvisorPlugin:
         return "advisor"
 
     def plugin_name(self) -> str:
-        return "AI Service Advisor"
+        return "RatchetHub"
 
     def plugin_version(self) -> str:
         return "1.0.0"

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useState } from "react";
+import { BrandLogo } from "@/components/BrandLogo";
 import { getApiUrl } from "@/lib/api";
 
 export default function ForgotPasswordPage() {
@@ -37,9 +38,10 @@ export default function ForgotPasswordPage() {
   return (
     <main className="relative flex min-h-screen items-center justify-center px-4 py-10">
       <div className="surface-panel w-full max-w-md p-6 sm:p-8">
-        <Link href="/" className="font-display text-lg font-semibold tracking-tight text-[var(--ink)]">
-          AI Service Advisor
-        </Link>
+        <BrandLogo
+          size={40}
+          wordmarkClassName="text-2xl font-semibold tracking-tight text-[var(--ink)]"
+        />
         <h1 className="font-display mt-5 text-2xl font-semibold tracking-tight">Forgot password</h1>
         <p className="mt-2 text-sm text-[var(--muted)]">
           We will email a reset link if the account exists.

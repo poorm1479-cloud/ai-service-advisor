@@ -54,7 +54,7 @@ class OrgMembership:
 @dataclass(slots=True)
 class WhiteLabelBrand:
     organization_id: UUID
-    product_name: str = "AI Service Advisor"
+    product_name: str = "RatchetHub"
     primary_color: str = "#0F766E"
     accent_color: str = "#134E4A"
     logo_url: str | None = None

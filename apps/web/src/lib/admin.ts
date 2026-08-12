@@ -364,6 +364,8 @@ export type AdminEditableSettings = {
   maintenance_mode: boolean;
   /** Auto-buy/assign a Twilio number when a shop account is created. */
   twilio_auto_provision_numbers: boolean;
+  /** When false, OpenAI chat/STT/TTS are skipped (local fallbacks still apply). */
+  openai_enabled: boolean;
 };
 
 export type AdminSettingsResponse = {
@@ -443,10 +445,22 @@ function streamAdminSse<T>(
   let closed = false;
   let controller: AbortController | null = null;
   const reconnectMs = 2000;
+  /** If the API restarts mid-stream, fetch may hang; abort when idle too long. */
+  const idleAbortMs = 15000;
 
   (async () => {
     while (!closed) {
       controller = new AbortController();
+      let lastActivity = Date.now();
+      const bump = () => {
+        lastActivity = Date.now();
+      };
+      const idleWatch = window.setInterval(() => {
+        if (closed) return;
+        if (Date.now() - lastActivity >= idleAbortMs) {
+          controller?.abort();
+        }
+      }, 2000);
       try {
         const res = await fetch(url, {
           headers: {
@@ -454,16 +468,19 @@ function streamAdminSse<T>(
             Authorization: `Bearer ${accessToken}`,
           },
           signal: controller.signal,
+          cache: "no-store",
         });
         if (!res.ok || !res.body) {
           throw new Error(await parseError(res));
         }
+        bump();
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
         while (!closed) {
           const { done, value } = await reader.read();
           if (done) break;
+          bump();
           buffer += decoder.decode(value, { stream: true });
           const chunks = buffer.split("\n\n");
           buffer = chunks.pop() ?? "";
@@ -483,10 +500,18 @@ function streamAdminSse<T>(
           }
         }
       } catch (err) {
-        if (closed || (err instanceof DOMException && err.name === "AbortError")) {
-          break;
+        const isAbort =
+          (err instanceof DOMException && err.name === "AbortError") ||
+          (err instanceof Error && err.name === "AbortError");
+        if (closed) break;
+        if (isAbort) {
+          // Idle watchdog aborted a hung stream after API restart — reconnect.
+          onError?.(new Error(`${errorLabel}: connection idle`));
+        } else {
+          onError?.(err instanceof Error ? err : new Error(errorLabel));
         }
-        onError?.(err instanceof Error ? err : new Error(errorLabel));
+      } finally {
+        window.clearInterval(idleWatch);
       }
       if (closed) break;
       await new Promise((r) => setTimeout(r, reconnectMs));

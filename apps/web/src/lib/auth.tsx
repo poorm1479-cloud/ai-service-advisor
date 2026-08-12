@@ -15,6 +15,7 @@ import {
   AuthSession,
   adminLogin as apiAdminLogin,
   clearSession,
+  fetchMe,
   loadSession,
   login as apiLogin,
   logout as apiLogout,
@@ -86,6 +87,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setSession(existing);
     setLoading(false);
     const epoch = authEpochRef.current;
+
+    // Pull capabilities/role from membership (via /auth/me) so Team permission
+    // edits apply without waiting for the next token refresh.
+    if (existing.accountType !== "platform_admin" && existing.accessToken) {
+      fetchMe(existing.accessToken)
+        .then((me) => {
+          if (authEpochRef.current !== epoch) return;
+          setSession((prev) => {
+            if (!prev || prev.accessToken !== existing.accessToken) return prev;
+            const next = {
+              ...prev,
+              role: me.role as AuthSession["role"],
+              capabilities: me.capabilities,
+              fullName: me.full_name,
+              phone: me.phone,
+              email: me.email,
+              shopName: me.shop_name,
+              shopSlug: me.shop_slug,
+            };
+            saveSession(next);
+            return next;
+          });
+        })
+        .catch(() => {
+          // Ignore — refresh below is the source of truth for auth validity.
+        });
+    }
+
     apiRefresh(existing.refreshToken)
       .then(async (next) => {
         if (authEpochRef.current !== epoch) {
@@ -163,9 +192,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     schedule();
 
+    const syncCapabilities = async () => {
+      if (authEpochRef.current !== epoch) return;
+      const current = loadSession();
+      if (!current?.accessToken || current.accountType === "platform_admin") return;
+      try {
+        const me = await fetchMe(current.accessToken);
+        if (authEpochRef.current !== epoch || cancelled) return;
+        setSession((prev) => {
+          if (!prev || prev.accessToken !== current.accessToken) return prev;
+          const sameCaps =
+            prev.capabilities.length === me.capabilities.length &&
+            prev.capabilities.every((c, i) => c === me.capabilities[i]);
+          if (sameCaps && prev.role === me.role) return prev;
+          const next = {
+            ...prev,
+            role: me.role as AuthSession["role"],
+            capabilities: me.capabilities,
+          };
+          saveSession(next);
+          return next;
+        });
+      } catch {
+        // Ignore — refresh handles hard auth failures.
+      }
+    };
+
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
       if (authEpochRef.current !== epoch) return;
+      void syncCapabilities();
       // Background timers are throttled; refresh on return if we are past halfway to next refresh.
       const delay = refreshDelayMs(loadSession()?.expiresIn ?? session.expiresIn);
       if (Date.now() - lastRefreshAt < delay * 0.5) {

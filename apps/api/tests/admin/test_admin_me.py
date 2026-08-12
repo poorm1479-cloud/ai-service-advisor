@@ -66,7 +66,7 @@ async def test_admin_me_requires_auth() -> None:
 
 
 @pytest.mark.asyncio
-async def test_admin_me_get_and_patch_name(admin_username: str) -> None:
+async def test_admin_me_get_and_name_immutable(admin_username: str) -> None:
     user_id = await _seed_platform_admin(admin_username, full_name="Original Admin")
     headers = _admin_headers(user_id, admin_username)
     transport = ASGITransport(app=app)
@@ -83,15 +83,14 @@ async def test_admin_me_get_and_patch_name(admin_username: str) -> None:
             headers=headers,
             json={"full_name": "Updated Admin"},
         )
-        assert patch_res.status_code == 200
-        assert patch_res.json()["full_name"] == "Updated Admin"
+        assert patch_res.status_code == 403
 
         again = await client.get("/v1/admin/me", headers=headers)
-        assert again.json()["full_name"] == "Updated Admin"
+        assert again.json()["full_name"] == "Original Admin"
 
 
 @pytest.mark.asyncio
-async def test_admin_me_rejects_empty_name(admin_username: str) -> None:
+async def test_admin_me_rejects_name_change(admin_username: str) -> None:
     user_id = await _seed_platform_admin(admin_username)
     headers = _admin_headers(user_id, admin_username)
     transport = ASGITransport(app=app)
@@ -99,9 +98,9 @@ async def test_admin_me_rejects_empty_name(admin_username: str) -> None:
         res = await client.patch(
             "/v1/admin/me",
             headers=headers,
-            json={"full_name": "   "},
+            json={"full_name": "Someone Else"},
         )
-    assert res.status_code == 400
+    assert res.status_code == 403
 
 
 @pytest.mark.asyncio

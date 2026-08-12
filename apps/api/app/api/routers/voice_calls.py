@@ -9,7 +9,8 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.api.deps import CurrentUser, get_current_user
+from app.api.deps import CurrentUser, require_capabilities
+from app.core.permissions.capabilities import StaffCapability
 from app.infrastructure.config import settings
 from app.voice.factory import VoiceRuntime
 from app.voice.models import InboundCallEvent, SpeechInput
@@ -17,6 +18,8 @@ from app.voice.runtime import get_voice_runtime
 from app.voice.store import InMemoryVoiceStore
 
 router = APIRouter(prefix="/v1/voice", tags=["voice"])
+
+_require_comms = require_capabilities(StaffCapability.CUSTOMER_COMMUNICATION)
 
 
 def _runtime() -> VoiceRuntime:
@@ -143,7 +146,7 @@ def _ensure_dev_simulate_allowed() -> None:
 
 @router.get("/live", response_model=list[CallOut])
 async def list_live_calls(
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(_require_comms),
     runtime: VoiceRuntime = Depends(_runtime),
 ) -> list[CallOut]:
     items = await runtime.store.list_live_calls(user.shop_id)
@@ -153,7 +156,7 @@ async def list_live_calls(
 @router.get("/calls", response_model=list[CallOut])
 async def list_calls(
     status_filter: str | None = None,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(_require_comms),
     runtime: VoiceRuntime = Depends(_runtime),
 ) -> list[CallOut]:
     items = await runtime.store.list_calls(user.shop_id, status=status_filter, limit=100)
@@ -163,7 +166,7 @@ async def list_calls(
 @router.get("/calls/{call_id}", response_model=CallDetailOut)
 async def get_call(
     call_id: UUID,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(_require_comms),
     runtime: VoiceRuntime = Depends(_runtime),
 ) -> CallDetailOut:
     call = await runtime.store.get_call(user.shop_id, call_id)
@@ -184,7 +187,7 @@ async def get_call(
 async def human_takeover(
     call_id: UUID,
     body: TakeoverRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(_require_comms),
     runtime: VoiceRuntime = Depends(_runtime),
 ) -> CallOut:
     try:
@@ -199,7 +202,7 @@ async def human_takeover(
 @router.post("/calls/{call_id}/complete", response_model=CallDetailOut)
 async def complete_call(
     call_id: UUID,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(_require_comms),
     runtime: VoiceRuntime = Depends(_runtime),
 ) -> CallDetailOut:
     try:
@@ -220,7 +223,7 @@ async def complete_call(
 @router.delete("/calls/{call_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_call(
     call_id: UUID,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(_require_comms),
     runtime: VoiceRuntime = Depends(_runtime),
 ) -> None:
     try:
@@ -231,7 +234,7 @@ async def delete_call(
 
 @router.get("/metrics")
 async def voice_metrics(
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(_require_comms),
     runtime: VoiceRuntime = Depends(_runtime),
 ) -> dict[str, Any]:
     _ = user
@@ -246,7 +249,7 @@ async def voice_metrics(
 @router.post("/chat/start", response_model=CallDetailOut)
 async def start_caller_chat(
     body: StartChatRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(_require_comms),
     runtime: VoiceRuntime = Depends(_runtime),
 ) -> CallDetailOut:
     """Open a continuous call-style chat as the customer (greeting only; stays live)."""
@@ -279,7 +282,7 @@ async def start_caller_chat(
 async def send_caller_chat_message(
     call_id: UUID,
     body: ChatMessageRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(_require_comms),
     runtime: VoiceRuntime = Depends(_runtime),
 ) -> CallDetailOut:
     """Send one customer utterance; call ends only on farewell / hang-up path."""
@@ -320,7 +323,7 @@ async def send_caller_chat_message(
 @router.post("/simulate", response_model=CallDetailOut)
 async def simulate_call(
     body: SimulateCallRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(_require_comms),
     runtime: VoiceRuntime = Depends(_runtime),
 ) -> CallDetailOut:
     """Batch multi-utterance simulator. Prefer /chat/start + /message for UI chat."""

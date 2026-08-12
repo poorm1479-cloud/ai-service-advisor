@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { AdminShell, Panel, Stat } from "@/components/admin/AdminShell";
+import { useCallback, useEffect, useState } from "react";
+import { AdminPageHeader, AdminShell, LiveBadge, Panel, Stat } from "@/components/admin/AdminShell";
 import { getAdminUsage, statusTone, streamAdminUsage, UsageResponse } from "@/lib/admin";
+
+const POLL_MS = 3000;
 
 export default function AdminTokensPage() {
   return (
@@ -18,43 +20,67 @@ function TokensBody({ accessToken }: { accessToken: string }) {
   const [busy, setBusy] = useState(true);
   const [live, setLive] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    setBusy(true);
+  const applyData = useCallback((next: UsageResponse) => {
+    setData((prev) => {
+      if (prev?.generated_at && next.generated_at) {
+        const prevTs = Date.parse(prev.generated_at);
+        const nextTs = Date.parse(next.generated_at);
+        if (Number.isFinite(prevTs) && Number.isFinite(nextTs) && nextTs < prevTs) {
+          return prev;
+        }
+      }
+      return next;
+    });
+    setLive(true);
     setError(null);
-    void getAdminUsage(accessToken)
-      .then((next) => {
-        if (!cancelled) {
-          setData(next);
-          setError(null);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
+  }, []);
+
+  const load = useCallback(
+    async (quiet = false) => {
+      if (!quiet) {
+        setBusy(true);
+        setError(null);
+      }
+      try {
+        applyData(await getAdminUsage(accessToken));
+      } catch (err) {
+        if (!quiet) {
+          setLive(false);
           setError(err instanceof Error ? err.message : "Failed to load usage");
+        } else {
+          setLive(false);
         }
-      })
-      .finally(() => {
-        if (!cancelled) setBusy(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [accessToken]);
+      } finally {
+        if (!quiet) setBusy(false);
+      }
+    },
+    [accessToken, applyData],
+  );
 
   useEffect(() => {
-    setLive(false);
+    void load(false);
+    const id = window.setInterval(() => void load(true), POLL_MS);
+    const onVis = () => {
+      if (document.visibilityState === "visible") void load(true);
+    };
+    const onRefresh = () => void load(true);
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onRefresh);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onRefresh);
+    };
+  }, [load]);
+
+  useEffect(() => {
     const stop = streamAdminUsage(
       accessToken,
-      (next) => {
-        setData(next);
-        setLive(true);
-        setError(null);
-      },
+      (next) => applyData(next),
       () => setLive(false),
     );
     return stop;
-  }, [accessToken]);
+  }, [accessToken, applyData]);
 
   if (error && !data) return <p className="text-sm text-red-700">{error}</p>;
   if (!data) return <p className="text-sm text-[var(--muted)]">{busy ? "Loading…" : "No data"}</p>;
@@ -64,22 +90,15 @@ function TokensBody({ accessToken }: { accessToken: string }) {
 
   return (
     <>
-      <div className="flex items-center justify-end">
-        <span
-          className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium ${
-            live
-              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-              : "border-[var(--line)] bg-[var(--background)] text-[var(--muted)]"
-          }`}
-        >
-          <span
-            className={`h-1.5 w-1.5 rounded-full ${live ? "bg-emerald-500" : "bg-[var(--muted)]"}`}
-          />
-          {live ? "Live" : "Connecting"}
-        </span>
-      </div>
+      <AdminPageHeader
+        title="Tokens"
+        description={`Usage totals for the current period · updated ${
+          data.generated_at ? new Date(data.generated_at).toLocaleString() : "—"
+        }`}
+        action={<LiveBadge live={live} />}
+      />
 
-      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <section className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Period" value={data.period} />
         <Stat label="AI calls (tokens)" value={String(data.totals.ai_calls)} />
         <Stat label="SMS usage (quota)" value={String(data.totals.sms)} />
@@ -87,9 +106,17 @@ function TokensBody({ accessToken }: { accessToken: string }) {
       </section>
 
       <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat label="SMS inbound (runtime)" value={String(sms.inbound_received ?? 0)} />
-        <Stat label="SMS outbound (runtime)" value={String(sms.outbound_sent ?? 0)} />
-        <Stat label="Voice started" value={String(voice.calls_started ?? 0)} />
+        <Stat
+          label="SMS inbound"
+          value={String(sms.inbound_received ?? 0)}
+          hint="From database"
+        />
+        <Stat label="SMS outbound" value={String(sms.outbound_sent ?? 0)} />
+        <Stat
+          label="Voice started"
+          value={String(voice.calls_started ?? 0)}
+          hint="From database"
+        />
         <Stat label="Voice completed" value={String(voice.calls_completed ?? 0)} />
       </section>
 

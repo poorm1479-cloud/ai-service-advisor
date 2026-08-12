@@ -107,11 +107,9 @@ async def test_fallback_raises_when_both_fail() -> None:
         await fb.complete(messages=[{"role": "user", "content": "hi"}])
 
 
-def test_build_chat_provider_openai_is_fallback_chain() -> None:
+def test_build_chat_provider_openai_only() -> None:
     chat = build_chat_provider("openai")
-    assert isinstance(chat, FallbackChatProvider)
-    assert isinstance(chat._primary, OpenAIChatProvider)
-    assert isinstance(chat._secondary, OllamaChatProvider)
+    assert isinstance(chat, OpenAIChatProvider)
 
 
 def test_build_chat_provider_ollama_only() -> None:
@@ -180,32 +178,22 @@ async def test_ollama_uses_native_chat_with_think_disabled(
     assert captured["json"]["model"] == "qwen3:14b"
 
 
-def test_factory_openai_wires_fallback_extractor(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_factory_openai_wires_openai_only_extractor(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config.settings, "ai_provider", "openai")
     monkeypatch.setattr(config.settings, "openai_api_key", "sk-test")
     services = build_ai_services()
     assert isinstance(services.extractor, OpenAIRepairExtraction)
-    assert isinstance(services.extractor._chat, FallbackChatProvider)
+    assert isinstance(services.extractor._chat, OpenAIChatProvider)
 
 
-def test_factory_openai_wires_stt_tts_fallbacks(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_factory_openai_wires_openai_only_stt_tts(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.infrastructure.ai.openai_provider import OpenAISpeechToText, OpenAITextToSpeech
-    from app.infrastructure.ai.speech_providers import (
-        FallbackSpeechToText,
-        FallbackTextToSpeech,
-        LocalWhisperSpeechToText,
-        PiperTextToSpeech,
-    )
 
     monkeypatch.setattr(config.settings, "ai_provider", "openai")
     monkeypatch.setattr(config.settings, "openai_api_key", "sk-test")
     services = build_ai_services()
-    assert isinstance(services.stt, FallbackSpeechToText)
-    assert isinstance(services.stt._primary, OpenAISpeechToText)
-    assert isinstance(services.stt._secondary, LocalWhisperSpeechToText)
-    assert isinstance(services.tts, FallbackTextToSpeech)
-    assert isinstance(services.tts._primary, OpenAITextToSpeech)
-    assert isinstance(services.tts._secondary, PiperTextToSpeech)
+    assert isinstance(services.stt, OpenAISpeechToText)
+    assert isinstance(services.tts, OpenAITextToSpeech)
 
 
 def test_factory_ollama_wires_ollama_extractor(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -279,6 +267,20 @@ async def test_openai_provider_unavailable_without_key() -> None:
     assert provider.available() is False
     with pytest.raises(AIProviderUnavailable):
         await provider.complete(messages=[{"role": "user", "content": "x"}])
+
+
+@pytest.mark.asyncio
+async def test_openai_disabled_by_platform_flag() -> None:
+    from app.infrastructure.ai.openai_runtime import set_openai_enabled
+
+    set_openai_enabled(False)
+    try:
+        provider = OpenAIChatProvider(api_key="sk-test")
+        assert provider.available() is False
+        with pytest.raises(AIProviderUnavailable, match="disabled"):
+            await provider.complete(messages=[{"role": "user", "content": "x"}])
+    finally:
+        set_openai_enabled(True)
 
 
 @pytest.mark.asyncio

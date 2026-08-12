@@ -21,8 +21,13 @@ const mono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AI Service Advisor",
-  description: "AI Service Advisor for Independent Auto Repair Shops",
+  title: "RatchetHub",
+  description: "RatchetHub for Independent Auto Repair Shops",
+  applicationName: "RatchetHub",
+  icons: {
+    icon: [{ url: "/brand/ratchethub-icon.png", type: "image/png" }],
+    apple: [{ url: "/brand/ratchethub-icon.png", type: "image/png" }],
+  },
 };
 
 export const viewport: Viewport = {

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import DateTime, String, Text, select
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.infrastructure.ai.openai_runtime import set_openai_enabled
 from app.infrastructure.config import settings
 from app.infrastructure.database import Base, SessionLocal
 
@@ -30,6 +31,8 @@ DEFAULTS: dict[str, Any] = {
     "maintenance_mode": False,
     # Placeholder; live env is used when no DB override (see _load_editable).
     "twilio_auto_provision_numbers": True,
+    # Placeholder; live env is used when no DB override (see _load_editable).
+    "openai_enabled": True,
 }
 
 EDITABLE_KEYS = frozenset(DEFAULTS.keys())
@@ -41,6 +44,7 @@ class EditableSettingsPatch(BaseModel):
     toast_enabled: bool | None = None
     maintenance_mode: bool | None = None
     twilio_auto_provision_numbers: bool | None = None
+    openai_enabled: bool | None = None
 
     @field_validator("dashboard_poll_seconds")
     @classmethod
@@ -106,6 +110,8 @@ class PlatformSettingsService:
                     row.updated_at = now
                     row.updated_by = updated_by
             await session.commit()
+        if "openai_enabled" in changes:
+            set_openai_enabled(bool(changes["openai_enabled"]))
         return await self.get()
 
     async def dashboard_poll_seconds(self) -> int:
@@ -142,6 +148,17 @@ class PlatformSettingsService:
             )
         )
 
+    async def openai_enabled(self) -> bool:
+        """Whether OpenAI chat/STT/TTS may be called (local fallbacks still apply)."""
+        editable, _ = await self._load_editable()
+        return bool(editable.get("openai_enabled", settings.openai_enabled))
+
+    async def sync_openai_runtime(self) -> bool:
+        """Load openai_enabled into the process-local kill switch."""
+        enabled = await self.openai_enabled()
+        set_openai_enabled(enabled)
+        return enabled
+
     async def _load_editable(self) -> tuple[dict[str, Any], datetime | None]:
         merged = dict(DEFAULTS)
         latest: datetime | None = None
@@ -161,4 +178,7 @@ class PlatformSettingsService:
         # Env-backed knobs: use live Settings until an admin writes a DB override.
         if "twilio_auto_provision_numbers" not in seen:
             merged["twilio_auto_provision_numbers"] = bool(settings.twilio_auto_provision_numbers)
+        if "openai_enabled" not in seen:
+            merged["openai_enabled"] = bool(settings.openai_enabled)
+        set_openai_enabled(bool(merged.get("openai_enabled", settings.openai_enabled)))
         return merged, latest

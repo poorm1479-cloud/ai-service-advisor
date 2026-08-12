@@ -10,7 +10,8 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from app.api.deps import CurrentUser, get_current_user
+from app.api.deps import CurrentUser, require_capabilities
+from app.core.permissions.capabilities import StaffCapability
 from app.domain.exceptions import ValidationError
 from app.infrastructure.config import settings
 from app.sms.factory import SmsRuntime
@@ -19,6 +20,8 @@ from app.sms.runtime import get_sms_runtime
 from app.sms.store import InMemorySmsStore
 
 router = APIRouter(prefix="/v1/sms", tags=["sms"])
+
+_require_comms = require_capabilities(StaffCapability.CUSTOMER_COMMUNICATION)
 
 
 def _runtime() -> SmsRuntime:
@@ -109,7 +112,7 @@ def _msg_out(m) -> MessageOut:
 async def list_conversations(
     status_filter: str | None = None,
     limit: int = Query(50, ge=1, le=100),
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(_require_comms),
     runtime: SmsRuntime = Depends(_runtime),
 ) -> list[ConversationOut]:
     items = await runtime.store.list_conversations(
@@ -122,7 +125,7 @@ async def list_conversations(
 async def get_conversation(
     conversation_id: UUID,
     include_timeline: bool = Query(False),
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(_require_comms),
     runtime: SmsRuntime = Depends(_runtime),
 ) -> ConversationDetailOut:
     conv = await runtime.store.get_conversation(user.shop_id, conversation_id)
@@ -163,7 +166,7 @@ async def get_conversation(
 async def manual_reply(
     conversation_id: UUID,
     body: ManualReplyRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(_require_comms),
     runtime: SmsRuntime = Depends(_runtime),
 ) -> MessageOut:
     try:
@@ -183,7 +186,7 @@ async def manual_reply(
 async def human_takeover(
     conversation_id: UUID,
     body: TakeoverRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(_require_comms),
     runtime: SmsRuntime = Depends(_runtime),
 ) -> ConversationOut:
     try:
@@ -200,7 +203,7 @@ async def human_takeover(
 @router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_conversation(
     conversation_id: UUID,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(_require_comms),
     runtime: SmsRuntime = Depends(_runtime),
 ) -> None:
     try:
@@ -214,7 +217,7 @@ async def delete_conversation(
 
 @router.get("/metrics")
 async def sms_metrics(
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(_require_comms),
     runtime: SmsRuntime = Depends(_runtime),
 ) -> dict[str, Any]:
     _ = user
@@ -228,7 +231,7 @@ async def sms_metrics(
 @router.post("/simulate", response_model=ConversationDetailOut)
 async def simulate_inbound(
     body: SimulateInboundRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(_require_comms),
     runtime: SmsRuntime = Depends(_runtime),
 ) -> ConversationDetailOut:
     """Authenticated simulate endpoint for local/dev without Twilio."""

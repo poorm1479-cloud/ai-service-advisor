@@ -560,93 +560,99 @@ export default function ShopSetupWizardPage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-3xl space-y-5 pb-8">
-      <header className="hero-motion">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div className="flex min-w-0 items-start gap-3">
-            <span className="mt-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-white shadow-[0_10px_24px_-10px_rgba(240,90,36,0.85)]">
-              <IconShop className="h-[1.15rem] w-[1.15rem]" />
-            </span>
-            <div className="min-w-0">
-              <h1 className="page-title">Shop setup</h1>
-              <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-[var(--muted)]">
-                Configure identity, hours, and services so AI phone scheduling can book work.
-              </p>
+    <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col gap-4 overflow-hidden md:h-full">
+      <div className="shrink-0 space-y-4">
+        <header className="hero-motion">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div className="flex min-w-0 items-start gap-3">
+              <span className="mt-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-white shadow-[0_10px_24px_-10px_rgba(240,90,36,0.85)]">
+                <IconShop className="h-[1.15rem] w-[1.15rem]" />
+              </span>
+              <div className="min-w-0">
+                <h1 className="page-title">Shop setup</h1>
+              </div>
+            </div>
+            <div className="rounded-full border border-[var(--line)] bg-white/80 px-3 py-1.5 text-[11px] font-semibold tabular-nums text-[var(--muted)] shadow-[var(--shadow-soft)] backdrop-blur-sm">
+              Step {currentStepIdx + 1} of {DISPLAY_STEPS.length}
             </div>
           </div>
-          <div className="rounded-full border border-[var(--line)] bg-white/80 px-3 py-1.5 text-[11px] font-semibold tabular-nums text-[var(--muted)] shadow-[var(--shadow-soft)] backdrop-blur-sm">
-            Step {currentStepIdx + 1} of {DISPLAY_STEPS.length}
+
+          <div className="mt-5 h-1.5 overflow-hidden rounded-full bg-black/[0.06]">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-[var(--accent)] to-[#ff8541] transition-[width] duration-500 ease-out"
+              style={{ width: `${progressPct}%` }}
+              role="progressbar"
+              aria-valuenow={currentStepIdx + 1}
+              aria-valuemin={1}
+              aria-valuemax={DISPLAY_STEPS.length}
+              aria-label="Setup progress"
+            />
           </div>
-        </div>
+        </header>
 
-        <div className="mt-5 h-1.5 overflow-hidden rounded-full bg-black/[0.06]">
-          <div
-            className="h-full rounded-full bg-gradient-to-r from-[var(--accent)] to-[#ff8541] transition-[width] duration-500 ease-out"
-            style={{ width: `${progressPct}%` }}
-            role="progressbar"
-            aria-valuenow={currentStepIdx + 1}
-            aria-valuemin={1}
-            aria-valuemax={DISPLAY_STEPS.length}
-            aria-label="Setup progress"
-          />
-        </div>
-      </header>
-
-      <nav className="hero-motion-delay" aria-label="Setup steps">
-        <ol className="grid gap-2 sm:grid-cols-3">
-          {DISPLAY_STEPS.map((item, idx) => {
-            const done = idx < currentStepIdx;
-            const active = item.id === step;
-            const StepIcon = item.Icon;
-            return (
-              <li key={item.id}>
-                <button
-                  type="button"
-                  disabled={idx > currentStepIdx}
-                  onClick={() => {
-                    if (idx <= currentStepIdx) setStep(item.id);
-                  }}
-                  className={`group flex w-full items-center gap-3 rounded-2xl border px-3.5 py-3 text-left transition-all ${
-                    active
-                      ? "border-[var(--accent)]/35 bg-gradient-to-br from-white via-white to-[var(--accent-soft)]/60 shadow-[0_12px_32px_-24px_rgba(240,90,36,0.55)]"
-                      : done
-                        ? "border-[var(--line)] bg-white/90 hover:border-[var(--accent)]/25"
-                        : "border-transparent bg-black/[0.03] text-[var(--muted)] opacity-70"
-                  } disabled:cursor-default`}
-                >
-                  <span
-                    className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors ${
+        <nav className="hero-motion-delay" aria-label="Setup steps">
+          <ol className="grid grid-cols-3 gap-1.5 sm:gap-2">
+            {DISPLAY_STEPS.map((item, idx) => {
+              const done = idx < currentStepIdx;
+              const active = item.id === step;
+              const StepIcon = item.Icon;
+              return (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    disabled={idx > currentStepIdx}
+                    onClick={() => {
+                      if (idx <= currentStepIdx) setStep(item.id);
+                    }}
+                    className={`group flex w-full flex-col items-center gap-1.5 rounded-2xl border px-1.5 py-2.5 text-center transition-all sm:flex-row sm:items-center sm:gap-3 sm:px-3.5 sm:py-3 sm:text-left ${
                       active
-                        ? "bg-[var(--accent)] text-white shadow-sm shadow-[var(--accent-glow)]"
+                        ? "border-[var(--accent)]/35 bg-gradient-to-br from-white via-white to-[var(--accent-soft)]/60 shadow-[0_12px_32px_-24px_rgba(240,90,36,0.55)]"
                         : done
-                          ? "bg-[var(--accent-soft)] text-[var(--accent)]"
-                          : "bg-white text-[var(--muted)] ring-1 ring-[var(--line)]"
-                    }`}
+                          ? "border-[var(--line)] bg-white/90 hover:border-[var(--accent)]/25"
+                          : "border-transparent bg-black/[0.03] text-[var(--muted)] opacity-70"
+                    } disabled:cursor-default`}
                   >
-                    {done ? <IconCheck /> : <StepIcon className="h-3.5 w-3.5" />}
-                  </span>
-                  <span className="min-w-0">
                     <span
-                      className={`block truncate text-sm font-semibold tracking-tight ${
-                        active ? "text-[var(--ink)]" : done ? "text-[var(--ink)]" : "text-[var(--muted)]"
+                      className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors sm:h-8 sm:w-8 ${
+                        active
+                          ? "bg-[var(--accent)] text-white shadow-sm shadow-[var(--accent-glow)]"
+                          : done
+                            ? "bg-[var(--accent-soft)] text-[var(--accent)]"
+                            : "bg-white text-[var(--muted)] ring-1 ring-[var(--line)]"
                       }`}
                     >
-                      {item.label}
+                      {done ? <IconCheck /> : <StepIcon className="h-3.5 w-3.5" />}
                     </span>
-                    <span className="mt-0.5 block truncate text-[11px] text-[var(--muted)]">
-                      {item.hint}
+                    <span className="min-w-0">
+                      <span
+                        className={`block truncate text-[11px] font-semibold tracking-tight sm:text-sm ${
+                          active ? "text-[var(--ink)]" : done ? "text-[var(--ink)]" : "text-[var(--muted)]"
+                        }`}
+                      >
+                        {item.label}
+                      </span>
+                      <span className="mt-0.5 hidden truncate text-[11px] text-[var(--muted)] sm:block">
+                        {item.hint}
+                      </span>
                     </span>
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ol>
-      </nav>
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
+        </nav>
+      </div>
 
+      <div
+        className={`min-h-0 flex-1 pb-4 ${
+          step === "hours" || step === "services"
+            ? "flex flex-col gap-4 overflow-hidden"
+            : "asa-scroll space-y-5 overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]"
+        }`}
+      >
       {error && (
         <p
-          className="hero-motion-delay rounded-xl border border-red-200/80 bg-red-50 px-4 py-3 text-sm text-red-700"
+          className="hero-motion-delay shrink-0 rounded-xl border border-red-200/80 bg-red-50 px-4 py-3 text-sm text-red-700"
           role="alert"
         >
           {error}
@@ -676,44 +682,49 @@ export default function ShopSetupWizardPage() {
           </div>
 
           <div className="space-y-5 px-5 py-5 sm:px-6">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Shop name" icon={<IconBuilding />} required>
-                <input
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  minLength={2}
-                  required
-                  placeholder="e.g. Precision Auto Care"
-                  className={INPUT_CLASS}
-                />
-              </Field>
-              <Field label="Timezone" icon={<IconGlobe />}>
-                <input
-                  value={timezone}
-                  readOnly
-                  tabIndex={-1}
-                  aria-readonly="true"
-                  className={`${INPUT_CLASS} cursor-default bg-black/[0.03] text-[var(--muted)] focus:border-[var(--line)] focus:shadow-none`}
-                />
-              </Field>
-              <Field label="Phone" icon={<IconPhone />}>
-                <input
-                  type="tel"
-                  value={phone}
-                  onChange={(e) => setPhone(formatPhoneInput(e.target.value))}
-                  placeholder={PHONE_PLACEHOLDER}
-                  className={INPUT_CLASS}
-                />
-              </Field>
-              <Field label="Email" icon={<IconMail />}>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="shop@example.com"
-                  className={INPUT_CLASS}
-                />
-              </Field>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3 sm:gap-4">
+                <Field label="Shop name" icon={<IconBuilding />} required>
+                  <input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    minLength={2}
+                    required
+                    placeholder="e.g. Precision Auto Care"
+                    className={INPUT_CLASS}
+                  />
+                </Field>
+                <Field label="Timezone" icon={<IconGlobe />}>
+                  <input
+                    value={timezone}
+                    readOnly
+                    tabIndex={-1}
+                    aria-readonly="true"
+                    title={timezone}
+                    className={`${INPUT_CLASS} cursor-default truncate bg-black/[0.03] text-[var(--muted)] focus:border-[var(--line)] focus:shadow-none`}
+                  />
+                </Field>
+              </div>
+              <div className="grid grid-cols-2 gap-3 sm:gap-4">
+                <Field label="Phone" icon={<IconPhone />}>
+                  <input
+                    type="tel"
+                    value={phone}
+                    onChange={(e) => setPhone(formatPhoneInput(e.target.value))}
+                    placeholder={PHONE_PLACEHOLDER}
+                    className={INPUT_CLASS}
+                  />
+                </Field>
+                <Field label="Email" icon={<IconMail />}>
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="shop@example.com"
+                    className={INPUT_CLASS}
+                  />
+                </Field>
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-4">
@@ -735,7 +746,7 @@ export default function ShopSetupWizardPage() {
       )}
 
       {step === "hours" && (
-        <section className="hero-motion-late surface-panel flex max-h-[min(36rem,calc(100dvh-14rem))] flex-col overflow-hidden rounded-2xl">
+        <section className="hero-motion-late surface-panel flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl">
           <div className="relative shrink-0 border-b border-[var(--line)] bg-gradient-to-br from-white via-white to-[var(--accent-soft)]/40 px-5 py-4 sm:px-6">
             <div
               className="pointer-events-none absolute -right-6 -top-10 h-32 w-32 rounded-full bg-[var(--accent-glow)] blur-2xl"
@@ -756,7 +767,7 @@ export default function ShopSetupWizardPage() {
             </div>
           </div>
 
-          <div className="flex min-h-0 flex-1 flex-col gap-5 px-5 py-5 sm:px-6">
+          <div className="flex min-h-0 flex-1 flex-col gap-4 px-5 py-5 sm:px-6">
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-[var(--shadow-soft)]">
               <div className="hidden shrink-0 items-center gap-3 border-b border-[var(--line)] bg-[var(--background)]/60 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)] sm:grid sm:grid-cols-[8.5rem_1fr_auto]">
                 <span>Day</span>
@@ -766,26 +777,63 @@ export default function ShopSetupWizardPage() {
               <div className="asa-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain">
                 {hours.map((h, idx) => {
                   const open = !h.closed;
+                  const dayName = WEEKDAY_NAMES[h.weekday];
                   return (
                     <div
                       key={h.weekday}
-                      className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2.5 px-4 py-3.5 transition-colors sm:grid-cols-[8.5rem_minmax(0,1fr)_auto] ${
+                      className={`grid grid-cols-[3.25rem_minmax(0,1fr)_auto] items-center gap-x-2 px-3 py-2.5 transition-colors sm:grid-cols-[8.5rem_minmax(0,1fr)_auto] sm:gap-x-3 sm:px-4 sm:py-3.5 ${
                         idx > 0 ? "border-t border-[var(--line)]" : ""
                       } ${h.closed ? "bg-[var(--background)]/50" : "bg-white/40"}`}
                     >
                       <div className="min-w-0">
-                        <p className="text-sm font-semibold tracking-tight text-[var(--ink)]">
-                          {WEEKDAY_NAMES[h.weekday]}
+                        <p className="truncate text-sm font-semibold tracking-tight text-[var(--ink)]">
+                          <span className="sm:hidden">{dayName.slice(0, 3)}</span>
+                          <span className="hidden sm:inline">{dayName}</span>
                         </p>
+                      </div>
+
+                      <div className="min-w-0">
+                        {h.closed ? (
+                          <span className="inline-flex items-center rounded-full bg-black/[0.04] px-2 py-1 text-[11px] font-medium text-[var(--muted)] ring-1 ring-inset ring-black/5 sm:px-2.5 sm:text-xs">
+                            Closed
+                          </span>
+                        ) : (
+                          <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-1 sm:gap-1.5">
+                            <input
+                              type="time"
+                              value={h.open_time}
+                              aria-label={`${dayName} open`}
+                              onChange={(e) =>
+                                updateHour(h.weekday, { open_time: e.target.value })
+                              }
+                              className="min-w-0 w-full rounded-md border border-[var(--line)] bg-white px-1 py-1.5 text-xs tabular-nums outline-none ring-[var(--accent)] focus:ring-2 sm:px-2.5 sm:text-sm"
+                            />
+                            <span
+                              className="shrink-0 text-xs font-medium text-[var(--muted)]"
+                              aria-hidden
+                            >
+                              –
+                            </span>
+                            <input
+                              type="time"
+                              value={h.close_time}
+                              aria-label={`${dayName} close`}
+                              onChange={(e) =>
+                                updateHour(h.weekday, { close_time: e.target.value })
+                              }
+                              className="min-w-0 w-full rounded-md border border-[var(--line)] bg-white px-1 py-1.5 text-xs tabular-nums outline-none ring-[var(--accent)] focus:ring-2 sm:px-2.5 sm:text-sm"
+                            />
+                          </div>
+                        )}
                       </div>
 
                       <button
                         type="button"
                         role="switch"
                         aria-checked={open}
-                        aria-label={`${WEEKDAY_NAMES[h.weekday]} ${open ? "open" : "closed"}`}
+                        aria-label={`${dayName} ${open ? "open" : "closed"}`}
                         onClick={() => updateHour(h.weekday, { closed: open })}
-                        className="col-start-2 row-start-1 inline-flex shrink-0 items-center gap-2 justify-self-end rounded-full px-1 py-1 transition hover:opacity-90 sm:col-start-3"
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-full px-0.5 py-1 transition hover:opacity-90 sm:gap-2 sm:px-1"
                       >
                         <span
                           className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
@@ -801,55 +849,20 @@ export default function ShopSetupWizardPage() {
                           />
                         </span>
                         <span
-                          className={`min-w-[2.75rem] text-left text-xs font-semibold ${
+                          className={`hidden min-w-[2.75rem] text-left text-xs font-semibold sm:inline ${
                             open ? "text-[var(--ink)]" : "text-[var(--muted)]"
                           }`}
                         >
                           {open ? "Open" : "Closed"}
                         </span>
                       </button>
-
-                      <div className="col-span-2 min-w-0 sm:col-span-1 sm:col-start-2 sm:row-start-1">
-                        {h.closed ? (
-                          <span className="inline-flex items-center rounded-full bg-black/[0.04] px-2.5 py-1 text-xs font-medium text-[var(--muted)] ring-1 ring-inset ring-black/5">
-                            Closed all day
-                          </span>
-                        ) : (
-                          <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-1.5">
-                            <input
-                              type="time"
-                              value={h.open_time}
-                              aria-label={`${WEEKDAY_NAMES[h.weekday]} open`}
-                              onChange={(e) =>
-                                updateHour(h.weekday, { open_time: e.target.value })
-                              }
-                              className="min-w-0 w-full rounded-md border border-[var(--line)] bg-white px-1.5 py-1.5 text-sm tabular-nums outline-none ring-[var(--accent)] focus:ring-2 sm:px-2.5"
-                            />
-                            <span
-                              className="shrink-0 text-xs font-medium text-[var(--muted)]"
-                              aria-hidden
-                            >
-                              –
-                            </span>
-                            <input
-                              type="time"
-                              value={h.close_time}
-                              aria-label={`${WEEKDAY_NAMES[h.weekday]} close`}
-                              onChange={(e) =>
-                                updateHour(h.weekday, { close_time: e.target.value })
-                              }
-                              className="min-w-0 w-full rounded-md border border-[var(--line)] bg-white px-1.5 py-1.5 text-sm tabular-nums outline-none ring-[var(--accent)] focus:ring-2 sm:px-2.5"
-                            />
-                          </div>
-                        )}
-                      </div>
                     </div>
                   );
                 })}
               </div>
             </div>
 
-            <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-4">
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-[var(--line)] pt-4">
               <button
                 type="button"
                 onClick={() => setStep("shop")}
@@ -875,30 +888,30 @@ export default function ShopSetupWizardPage() {
       {step === "services" && (
         <form
           onSubmit={onFinish}
-          className="hero-motion-late surface-panel flex max-h-[min(36rem,calc(100dvh-14rem))] flex-col overflow-hidden rounded-2xl"
+          className="hero-motion-late surface-panel flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl"
         >
           <div className="relative shrink-0 border-b border-[var(--line)] bg-gradient-to-br from-white via-white to-[var(--accent-soft)]/40 px-5 py-4 sm:px-6">
             <div
               className="pointer-events-none absolute -right-6 -top-10 h-32 w-32 rounded-full bg-[var(--accent-glow)] blur-2xl"
               aria-hidden="true"
             />
-            <div className="relative flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-start gap-3">
-                <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--accent-soft)] text-[var(--accent)]">
-                  <IconWrench />
-                </span>
-                <div>
-                  <h2 className="font-display text-base font-semibold tracking-tight text-[var(--ink)]">
+            <div className="relative flex items-start gap-3">
+              <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--accent-soft)] text-[var(--accent)]">
+                <IconWrench />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="min-w-0 font-display text-base font-semibold tracking-tight text-[var(--ink)]">
                     Bookable services
                   </h2>
-                  <p className="mt-0.5 text-xs leading-relaxed text-[var(--muted)]">
-                    At least one active service is required for phone booking.
-                  </p>
+                  <span className="shrink-0 rounded-full bg-white/90 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)] ring-1 ring-[var(--line)]">
+                    {activeServices} active
+                  </span>
                 </div>
+                <p className="mt-0.5 text-xs leading-relaxed text-[var(--muted)]">
+                  At least one active service is required for phone booking.
+                </p>
               </div>
-              <span className="rounded-full bg-white/90 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)] ring-1 ring-[var(--line)]">
-                {activeServices} active
-              </span>
             </div>
           </div>
 
@@ -947,7 +960,7 @@ export default function ShopSetupWizardPage() {
                     </div>
                   </div>
 
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
                     <Field label="Name" icon={<IconWrench className="h-3.5 w-3.5" />}>
                       <input
                         value={svc.name}
@@ -1030,7 +1043,7 @@ export default function ShopSetupWizardPage() {
               Add service
             </button>
 
-            <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-4">
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-[var(--line)] pt-4">
               <button
                 type="button"
                 onClick={() => setStep("hours")}
@@ -1051,6 +1064,7 @@ export default function ShopSetupWizardPage() {
           </div>
         </form>
       )}
+      </div>
     </div>
   );
 }
@@ -1067,7 +1081,7 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <label className="block space-y-1.5">
+    <label className="block min-w-0 space-y-1.5">
       <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
         {icon ? <span className="text-[var(--accent)]">{icon}</span> : null}
         {label}

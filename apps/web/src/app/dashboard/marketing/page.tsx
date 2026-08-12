@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAuth } from "@/lib/auth";
 import {
@@ -285,10 +285,24 @@ export default function MarketingPage() {
   const [portalReady, setPortalReady] = useState(false);
   const [copied, setCopied] = useState(false);
   const [audienceExpanded, setAudienceExpanded] = useState(false);
+  const audienceListRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setPortalReady(true);
   }, []);
+
+  useEffect(() => {
+    if (!audienceExpanded) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const root = audienceListRef.current;
+      if (!root) return;
+      if (e.target instanceof Node && !root.contains(e.target)) {
+        setAudienceExpanded(false);
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [audienceExpanded]);
 
   const closeFollowupDialog = useCallback(() => {
     if (busy || previewBusy) return;
@@ -481,16 +495,16 @@ export default function MarketingPage() {
       )}
 
       <div className="mx-auto flex min-h-0 w-full max-w-2xl flex-1 flex-col gap-6 overflow-hidden">
-        <nav aria-label="Follow-up steps" className="flex shrink-0 justify-center">
-          <ol className="flex items-center justify-center">
+        <nav aria-label="Follow-up steps" className="w-full shrink-0">
+          <ol className="grid w-full grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto_minmax(0,1fr)] items-start">
             {STEPS.map((label, i) => {
               const done = i < flowStep;
               const current = i === flowStep;
               return (
-                <li key={label} className="flex items-center">
-                  <div className="flex w-[7.5rem] flex-col items-center gap-1.5 text-center sm:w-[8.5rem]">
+                <li key={label} className="contents">
+                  <div className="flex min-w-0 flex-col items-center gap-1.5 px-0.5 text-center">
                     <span
-                      className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-semibold transition-colors ${
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold transition-colors ${
                         done || current
                           ? "bg-[var(--accent)] text-white shadow-md shadow-[var(--accent-glow)]"
                           : "bg-white text-[var(--muted)] ring-1 ring-[var(--line)]"
@@ -499,7 +513,7 @@ export default function MarketingPage() {
                       {done ? "✓" : i + 1}
                     </span>
                     <span
-                      className={`max-w-full truncate text-[10px] font-medium uppercase tracking-[0.08em] sm:text-[11px] ${
+                      className={`w-full break-words text-balance text-[10px] font-medium uppercase leading-snug tracking-[0.04em] sm:text-[11px] sm:tracking-[0.06em] ${
                         done || current
                           ? "text-[var(--foreground)]"
                           : "text-[var(--muted)]"
@@ -510,7 +524,7 @@ export default function MarketingPage() {
                   </div>
                   {i < STEPS.length - 1 && (
                     <div
-                      className={`mb-5 h-px w-6 shrink-0 sm:w-10 ${
+                      className={`mt-4 h-px w-2.5 shrink-0 sm:w-8 ${
                         i < flowStep
                           ? "bg-[var(--accent)]"
                           : "bg-[var(--line)]"
@@ -531,7 +545,7 @@ export default function MarketingPage() {
             </p>
           </div>
 
-          <div className="asa-scroll min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain pb-6">
+          <div className="asa-scroll min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain pb-6 [scrollbar-gutter:stable]">
             {loadingList &&
               Array.from({ length: 3 }).map((_, i) => (
                 <div
@@ -700,7 +714,7 @@ export default function MarketingPage() {
                       No customers in this follow-up
                     </div>
                   ) : (
-                    <div className="space-y-2">
+                    <div ref={audienceListRef} className="space-y-2">
                       {audience.length > 1 ? (
                         <button
                           type="button"

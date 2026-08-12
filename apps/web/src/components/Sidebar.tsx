@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { ROLE_LABELS } from "@/lib/api";
+import { ROLE_LABELS, type StaffCapability } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 type NavIcon = (props: { className?: string }) => ReactNode;
@@ -13,6 +13,8 @@ type NavItem = {
   label: string;
   Icon: NavIcon;
   ownerOnly?: boolean;
+  /** Show when owner, or when session has this capability. */
+  capability?: StaffCapability;
 };
 
 const NAV: NavItem[] = [
@@ -20,12 +22,12 @@ const NAV: NavItem[] = [
   { href: "/dashboard/customer", label: "Customer", Icon: IconUsers },
   { href: "/dashboard/appointments", label: "Schedule", Icon: IconCalendar },
   { href: "/dashboard/walk-ins", label: "Walk-ins", Icon: IconDoorOpen },
-  { href: "/dashboard/conversations", label: "Conversations", Icon: IconPhone },
+  { href: "/dashboard/calls", label: "Calls", Icon: IconPhone, capability: "customer_communication" },
   { href: "/dashboard/marketing", label: "Marketing", Icon: IconMarketing },
   { href: "/dashboard/import", label: "Import", Icon: IconImport, ownerOnly: true },
   // Hidden: Connected Services (keep for easy restore)
   // { href: "/dashboard/external", label: "Connected Services", Icon: IconLink, ownerOnly: true },
-  { href: "/dashboard/billing", label: "Billing", Icon: IconCard, ownerOnly: true },
+  { href: "/dashboard/billing", label: "Billing", Icon: IconCard, capability: "payment_handling" },
   { href: "/dashboard/settings", label: "Setting", Icon: IconSetting },
 ];
 
@@ -83,7 +85,12 @@ export function Sidebar({ mobileOpen = false, onNavigate, navLocked = false }: S
 
   const hiddenFromA11y = !isDesktop && !mobileOpen;
   const isOwner = session?.role === "owner";
-  const navItems = NAV.filter((item) => !item.ownerOnly || isOwner);
+  const caps = new Set(session?.capabilities || []);
+  const navItems = NAV.filter((item) => {
+    if (item.ownerOnly && !isOwner) return false;
+    if (item.capability && !isOwner && !caps.has(item.capability)) return false;
+    return true;
+  });
 
   if (loading || !session) {
     return (

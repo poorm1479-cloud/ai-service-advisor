@@ -65,18 +65,22 @@ async def get_current_user(
     except (ValueError, KeyError, TypeError):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from None
 
-    caps_claim = payload.get("capabilities")
+    # Membership is the source of truth. JWT capabilities/role can go stale after
+    # Settings → Team permission edits until the next token refresh.
     stored_caps: list[str] | None = None
-    if isinstance(caps_claim, list):
-        stored_caps = [str(c) for c in caps_claim]
-    else:
-        # Prefer DB membership capabilities when JWT omits them (legacy tokens)
-        try:
-            membership = await uow.memberships.get(shop_id, user_id)
-            if membership and membership.capabilities:
+    try:
+        membership = await uow.memberships.get(shop_id, user_id)
+        if membership is not None:
+            role = normalize_user_role(membership.role)
+            if membership.capabilities is not None:
                 stored_caps = list(membership.capabilities)
-        except Exception:  # noqa: BLE001
-            stored_caps = None
+    except Exception:  # noqa: BLE001
+        pass
+
+    if stored_caps is None:
+        caps_claim = payload.get("capabilities")
+        if isinstance(caps_claim, list):
+            stored_caps = [str(c) for c in caps_claim]
 
     perms = get_permission_service()
     capabilities = tuple(

@@ -58,6 +58,7 @@ async def test_admin_settings_get_defaults(admin_email: str) -> None:
                 "toast_enabled": True,
                 "maintenance_mode": False,
                 "twilio_auto_provision_numbers": True,
+                "openai_enabled": True,
             },
         )
         res = await client.get("/v1/admin/settings", headers=headers)
@@ -71,6 +72,7 @@ async def test_admin_settings_get_defaults(admin_email: str) -> None:
     assert editable["toast_enabled"] is True
     assert editable["maintenance_mode"] is False
     assert editable["twilio_auto_provision_numbers"] is True
+    assert editable["openai_enabled"] is True
     env = body["env_snapshot"]
     assert "environment" in env
     assert "ai_provider" in env
@@ -94,6 +96,7 @@ async def test_admin_settings_patch_roundtrip(admin_email: str) -> None:
                 "toast_enabled": False,
                 "maintenance_mode": True,
                 "twilio_auto_provision_numbers": False,
+                "openai_enabled": False,
             },
         )
         assert patch.status_code == 200, patch.text
@@ -103,6 +106,7 @@ async def test_admin_settings_patch_roundtrip(admin_email: str) -> None:
         assert body["editable"]["toast_enabled"] is False
         assert body["editable"]["maintenance_mode"] is True
         assert body["editable"]["twilio_auto_provision_numbers"] is False
+        assert body["editable"]["openai_enabled"] is False
         assert body["updated_at"] is not None
 
         get = await client.get("/v1/admin/settings", headers=headers)
@@ -111,6 +115,7 @@ async def test_admin_settings_patch_roundtrip(admin_email: str) -> None:
         assert again["dashboard_poll_seconds"] == 5
         assert again["toast_enabled"] is False
         assert again["twilio_auto_provision_numbers"] is False
+        assert again["openai_enabled"] is False
 
         # restore defaults for other tests sharing DB
         await client.patch(
@@ -122,6 +127,7 @@ async def test_admin_settings_patch_roundtrip(admin_email: str) -> None:
                 "toast_enabled": True,
                 "maintenance_mode": False,
                 "twilio_auto_provision_numbers": True,
+                "openai_enabled": True,
             },
         )
 

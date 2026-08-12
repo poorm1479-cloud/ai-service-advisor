@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
+import { BrandLogo } from "@/components/BrandLogo";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { SetupGate } from "@/components/SetupGate";
 import { Sidebar } from "@/components/Sidebar";
@@ -13,13 +14,14 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const isSetup =
     pathname === "/dashboard/setup" || pathname.startsWith("/dashboard/setup/");
   const lockPageScroll =
-    pathname.startsWith("/dashboard/conversations") ||
+    pathname.startsWith("/dashboard/calls") ||
     pathname.startsWith("/dashboard/customer") ||
     pathname === "/dashboard/appointments" ||
     pathname.startsWith("/dashboard/walk-ins") ||
     pathname === "/dashboard/marketing" ||
     pathname === "/dashboard/import" ||
-    pathname === "/dashboard/settings";
+    pathname === "/dashboard/settings" ||
+    isSetup;
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -104,18 +106,10 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
               )}
             </svg>
           </button>
-          <div className="min-w-0">
-            <p className="font-display truncate text-sm font-semibold tracking-tight">Operations</p>
-            <p className="truncate text-xs text-[var(--muted)]">Shop-isolated workspace</p>
-          </div>
-          <div className="ml-auto hidden items-center gap-2 sm:flex">
-            <span
-              className="inline-flex h-2 w-2 rounded-full bg-[var(--accent)]"
-              style={{ animation: "pulse-soft 2.4s ease-in-out infinite" }}
-              aria-hidden
-            />
-            <span className="text-xs font-medium text-[var(--muted)]">Live workspace</span>
-          </div>
+          <BrandLogo
+            href="/dashboard"
+            wordmarkClassName="text-lg font-semibold tracking-tight text-[var(--ink)] sm:text-xl"
+          />
         </header>
         <main
           className={`asa-scroll flex min-h-0 flex-1 flex-col px-4 sm:px-5 md:px-7 [scrollbar-gutter:stable] ${

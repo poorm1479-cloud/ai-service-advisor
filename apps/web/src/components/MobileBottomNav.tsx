@@ -3,20 +3,40 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
+import type { StaffCapability } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 
 type NavIcon = (props: { className?: string }) => ReactNode;
 
-const PRIMARY: { href: string; label: string; short: string; Icon: NavIcon }[] = [
+const PRIMARY: {
+  href: string;
+  label: string;
+  short: string;
+  Icon: NavIcon;
+  capability?: StaffCapability;
+}[] = [
   { href: "/dashboard", label: "Home", short: "Home", Icon: IconGauge },
   { href: "/dashboard/customer", label: "Customer", short: "Customer", Icon: IconUsers },
   { href: "/dashboard/appointments", label: "Schedule", short: "Schedule", Icon: IconCalendar },
   { href: "/dashboard/walk-ins", label: "Walk-ins", short: "Walk-ins", Icon: IconDoorOpen },
-  { href: "/dashboard/conversations", label: "Conversations", short: "Chat", Icon: IconPhone },
-  { href: "/dashboard/marketing", label: "Marketing", short: "Market", Icon: IconMarketing },
+  {
+    href: "/dashboard/calls",
+    label: "Calls",
+    short: "Calls",
+    Icon: IconPhone,
+    capability: "customer_communication",
+  },
+  { href: "/dashboard/marketing", label: "Marketing", short: "Marketing", Icon: IconMarketing },
 ];
 
 export function MobileBottomNav({ hidden = false }: { hidden?: boolean }) {
   const pathname = usePathname();
+  const { session } = useAuth();
+  const isOwner = session?.role === "owner";
+  const caps = new Set(session?.capabilities || []);
+  const items = PRIMARY.filter(
+    (item) => !item.capability || isOwner || caps.has(item.capability),
+  );
 
   const isActive = (href: string) =>
     href === "/dashboard"
@@ -33,13 +53,14 @@ export function MobileBottomNav({ hidden = false }: { hidden?: boolean }) {
       style={{ paddingBottom: "max(0.45rem, env(safe-area-inset-bottom))" }}
     >
       <ul
-        className="relative grid grid-cols-6 gap-0.5 overflow-hidden rounded-[1.35rem] border border-white/70 bg-[rgba(255,255,255,0.72)] px-1 py-1 shadow-[0_1px_0_rgba(255,255,255,0.95)_inset,0_-1px_0_rgba(15,23,42,0.04)_inset,0_18px_40px_-24px_rgba(15,23,42,0.35)] backdrop-blur-2xl backdrop-saturate-150 supports-[backdrop-filter]:bg-[rgba(255,255,255,0.58)]"
+        className="relative grid gap-0.5 overflow-hidden rounded-[1.35rem] border border-white/70 bg-[rgba(255,255,255,0.72)] px-1 py-1 shadow-[0_1px_0_rgba(255,255,255,0.95)_inset,0_-1px_0_rgba(15,23,42,0.04)_inset,0_18px_40px_-24px_rgba(15,23,42,0.35)] backdrop-blur-2xl backdrop-saturate-150 supports-[backdrop-filter]:bg-[rgba(255,255,255,0.58)]"
+        style={{ gridTemplateColumns: `repeat(${Math.max(items.length, 1)}, minmax(0, 1fr))` }}
       >
         <span
           aria-hidden
           className="pointer-events-none absolute inset-x-3 top-0 h-px bg-gradient-to-r from-transparent via-white to-transparent opacity-90"
         />
-        {PRIMARY.map((item) => {
+        {items.map((item) => {
           const active = isActive(item.href);
           return (
             <li key={item.href} className="min-w-0">
@@ -47,7 +68,7 @@ export function MobileBottomNav({ hidden = false }: { hidden?: boolean }) {
                 href={item.href}
                 aria-current={active ? "page" : undefined}
                 aria-label={item.label}
-                className={`group relative flex min-h-[3.25rem] flex-col items-center justify-center gap-0.5 rounded-[1.05rem] px-0.5 py-1 transition-[color,transform,background-color] duration-200 ease-out active:scale-[0.96] ${
+                className={`group relative flex min-h-[3.4rem] flex-col items-center justify-center gap-0.5 rounded-[1.05rem] px-0.5 py-1 transition-[color,transform,background-color] duration-200 ease-out active:scale-[0.96] ${
                   active
                     ? "text-[var(--accent)]"
                     : "text-[var(--muted)] active:bg-black/[0.03]"
@@ -73,7 +94,7 @@ export function MobileBottomNav({ hidden = false }: { hidden?: boolean }) {
                   />
                 </span>
                 <span
-                  className={`max-w-full truncate text-[9px] leading-none tracking-[0.04em] ${
+                  className={`w-full break-words text-center text-[8px] leading-[1.15] tracking-[0.01em] ${
                     active ? "font-semibold" : "font-medium"
                   }`}
                 >

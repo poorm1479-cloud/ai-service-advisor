@@ -190,99 +190,116 @@ function AdminLoginForm() {
   const locked = lockoutRemaining > 0;
 
   return (
-    <main className="relative flex min-h-screen items-center justify-center px-4 py-10 sm:py-14">
-      <div className="surface-panel w-full max-w-md p-6 sm:p-8">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
-          Platform
-        </p>
-        <h1 className="font-display mt-2 text-2xl font-semibold tracking-tight sm:text-[1.75rem]">
-          {mfaToken ? "Two-factor authentication" : "Admin sign in"}
-        </h1>
-        <p className="mt-2 text-sm text-[var(--muted)]">
-          {mfaToken
-            ? "Enter the 6-digit authenticator code or a one-time backup code."
-            : "Sign in to the Admin Console. Username is case-insensitive."}
-        </p>
+    <main className="relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-10 sm:py-14">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_20%_0%,var(--accent-soft),transparent_45%),radial-gradient(ellipse_at_90%_10%,rgba(0,0,0,0.04),transparent_40%),linear-gradient(180deg,#f7f7f7,var(--background))]"
+      />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -right-24 top-10 h-64 w-64 rounded-full bg-[var(--accent-glow)] blur-3xl"
+      />
+      <div className="auth-form-motion relative w-full max-w-md overflow-hidden rounded-[1.5rem] border border-[var(--line)] bg-[linear-gradient(145deg,rgba(255,255,255,0.98)_0%,rgba(255,255,255,0.92)_100%)] p-6 shadow-[var(--shadow-soft)] sm:p-8">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 left-0 w-[3px] bg-[linear-gradient(180deg,transparent_6%,var(--accent)_48%,transparent_94%)]"
+        />
+        <div className="relative pl-1">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[var(--muted)]">
+            Platform
+          </p>
+          <h1 className="font-display mt-2 text-2xl font-semibold tracking-tight sm:text-[1.85rem]">
+            {mfaToken ? "Two-factor authentication" : "Admin sign in"}
+          </h1>
+          <p className="mt-2 text-sm leading-relaxed text-[var(--muted)]">
+            {mfaToken
+              ? "Enter the 6-digit authenticator code or a one-time backup code."
+              : "Sign in to the Admin Console. Username is case-insensitive."}
+          </p>
 
-        <form onSubmit={onSubmit} className="mt-6 space-y-4" autoComplete="off">
-          {!mfaToken ? (
-            <>
+          <form onSubmit={onSubmit} className="mt-6 space-y-4" autoComplete="off">
+            {!mfaToken ? (
+              <>
+                <label className="block space-y-1.5">
+                  <span className="text-sm font-medium">
+                    Admin username <span className="text-red-600">*</span>
+                  </span>
+                  <input
+                    type="text"
+                    name="asa-admin-username"
+                    autoComplete="off"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    required
+                    aria-required="true"
+                    minLength={3}
+                    maxLength={32}
+                    disabled={locked}
+                    className="w-full rounded-xl border border-[var(--line)] bg-white/90 px-3 py-2.5 text-sm outline-none ring-[var(--accent)] focus:ring-2 disabled:opacity-60"
+                  />
+                </label>
+                <PasswordField
+                  label="Password"
+                  name="asa-admin-password"
+                  value={password}
+                  onChange={setPassword}
+                  required
+                  minLength={1}
+                  autoComplete="off"
+                  disabled={locked}
+                />
+              </>
+            ) : (
               <label className="block space-y-1.5">
-                <span className="text-sm font-medium">
-                  Admin username <span className="text-red-600">*</span>
-                </span>
+                <span className="text-sm font-medium">Authenticator code</span>
                 <input
                   type="text"
-                  name="asa-admin-username"
-                  autoComplete="off"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
+                  value={mfaCode}
+                  onChange={(e) => setMfaCode(e.target.value)}
                   required
-                  aria-required="true"
-                  minLength={3}
-                  maxLength={32}
-                  disabled={locked}
-                  className="w-full rounded-xl border border-[var(--line)] bg-white/90 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+                  className="w-full rounded-xl border border-[var(--line)] bg-white/90 px-3 py-2.5 text-sm outline-none ring-[var(--accent)] focus:ring-2"
                 />
               </label>
-              <PasswordField
-                label="Password"
-                name="asa-admin-password"
-                value={password}
-                onChange={setPassword}
-                required
-                minLength={1}
-                autoComplete="off"
-                disabled={locked}
-              />
-            </>
-          ) : (
-            <label className="block space-y-1.5">
-              <span className="text-sm font-medium">Authenticator code</span>
-              <input
-                type="text"
-                value={mfaCode}
-                onChange={(e) => setMfaCode(e.target.value)}
-                required
-                className="w-full rounded-xl border border-[var(--line)] bg-white/90 px-3 py-2.5 text-sm outline-none"
-              />
-            </label>
-          )}
+            )}
 
-          {(error || locked) && (
-            <p className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
-              {locked
-                ? `Too many failed attempts. Try again in ${formatCountdown(lockoutRemaining)}`
-                : error}
-            </p>
-          )}
+            {(error || locked) && (
+              <p
+                className="rounded-xl border border-red-200/80 bg-red-50/90 px-3 py-2 text-sm text-red-700"
+                role="alert"
+              >
+                {locked
+                  ? `Too many failed attempts. Try again in ${formatCountdown(lockoutRemaining)}`
+                  : error}
+              </p>
+            )}
 
-          <button
-            type="submit"
-            disabled={submitting || loading || locked}
-            className="btn-primary w-full disabled:opacity-60"
-          >
-            {locked
-              ? `Try again in ${formatCountdown(lockoutRemaining)}`
-              : submitting
-                ? "Please wait…"
-                : mfaToken
-                  ? "Verify"
-                  : "Sign in to Admin"}
-          </button>
-          {mfaToken && (
             <button
-              type="button"
-              onClick={() => {
-                setMfaToken(null);
-                setMfaCode("");
-              }}
-              className="w-full text-sm text-[var(--muted)]"
+              type="submit"
+              disabled={submitting || loading || locked}
+              className="btn-primary w-full disabled:opacity-60"
             >
-              Back
+              {locked
+                ? `Try again in ${formatCountdown(lockoutRemaining)}`
+                : submitting
+                  ? "Please wait…"
+                  : mfaToken
+                    ? "Verify"
+                    : "Sign in to Admin"}
             </button>
-          )}
-        </form>
+            {mfaToken && (
+              <button
+                type="button"
+                onClick={() => {
+                  setMfaToken(null);
+                  setMfaCode("");
+                }}
+                className="w-full text-sm text-[var(--muted)] transition-colors hover:text-[var(--foreground)]"
+              >
+                Back
+              </button>
+            )}
+          </form>
+        </div>
       </div>
     </main>
   );

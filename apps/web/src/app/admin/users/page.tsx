@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { AdminShell, Panel, Stat } from "@/components/admin/AdminShell";
+import { AdminShell, LiveBadge, Panel, Stat } from "@/components/admin/AdminShell";
 import {
   activateAdminOrganizationMember,
   AdminUserRow,
@@ -261,39 +261,30 @@ function UsersBody({ accessToken }: { accessToken: string }) {
 
   return (
     <div className="flex h-[calc(100dvh-7.25rem)] flex-col gap-4 overflow-hidden sm:h-[calc(100dvh-7.75rem)] md:h-[calc(100dvh-9.25rem)] md:gap-5">
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
-        <div>
-          <p className="text-sm font-medium">Users</p>
-          <p className="text-xs text-[var(--muted)]">
-            Membership access review · updated{" "}
-            {data.generated_at ? new Date(data.generated_at).toLocaleString() : "—"}
-          </p>
-        </div>
-        <span
-          className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium ${
-            live
-              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-              : "border-[var(--line)] bg-[var(--background)] text-[var(--muted)]"
-          }`}
-        >
-          <span
-            className={`h-1.5 w-1.5 rounded-full ${live ? "bg-emerald-500" : "bg-[var(--muted)]"}`}
-          />
-          {live ? "Live" : "Connecting"}
-        </span>
+      <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
+        <h1 className="page-title">Users</h1>
+        <LiveBadge live={live} />
       </div>
 
-      <section className="grid shrink-0 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <section className="grid shrink-0 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Memberships" value={String(data.total)} />
         <Stat label="Unique users" value={String(stats.unique)} />
         <Stat label="Online now" value={String(stats.online)} tone="text-emerald-700" />
         <Stat label="Active" value={String(stats.active)} tone="text-emerald-700" />
       </section>
 
-      {error && <p className="shrink-0 text-sm text-red-700">{error}</p>}
-      {message && <p className="shrink-0 text-sm text-emerald-700">{message}</p>}
+      {error && (
+        <p className="shrink-0 rounded-xl border border-red-200/80 bg-red-50/90 px-4 py-3 text-sm text-red-700">
+          {error}
+        </p>
+      )}
+      {message && (
+        <p className="shrink-0 rounded-xl border border-emerald-200/80 bg-emerald-50/90 px-4 py-3 text-sm text-emerald-800">
+          {message}
+        </p>
+      )}
       {tempPassword ? (
-        <div className="flex shrink-0 flex-wrap items-center gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm">
+        <div className="flex shrink-0 flex-wrap items-center gap-3 rounded-2xl border border-amber-300/80 bg-amber-50/90 px-4 py-3 text-sm shadow-[var(--shadow-soft)]">
           <span className="text-amber-900">Temporary password:</span>
           <code className="rounded bg-white px-2 py-1 font-mono text-base text-amber-950">
             {tempPassword}

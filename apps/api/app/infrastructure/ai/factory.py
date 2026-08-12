@@ -33,12 +33,10 @@ class AIServices:
 def build_ai_services() -> AIServices:
     provider = (settings.ai_provider or "heuristic").strip().lower()
     if provider == "openai":
-        # AI chat/extraction: OpenAI → Ollama
-        # STT: OpenAI Whisper → Local Whisper
-        # TTS: OpenAI TTS → Piper
+        # OpenAI only (no local fallbacks)
         return AIServices(
-            stt=FallbackSpeechToText(OpenAISpeechToText(), LocalWhisperSpeechToText()),
-            tts=FallbackTextToSpeech(OpenAITextToSpeech(), PiperTextToSpeech()),
+            stt=OpenAISpeechToText(),
+            tts=OpenAITextToSpeech(),
             extractor=OpenAIRepairExtraction(chat=build_chat_provider("openai")),
         )
     if provider == "ollama":

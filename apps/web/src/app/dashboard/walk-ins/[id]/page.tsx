@@ -746,7 +746,7 @@ export default function WalkInDetailPage() {
 
       {apptOpen && schedulePhase === "awaiting" ? (
         <div
-          className="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-[2px]"
           role="dialog"
           aria-modal="true"
           aria-labelledby="walkin-appointment-title"
@@ -817,25 +817,27 @@ export default function WalkInDetailPage() {
                 />
               </label>
 
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => void onFindSlots()}
-                  disabled={busy || !preferredStart}
-                  className="btn-ghost inline-flex items-center gap-1.5 px-3.5 py-2 text-xs disabled:opacity-60"
-                >
-                  <IconSearch className="h-3.5 w-3.5" />
-                  {slotsLoading ? "Finding…" : "Find available times"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void onAutoBook()}
-                  disabled={busy}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-[var(--accent)] px-3.5 py-2 text-xs font-semibold text-[var(--accent)] disabled:opacity-60"
-                >
-                  <IconBolt className="h-3.5 w-3.5" />
-                  {bookingAppt ? "Booking…" : "Auto-book next"}
-                </button>
+              <div className="space-y-2.5">
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void onFindSlots()}
+                    disabled={busy || !preferredStart}
+                    className="btn-ghost inline-flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs disabled:opacity-60"
+                  >
+                    <IconSearch className="h-3.5 w-3.5 shrink-0" />
+                    {slotsLoading ? "Finding…" : "Find times"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onAutoBook()}
+                    disabled={busy}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-full border border-[var(--accent)] px-3 py-2.5 text-xs font-semibold text-[var(--accent)] disabled:opacity-60"
+                  >
+                    <IconBolt className="h-3.5 w-3.5 shrink-0" />
+                    {bookingAppt ? "Booking…" : "Auto-book"}
+                  </button>
+                </div>
                 <button
                   type="submit"
                   disabled={busy || !preferredStart}
@@ -887,15 +889,15 @@ export default function WalkInDetailPage() {
 
       <div className="asa-scroll min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain pb-2">
         <section className="surface-panel p-4 sm:p-5">
-          <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <SectionHeader title="Schedule" description={scheduleDescription} />
             {visitCancelled ? null : schedulePhase === "awaiting" ? (
-              <div className="flex flex-wrap gap-2">
+              <div className="grid w-full grid-cols-2 gap-2 sm:w-auto sm:min-w-[18rem] sm:grid-cols-[1fr_1fr_auto]">
                 <button
                   type="button"
                   onClick={() => void onStartNow()}
                   disabled={busy || !primaryService}
-                  className="btn-primary inline-flex items-center gap-1.5 px-4 py-2 text-xs disabled:opacity-60"
+                  className="btn-primary inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs disabled:opacity-60"
                 >
                   <IconPlay className="h-3.5 w-3.5" />
                   {starting ? "Starting…" : "Start now"}
@@ -904,7 +906,7 @@ export default function WalkInDetailPage() {
                   type="button"
                   onClick={openAppointmentPanel}
                   disabled={busy || !primaryService}
-                  className="btn-ghost inline-flex items-center gap-1.5 px-4 py-2 text-xs disabled:opacity-60"
+                  className="btn-ghost inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs disabled:opacity-60"
                 >
                   <IconCalendar className="h-3.5 w-3.5" />
                   Book
@@ -913,19 +915,19 @@ export default function WalkInDetailPage() {
                   type="button"
                   onClick={openCancelConfirm}
                   disabled={busy}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-4 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-100 disabled:opacity-60"
+                  className="col-span-2 inline-flex items-center justify-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-4 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-100 disabled:opacity-60 sm:col-span-1"
                 >
                   Cancel visit
                 </button>
               </div>
             ) : (
-              <div className="flex flex-wrap gap-2">
+              <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
                 {(schedulePhase === "scheduled" || schedulePhase === "ready") && (
                   <button
                     type="button"
                     onClick={() => void onCompleteWork()}
                     disabled={busy}
-                    className="btn-primary inline-flex items-center gap-1.5 px-4 py-2 text-xs disabled:opacity-60"
+                    className="btn-primary inline-flex flex-1 items-center justify-center gap-1.5 px-4 py-2 text-xs disabled:opacity-60 sm:flex-none"
                   >
                     <IconCheck className="h-3.5 w-3.5" />
                     {completing ? "Completing…" : "Mark complete"}
@@ -936,7 +938,7 @@ export default function WalkInDetailPage() {
                     type="button"
                     onClick={() => void onCloseVisit()}
                     disabled={busy}
-                    className="btn-primary inline-flex items-center gap-1.5 px-4 py-2 text-xs disabled:opacity-60"
+                    className="btn-primary inline-flex flex-1 items-center justify-center gap-1.5 px-4 py-2 text-xs disabled:opacity-60 sm:flex-none"
                   >
                     {completing ? "Closing…" : "Close visit"}
                   </button>
@@ -946,7 +948,7 @@ export default function WalkInDetailPage() {
                     type="button"
                     onClick={openCancelConfirm}
                     disabled={busy}
-                    className="inline-flex items-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-4 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-100 disabled:opacity-60"
+                    className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-4 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-100 disabled:opacity-60 sm:flex-none"
                   >
                     Cancel visit
                   </button>
@@ -954,7 +956,7 @@ export default function WalkInDetailPage() {
                 {(onSchedule || workFinished) && (
                   <Link
                     href={scheduleHref}
-                    className="btn-ghost inline-flex items-center gap-1.5 px-4 py-2 text-xs"
+                    className="btn-ghost inline-flex flex-1 items-center justify-center gap-1.5 px-4 py-2 text-xs sm:flex-none"
                   >
                     <IconCalendar className="h-3.5 w-3.5" />
                     Open schedule →

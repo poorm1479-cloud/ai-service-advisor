@@ -1390,7 +1390,7 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
         </span>
       </div>
 
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+      <div className="flex flex-row items-stretch gap-2">
         <div className="relative min-w-0 flex-1">
           <input
             value={value}

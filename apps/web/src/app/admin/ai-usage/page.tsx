@@ -1,8 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AdminShell, Panel, Stat } from "@/components/admin/AdminShell";
-import { getAdminUsage, statusTone, streamAdminUsage, UsageResponse } from "@/lib/admin";
+import { AdminShell, LiveBadge, Panel, Stat } from "@/components/admin/AdminShell";
+import {
+  getAdminSettings,
+  getAdminUsage,
+  statusTone,
+  streamAdminUsage,
+  updateAdminSettings,
+  UsageResponse,
+} from "@/lib/admin";
 
 const POLL_MS = 3000;
 
@@ -19,6 +26,8 @@ function AiUsageBody({ accessToken }: { accessToken: string }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(true);
   const [live, setLive] = useState(false);
+  const [openaiEnabled, setOpenaiEnabled] = useState<boolean | null>(null);
+  const [openaiBusy, setOpenaiBusy] = useState(false);
 
   const applyData = useCallback((next: UsageResponse) => {
     setData((prev) => {
@@ -34,6 +43,20 @@ function AiUsageBody({ accessToken }: { accessToken: string }) {
     setLive(true);
     setError(null);
   }, []);
+
+  const loadSettings = useCallback(
+    async (quiet = false) => {
+      try {
+        const settings = await getAdminSettings(accessToken);
+        setOpenaiEnabled(Boolean(settings.editable.openai_enabled));
+      } catch (err) {
+        if (!quiet) {
+          setError(err instanceof Error ? err.message : "Failed to load settings");
+        }
+      }
+    },
+    [accessToken],
+  );
 
   const load = useCallback(
     async (quiet = false) => {
@@ -58,11 +81,21 @@ function AiUsageBody({ accessToken }: { accessToken: string }) {
   // REST polling is the reliable live path while this page stays mounted.
   useEffect(() => {
     void load(false);
-    const id = window.setInterval(() => void load(true), POLL_MS);
+    void loadSettings(false);
+    const id = window.setInterval(() => {
+      void load(true);
+      void loadSettings(true);
+    }, POLL_MS);
     const onVis = () => {
-      if (document.visibilityState === "visible") void load(true);
+      if (document.visibilityState === "visible") {
+        void load(true);
+        void loadSettings(true);
+      }
     };
-    const onRefresh = () => void load(true);
+    const onRefresh = () => {
+      void load(true);
+      void loadSettings(true);
+    };
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("focus", onRefresh);
     return () => {
@@ -70,7 +103,7 @@ function AiUsageBody({ accessToken }: { accessToken: string }) {
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("focus", onRefresh);
     };
-  }, [load]);
+  }, [load, loadSettings]);
 
   // SSE is best-effort; polls keep usage accurate if the stream stalls.
   useEffect(() => {
@@ -84,32 +117,68 @@ function AiUsageBody({ accessToken }: { accessToken: string }) {
     return stop;
   }, [accessToken, applyData]);
 
+  async function onToggleOpenai(next: boolean) {
+    const previous = openaiEnabled;
+    setOpenaiBusy(true);
+    setOpenaiEnabled(next);
+    setError(null);
+    try {
+      const settings = await updateAdminSettings(accessToken, { openai_enabled: next });
+      setOpenaiEnabled(Boolean(settings.editable.openai_enabled));
+    } catch (err) {
+      setOpenaiEnabled(previous);
+      setError(err instanceof Error ? err.message : "Failed to update AI setting");
+    } finally {
+      setOpenaiBusy(false);
+    }
+  }
+
   if (error && !data) return <p className="text-sm text-red-700">{error}</p>;
   if (!data) return <p className="text-sm text-[var(--muted)]">{busy ? "Loading…" : "No data"}</p>;
 
   const sms = data.sms_runtime;
   const voice = data.voice_runtime;
   const totals = data.totals;
+  const openaiOn = openaiEnabled === true;
 
   return (
     <div className="flex h-[calc(100dvh-7.25rem)] flex-col gap-4 overflow-hidden sm:h-[calc(100dvh-7.75rem)] md:h-[calc(100dvh-9.25rem)] md:gap-5">
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
-        <p className="text-xs text-[var(--muted)]">
-          Updated {data.generated_at ? new Date(data.generated_at).toLocaleString() : "—"}
-        </p>
-        <span
-          className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium ${
-            live
-              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-              : "border-[var(--line)] bg-[var(--background)] text-[var(--muted)]"
-          }`}
-        >
-          <span
-            className={`h-1.5 w-1.5 rounded-full ${live ? "bg-emerald-500" : "bg-[var(--muted)]"}`}
-          />
-          {live ? "Live" : "Connecting"}
-        </span>
+      <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
+        <h1 className="page-title">AI Usage</h1>
+        <LiveBadge live={live} />
       </div>
+
+      <Panel className="shrink-0">
+        <div className="flex flex-wrap items-start justify-between gap-3 px-5 py-4">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">AI usage</p>
+            <p className="mt-1 text-xs text-[var(--muted)]">
+              When disabled, cloud chat, STT, and TTS are skipped and local fallbacks are used instead.
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={openaiOn}
+            aria-label="AI usage"
+            disabled={openaiEnabled === null || openaiBusy}
+            onClick={() => void onToggleOpenai(!openaiOn)}
+            className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors disabled:opacity-50 ${
+              openaiOn
+                ? "border-emerald-300 bg-emerald-500"
+                : "border-[var(--line)] bg-[var(--background)]"
+            }`}
+          >
+            <span
+              className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                openaiOn ? "translate-x-6" : "translate-x-1"
+              }`}
+            />
+          </button>
+        </div>
+      </Panel>
+
+      {error ? <p className="shrink-0 text-sm text-red-700">{error}</p> : null}
 
       <section className="grid shrink-0 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Period" value={data.period} />

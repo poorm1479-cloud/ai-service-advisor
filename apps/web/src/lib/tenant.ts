@@ -50,8 +50,10 @@ export const ALL_STAFF_CAPABILITIES: StaffCapability[] = [
   "payment_handling",
 ];
 
-/** Default invite permissions (full manageable staff set; owner can narrow on invite). */
-export const STAFF_CAPABILITIES: StaffCapability[] = [...ALL_STAFF_CAPABILITIES];
+/** Default invite permissions — Calls & Messages / Payments off unless owner opts in. */
+export const STAFF_CAPABILITIES: StaffCapability[] = ALL_STAFF_CAPABILITIES.filter(
+  (c) => c !== "customer_communication" && c !== "payment_handling",
+);
 
 export function capabilityLabel(id: string): string {
   return CAPABILITY_LABELS[id as StaffCapability] ?? id;
@@ -273,6 +275,8 @@ export type ShopSettings = {
   voice_phone_e164?: string | null;
   /** When true, only SMS auto-replies and Voice AI are paused (not Voice Notes / other AI). */
   ai_paused?: boolean;
+  /** False when monthly AI call quota is exhausted. */
+  ai_usage_available?: boolean;
 };
 
 export type ProfileSettings = {

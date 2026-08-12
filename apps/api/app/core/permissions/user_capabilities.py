@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.core.permissions.capabilities import (
     ALL_STAFF_CAPABILITIES,
+    DEFAULT_STAFF_CAPABILITIES,
     StaffCapability,
     capability_values,
 )
@@ -64,7 +65,7 @@ def default_capabilities_for_role(
 ) -> list[str]:
     """Resolve default capability strings for a principal role.
 
-    For small shops, Staff defaults to **all** operational capabilities.
+    Staff defaults exclude Calls & Messages / Payments (owner opts in on invite).
     Pass full_staff=False to use legacy specialty subsets when migrating.
     """
     principal = normalize_user_role(role)
@@ -88,7 +89,7 @@ def default_capabilities_for_role(
     # Staff
     if not full_staff and raw in _LEGACY_SPECIALTY_CAPS:
         return capability_values(_LEGACY_SPECIALTY_CAPS[raw])
-    return capability_values(ALL_STAFF_CAPABILITIES)
+    return capability_values(DEFAULT_STAFF_CAPABILITIES)
 
 
 def parse_capabilities(raw: list[str] | None) -> list[str]:

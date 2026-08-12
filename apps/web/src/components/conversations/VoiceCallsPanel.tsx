@@ -1,20 +1,16 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import {
   CallDetail,
-  completeVoiceCall,
   deleteVoiceCall,
   getVoiceCall,
   listVoiceCalls,
-  sendVoiceChatMessage,
-  startVoiceChat,
   VoiceCall,
 } from "@/lib/calls";
-import { formatPhoneInput, PHONE_PLACEHOLDER } from "@/lib/phone";
 
 /** Only honor ?id= when the URL is on the calls tab (avoids race on tab switch). */
 function callIdFromSearchParams(searchParams: { get: (key: string) => string | null }): string | null {
@@ -203,10 +199,6 @@ export function VoiceCallsPanel() {
   const [detail, setDetail] = useState<CallDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [simFrom, setSimFrom] = useState(PHONE_PLACEHOLDER);
-  const [message, setMessage] = useState("");
-  const [sending, setSending] = useState(false);
-  const [starting, setStarting] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
@@ -292,54 +284,6 @@ export function VoiceCallsPanel() {
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [detail?.turns.length, detail?.call.id]);
-
-  async function onStartChat(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setStarting(true);
-    try {
-      const result = await startVoiceChat({ from_number: simFrom });
-      await refresh();
-      selectCall(result.call.id);
-      setDetail(result);
-      setMessage("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not start conversation");
-    } finally {
-      setStarting(false);
-    }
-  }
-
-  async function onSendMessage(e: FormEvent) {
-    e.preventDefault();
-    if (!selectedId || !message.trim() || sending) return;
-    if (!callIsOpen(detail?.call)) return;
-    setError(null);
-    setSending(true);
-    const text = message.trim();
-    setMessage("");
-    try {
-      const result = await sendVoiceChatMessage(selectedId, text);
-      setDetail(result);
-      await refresh();
-    } catch (err) {
-      setMessage(text);
-      setError(err instanceof Error ? err.message : "Send failed");
-    } finally {
-      setSending(false);
-    }
-  }
-
-  async function onComplete() {
-    if (!selectedId) return;
-    try {
-      const result = await completeVoiceCall(selectedId);
-      setDetail(result);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Complete failed");
-    }
-  }
 
   function exitSelectMode() {
     setSelectMode(false);
@@ -431,7 +375,7 @@ export function VoiceCallsPanel() {
         </span>
         <p className="font-display text-lg font-semibold tracking-tight">Sign in required</p>
         <p className="mt-1 max-w-xs text-sm text-[var(--muted)]">
-          Sign in to view and manage voice conversations.
+          Sign in to view and manage voice calls.
         </p>
       </div>
     );
@@ -447,37 +391,6 @@ export function VoiceCallsPanel() {
           {error}
         </p>
       )}
-
-      <form
-        onSubmit={onStartChat}
-        className="surface-panel relative shrink-0 overflow-hidden"
-      >
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-16 bg-gradient-to-br from-[var(--accent-soft)] via-transparent to-transparent" />
-        <div className="relative grid gap-3 p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-          <label className="block min-w-0">
-            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
-              Caller number
-            </span>
-            <input
-              type="tel"
-              className="mt-1.5 w-full rounded-xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-glow)]"
-              value={simFrom}
-              onChange={(e) => setSimFrom(formatPhoneInput(e.target.value))}
-              placeholder={PHONE_PLACEHOLDER}
-              aria-label="Your phone number"
-              disabled={starting}
-            />
-          </label>
-          <button
-            type="submit"
-            disabled={starting}
-            className="btn-primary gap-2 px-5 py-2.5 shadow-[0_14px_32px_-16px_rgba(240,90,36,0.85)] disabled:opacity-60"
-          >
-            <IconPhone className="h-3.5 w-3.5" />
-            {starting ? "Starting…" : "Start conversation"}
-          </button>
-        </div>
-      </form>
 
       <div
         className={`grid min-h-0 flex-1 gap-4 ${
@@ -592,7 +505,7 @@ export function VoiceCallsPanel() {
                     No calls yet
                   </p>
                   <p className="mt-1 max-w-[14rem] text-sm text-[var(--muted)]">
-                    Start a conversation above to open your first live line.
+                    Start a call above to open your first live line.
                   </p>
                 </li>
               )}
@@ -781,17 +694,6 @@ export function VoiceCallsPanel() {
                 </div>
               </div>
             </div>
-            {detail && open && (
-              <div className="relative flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => void onComplete()}
-                  className="btn-ghost rounded-full px-3.5 py-1.5 text-xs"
-                >
-                  End & summarize
-                </button>
-              </div>
-            )}
           </header>
 
           <div className="asa-scroll relative min-h-0 flex-1 space-y-3.5 overflow-y-auto overscroll-contain bg-[radial-gradient(120%_80%_at_100%_0%,rgba(240,90,36,0.07),transparent_42%),radial-gradient(90%_70%_at_0%_100%,rgba(0,0,0,0.035),transparent_48%),linear-gradient(180deg,#f6f5f4_0%,#f2f2f2_45%,#eeeeee_100%)] p-4 sm:p-5">
@@ -848,29 +750,6 @@ export function VoiceCallsPanel() {
             <div ref={transcriptEndRef} className="relative" />
           </div>
 
-          {detail && open && (
-            <form
-              onSubmit={onSendMessage}
-              className="flex shrink-0 gap-2 border-t border-[var(--line)] bg-[var(--panel)]/95 px-3 py-3 backdrop-blur-sm sm:px-4"
-            >
-              <input
-                className="min-w-0 flex-1 rounded-full border border-[var(--line)] bg-white px-4 py-2.5 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-glow)]"
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                placeholder="Type as the customer…"
-                aria-label="Your message"
-                disabled={sending}
-                autoComplete="off"
-              />
-              <button
-                type="submit"
-                disabled={sending || !message.trim()}
-                className="btn-primary px-5 py-2.5 disabled:opacity-60"
-              >
-                {sending ? "…" : "Send"}
-              </button>
-            </form>
-          )}
         </section>
 
         {detail?.call.recording_url && (
@@ -903,7 +782,7 @@ export function VoiceCallsPanel() {
       {pendingDeleteCount > 0 &&
         createPortal(
           <div
-            className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-[2px]"
             role="dialog"
             aria-modal="true"
             aria-labelledby="delete-call-title"
@@ -927,7 +806,7 @@ export function VoiceCallsPanel() {
                     className="text-base font-semibold tracking-tight text-slate-900"
                   >
                     {pendingDeleteCount > 1
-                      ? `Delete ${pendingDeleteCount} conversations?`
+                      ? `Delete ${pendingDeleteCount} calls?`
                       : "Delete call history?"}
                   </h2>
                 </div>
@@ -952,7 +831,7 @@ export function VoiceCallsPanel() {
                   </div>
                 ) : (
                   <p className="text-sm text-[var(--muted)]">
-                    {pendingDeleteCount} selected conversations will be permanently removed.
+                    {pendingDeleteCount} selected calls will be permanently removed.
                   </p>
                 )}
 
@@ -965,7 +844,7 @@ export function VoiceCallsPanel() {
                   </p>
                 )}
 
-                <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <div className="flex flex-row justify-end gap-2">
                   <button
                     type="button"
                     onClick={closeDeleteConfirm}

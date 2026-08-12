@@ -385,7 +385,7 @@ def ensure_workflow_plugins(ports: Any | None = None) -> PluginRuntime:
 
     advisor = getattr(ports, "advisor_plugin", None)
     if advisor is not None:
-        _bind_scoped(advisor, fallback_id="advisor", fallback_name="AI Service Advisor")
+        _bind_scoped(advisor, fallback_id="advisor", fallback_name="RatchetHub")
 
     inspection = getattr(ports, "inspection_plugin", None)
     if inspection is not None:

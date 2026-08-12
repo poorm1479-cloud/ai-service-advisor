@@ -8,7 +8,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "AI Service Advisor for Independent Auto Repair Shops"
+    app_name: str = "RatchetHub for Independent Auto Repair Shops"
     environment: str = "development"
 
     database_url: str = "postgresql+asyncpg://asa:asa@localhost:5432/ai_service_advisor"
@@ -27,11 +27,13 @@ class Settings(BaseSettings):
     ready_require_redis: bool = False
     backup_dir: str = "/backups"
 
-    # Modular AI — "heuristic" | "openai" (with local fallbacks) | "ollama"
-    # openai: AI OpenAI→Ollama | STT Whisper→Local Whisper | TTS OpenAI→Piper
+    # Modular AI — "heuristic" | "openai" (OpenAI only) | "ollama"
+    # openai: chat/STT/TTS via OpenAI only (no local fallbacks)
     # ollama: AI Ollama | STT Local Whisper→text-only | TTS Piper→heuristic
     # heuristic: text-only STT + rule-based extraction (tests/offline); no demo audio transcripts
-    ai_provider: str = "ollama"
+    ai_provider: str = "openai"
+    # Platform-admin override lives in platform_settings; env is the default until overridden.
+    openai_enabled: bool = True
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     openai_stt_model: str = "whisper-1"
@@ -89,6 +91,9 @@ class Settings(BaseSettings):
     voice_gather_timeout_sec: int = 3
     # Seconds of trailing silence before ending Gather (Twilio). "auto" is often 2–3s+.
     voice_gather_speech_timeout: str = "1"
+    # Empty/silence Gather streak: 1=silent re-listen, 2=soft nudge, >=N hang up.
+    # Caps billable no-speech Gathers without cutting real conversation turns.
+    voice_empty_gather_hangup_after: int = 3
     voice_stream_enabled: bool = True
     # Map voice To-number → shop: "+15550001111:uuid" (falls back to twilio_shop_map)
     twilio_voice_shop_map: str = ""
@@ -110,9 +115,9 @@ class Settings(BaseSettings):
     web_app_url: str = "http://localhost:3000"
     # Comma-separated usernames allowed for /v1/admin/* and /v1/platform/*
     # (must match JWT username claim after normal login; empty deny-all in production)
-    platform_admin_usernames: str = "ryanchen"
+    platform_admin_usernames: str = "admin"
     # Dev bootstrap password for the first allowlisted admin (ignored in production)
-    platform_admin_bootstrap_password: str = "Albert824@"
+    platform_admin_bootstrap_password: str = "admin"
     # Legacy alias — ignored when platform_admin_usernames is set.
     platform_admin_emails: str = ""
     auth_rate_limit_per_minute: int = 30

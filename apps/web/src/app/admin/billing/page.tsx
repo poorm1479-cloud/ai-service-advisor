@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AdminShell, Panel, Stat } from "@/components/admin/AdminShell";
+import { AdminShell, LiveBadge, Panel, Stat } from "@/components/admin/AdminShell";
 import {
   BillingMonitor,
   formatCents,
@@ -12,11 +12,10 @@ import {
 
 const POLL_MS = 3000;
 
-type BillingTab = "overview" | "subscriptions" | "failed" | "plans";
+type BillingTab = "overview" | "failed" | "plans";
 
 const TABS: { id: BillingTab; label: string }[] = [
   { id: "overview", label: "Overview" },
-  { id: "subscriptions", label: "Subscriptions" },
   { id: "failed", label: "Failed payments" },
   { id: "plans", label: "Plans" },
 ];
@@ -124,41 +123,23 @@ function BillingBody({ accessToken }: { accessToken: string }) {
   return (
     <div
       className={
-        tab === "subscriptions" || tab === "failed"
+        tab === "failed"
           ? "flex h-[calc(100dvh-7.25rem)] flex-col gap-4 overflow-hidden sm:h-[calc(100dvh-7.75rem)] md:h-[calc(100dvh-9.25rem)] md:gap-5"
           : "space-y-4 md:space-y-5"
       }
     >
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
-        <p className="text-xs text-[var(--muted)]">
-          Updated {data.generated_at ? new Date(data.generated_at).toLocaleString() : "—"}
-        </p>
-        <span
-          className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium ${
-            live
-              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-              : "border-[var(--line)] bg-[var(--background)] text-[var(--muted)]"
-          }`}
-        >
-          <span
-            className={`h-1.5 w-1.5 rounded-full ${live ? "bg-emerald-500" : "bg-[var(--muted)]"}`}
-          />
-          {live ? "Live" : "Connecting"}
-        </span>
+      <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
+        <h1 className="page-title">Billing</h1>
+        <LiveBadge live={live} />
       </div>
 
       <div
-        className="flex shrink-0 flex-wrap gap-2"
+        className="inline-flex max-w-full shrink-0 flex-wrap gap-0.5 rounded-full border border-black/8 bg-white/80 p-0.5 shadow-[var(--shadow-soft)] backdrop-blur-sm"
         role="tablist"
         aria-label="Billing sections"
       >
         {TABS.map((t) => {
-          const badge =
-            t.id === "failed" && failedCount > 0
-              ? failedCount
-              : t.id === "subscriptions"
-                ? subscriptions.length
-                : null;
+          const badge = t.id === "failed" && failedCount > 0 ? failedCount : null;
           return (
             <button
               key={t.id}
@@ -166,19 +147,17 @@ function BillingBody({ accessToken }: { accessToken: string }) {
               role="tab"
               aria-selected={tab === t.id}
               onClick={() => setTab(t.id)}
-              className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm ${
+              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold leading-4 transition-colors ${
                 tab === t.id
-                  ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
-                  : "border-[var(--line)] text-[var(--muted)]"
+                  ? "bg-[var(--accent)] text-white"
+                  : "text-[var(--muted)] hover:bg-black/[0.04] hover:text-[var(--ink)]"
               }`}
             >
               {t.label}
               {badge != null && (
                 <span
-                  className={`rounded px-1.5 py-0.5 text-[11px] font-medium tabular-nums ${
-                    t.id === "failed" && failedCount > 0
-                      ? "bg-red-100 text-red-800"
-                      : "bg-[var(--background)] text-[var(--muted)]"
+                  className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${
+                    tab === t.id ? "bg-white/20 text-white" : "bg-red-100 text-red-800"
                   }`}
                 >
                   {badge}
@@ -191,14 +170,14 @@ function BillingBody({ accessToken }: { accessToken: string }) {
 
       {tab === "overview" && (
         <div className="space-y-4" role="tabpanel">
-          <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <section className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
             <Stat label="MRR" value={formatCents(revenue.mrr_cents)} />
             <Stat label="ARR" value={formatCents(revenue.arr_cents)} />
             <Stat label="Paid active" value={String(revenue.paid_active)} />
             <Stat label="Failed payments" value={String(revenue.failed_payments)} />
           </section>
 
-          <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <section className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
             <Stat label="Subscriptions" value={String(revenue.subscriptions)} />
             <Stat label="Active" value={String(revenue.active)} />
             <Stat label="Trialing" value={String(revenue.trialing)} />
@@ -222,63 +201,58 @@ function BillingBody({ accessToken }: { accessToken: string }) {
               </div>
             )}
           </Panel>
-        </div>
-      )}
 
-      {tab === "subscriptions" && (
-        <Panel
-          className="flex min-h-0 flex-1 flex-col"
-          title={`Subscriptions (${subscriptions.length})`}
-        >
-          <div className="asa-scroll min-h-0 flex-1 overflow-auto overscroll-contain">
-            <table className="min-w-full text-left text-sm">
-              <thead className="sticky top-0 z-10 border-b border-[var(--line)] bg-[var(--background)] text-[var(--muted)]">
-                <tr>
-                  <th className="px-5 py-2 font-medium">Shop</th>
-                  <th className="px-5 py-2 font-medium">Plan</th>
-                  <th className="px-5 py-2 font-medium">Payment status</th>
-                  <th className="px-5 py-2 font-medium">Price</th>
-                  <th className="px-5 py-2 font-medium">Stripe</th>
-                  <th className="px-5 py-2 font-medium">Period end</th>
-                </tr>
-              </thead>
-              <tbody>
-                {subscriptions.map((p) => (
-                  <tr key={p.shop_id} className="border-b border-[var(--line)]">
-                    <td className="px-5 py-3">
-                      <div className="font-medium">{p.shop_name}</div>
-                      <div className="font-mono text-xs text-[var(--muted)]">{p.shop_slug}</div>
-                    </td>
-                    <td className="px-5 py-3">{p.plan_name ?? "—"}</td>
-                    <td
-                      className={`px-5 py-3 capitalize ${statusTone(p.payment_status ?? p.status)}`}
-                    >
-                      {p.payment_status ?? p.status}
-                    </td>
-                    <td className="px-5 py-3">{formatCents(p.price_cents_monthly)}</td>
-                    <td className="px-5 py-3 font-mono text-xs text-[var(--muted)]">
-                      {p.stripe_subscription_id || p.stripe_customer_id || "—"}
-                    </td>
-                    <td className="px-5 py-3 text-[var(--muted)]">
-                      {p.current_period_end
-                        ? new Date(p.current_period_end).toLocaleDateString()
-                        : p.trial_ends_at
-                          ? `trial ${new Date(p.trial_ends_at).toLocaleDateString()}`
-                          : "—"}
-                    </td>
-                  </tr>
-                ))}
-                {subscriptions.length === 0 && (
+          <Panel title={`Subscriptions (${subscriptions.length})`}>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-left text-sm">
+                <thead className="border-b border-[var(--line)] bg-[var(--background)] text-[var(--muted)]">
                   <tr>
-                    <td colSpan={6} className="px-5 py-8 text-center text-[var(--muted)]">
-                      No subscriptions yet.
-                    </td>
+                    <th className="px-5 py-2 font-medium">Shop</th>
+                    <th className="px-5 py-2 font-medium">Plan</th>
+                    <th className="px-5 py-2 font-medium">Payment status</th>
+                    <th className="px-5 py-2 font-medium">Price</th>
+                    <th className="px-5 py-2 font-medium">Stripe</th>
+                    <th className="px-5 py-2 font-medium">Period end</th>
                   </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
+                </thead>
+                <tbody>
+                  {subscriptions.map((p) => (
+                    <tr key={p.shop_id} className="border-b border-[var(--line)]">
+                      <td className="px-5 py-3">
+                        <div className="font-medium">{p.shop_name}</div>
+                        <div className="font-mono text-xs text-[var(--muted)]">{p.shop_slug}</div>
+                      </td>
+                      <td className="px-5 py-3">{p.plan_name ?? "—"}</td>
+                      <td
+                        className={`px-5 py-3 capitalize ${statusTone(p.payment_status ?? p.status)}`}
+                      >
+                        {p.payment_status ?? p.status}
+                      </td>
+                      <td className="px-5 py-3">{formatCents(p.price_cents_monthly)}</td>
+                      <td className="px-5 py-3 font-mono text-xs text-[var(--muted)]">
+                        {p.stripe_subscription_id || p.stripe_customer_id || "—"}
+                      </td>
+                      <td className="px-5 py-3 text-[var(--muted)]">
+                        {p.current_period_end
+                          ? new Date(p.current_period_end).toLocaleDateString()
+                          : p.trial_ends_at
+                            ? `trial ${new Date(p.trial_ends_at).toLocaleDateString()}`
+                            : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                  {subscriptions.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-5 py-8 text-center text-[var(--muted)]">
+                        No subscriptions yet.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+        </div>
       )}
 
       {tab === "failed" && (

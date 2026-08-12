@@ -273,7 +273,10 @@ function scheduleHourRows(openHour: number, closeHourExclusive: number): number[
 /** Pixel height of one hour row in the day board (Google-style continuous grid). */
 const SCHEDULE_PX_PER_HOUR = 64;
 const SCHEDULE_GUTTER_PX = 56;
+const SCHEDULE_GUTTER_MOBILE_PX = 40;
 const SCHEDULE_COL_MIN_PX = 168;
+/** Match Tailwind `md` — below this, fit all teammate columns in one viewport. */
+const SCHEDULE_NARROW_MQ = "(max-width: 767px)";
 /** Minimum horizontal drag distance (px) to change week on the date strip. */
 const DATE_STRIP_SWIPE_THRESHOLD_PX = 56;
 /** Minimum horizontal drag distance (px) to change day on the schedule board. */
@@ -1352,7 +1355,7 @@ function AppointmentsContent() {
           <div className="h-7 w-36 animate-pulse rounded-md bg-[var(--panel)]" />
         </div>
         <div className="surface-panel min-h-0 flex-1 animate-pulse" />
-        <div className="pointer-events-none fixed bottom-[7rem] right-10 z-40 h-14 w-14 animate-pulse rounded-full bg-[var(--panel)] shadow-lg md:bottom-12 md:right-12" />
+        <div className="pointer-events-none fixed bottom-[5.75rem] right-8 z-40 h-14 w-14 animate-pulse rounded-full bg-[var(--panel)] shadow-lg md:bottom-9 md:right-10" />
       </div>
     );
   }
@@ -1482,7 +1485,7 @@ function AppointmentsContent() {
           type="button"
           onClick={openCreate}
           aria-label="Add appointment"
-          className="btn-primary fixed bottom-[7rem] right-12 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full p-0 shadow-[0_14px_32px_-12px_rgba(240,90,36,0.9)] md:bottom-12 md:right-16"
+          className="btn-primary fixed bottom-[5.75rem] right-8 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full p-0 shadow-[0_14px_32px_-12px_rgba(240,90,36,0.9)] md:bottom-9 md:right-10"
         >
           <IconCalendarPlus className="h-5 w-5" />
         </button>
@@ -1554,6 +1557,12 @@ function DaySchedule({
   const [nowParts, setNowParts] = useState(() =>
     wallClockParts(new Date().toISOString()),
   );
+  /** Narrow viewport: share column width so every teammate fits on screen. */
+  const [isNarrow, setIsNarrow] = useState(() =>
+    typeof window !== "undefined"
+      ? window.matchMedia(SCHEDULE_NARROW_MQ).matches
+      : false,
+  );
   /** Visual-only; drag payload lives in dragApptRef. */
   const [dragApptId, setDragApptId] = useState<string | null>(null);
   const [dragOverKey, setDragOverKey] = useState<string | null>(null);
@@ -1614,6 +1623,14 @@ function DaySchedule({
     const id = window.setInterval(tick, 30_000);
     return () => window.clearInterval(id);
   }, [isToday, dayAnchor]);
+
+  useEffect(() => {
+    const mq = window.matchMedia(SCHEDULE_NARROW_MQ);
+    const sync = () => setIsNarrow(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -1949,8 +1966,15 @@ function DaySchedule({
           (SCHEDULE_PX_PER_HOUR / 60)
       : null;
   const isDraggingAny = Boolean(dragApptId);
-  const boardMinWidth =
-    SCHEDULE_GUTTER_PX + Math.max(columns.length, 1) * SCHEDULE_COL_MIN_PX;
+  // Desktop: fixed min column width (horizontal scroll when many teammates).
+  // Mobile: equal fr columns so the full team fits in one viewport.
+  const gutterPx = isNarrow ? SCHEDULE_GUTTER_MOBILE_PX : SCHEDULE_GUTTER_PX;
+  const boardMinWidth = isNarrow
+    ? undefined
+    : SCHEDULE_GUTTER_PX + Math.max(columns.length, 1) * SCHEDULE_COL_MIN_PX;
+  const gridTemplateColumns = isNarrow
+    ? `${gutterPx}px repeat(${columns.length}, minmax(0, 1fr))`
+    : `${gutterPx}px repeat(${columns.length}, minmax(${SCHEDULE_COL_MIN_PX}px, 1fr))`;
 
   const weekDays = useMemo(() => weekDaysFor(dayAnchor || shopToday), [dayAnchor, shopToday]);
 
@@ -2294,16 +2318,16 @@ function DaySchedule({
           onPointerDown={onBoardDaySwipePointerDown}
           aria-label="Schedule grid. Drag horizontally to change day."
         >
-          <div style={{ minWidth: `${boardMinWidth}px` }}>
+          <div style={boardMinWidth != null ? { minWidth: `${boardMinWidth}px` } : undefined}>
             {/* Sticky resource headers */}
             <div
               className="sticky top-0 z-30 grid border-b border-[var(--line)] bg-white/95 backdrop-blur-sm"
               style={{
-                gridTemplateColumns: `${SCHEDULE_GUTTER_PX}px repeat(${columns.length}, minmax(${SCHEDULE_COL_MIN_PX}px, 1fr))`,
+                gridTemplateColumns,
               }}
             >
               <div className="sticky left-0 z-40 border-r border-[var(--line)] bg-white">
-                <div className="flex h-full min-h-[3.75rem] items-center justify-center px-1">
+                <div className="flex h-full min-h-[3.75rem] items-center justify-center px-0.5 md:px-1">
                   <span className="text-[9px] font-semibold uppercase tracking-[0.14em] text-[#9aa0a6]">
                     Team
                   </span>
@@ -2329,7 +2353,7 @@ function DaySchedule({
                       onPickAssignee(active ? "" : m.id);
                     }}
                     disabled={unassigned}
-                    className={`group relative flex min-h-[3.75rem] min-w-0 items-center justify-center border-r border-[var(--line)] px-2 py-2 text-center transition last:border-r-0 disabled:cursor-default ${
+                    className={`group relative flex min-h-[3.75rem] min-w-0 items-center justify-center border-r border-[var(--line)] px-0.5 py-2 text-center transition last:border-r-0 disabled:cursor-default md:px-2 ${
                       active
                         ? "bg-[var(--accent-soft)]"
                         : unassigned
@@ -2349,7 +2373,8 @@ function DaySchedule({
                       style={{ background: active ? "var(--accent)" : tone.bar }}
                       aria-hidden="true"
                     />
-                    <span className="flex max-w-full min-w-0 items-center justify-center gap-2">
+                    {/* Mobile: avatar + count only so every column fits. */}
+                    <span className="relative flex flex-col items-center gap-1 md:hidden">
                       <span
                         className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-bold leading-none tracking-wide ring-2 ring-white ${
                           unassigned ? "border border-dashed border-[#c0c4c8]" : ""
@@ -2361,32 +2386,54 @@ function DaySchedule({
                       >
                         {unassigned ? "?" : personInitials(m.name)}
                       </span>
-                      <span className="flex min-w-0 flex-col items-start gap-0.5 text-left">
-                        <span className="flex max-w-full items-center gap-1">
-                          <span className="truncate text-[12px] font-semibold leading-none text-[var(--foreground)]">
-                            {m.name}
-                          </span>
-                          <span
-                            className={`inline-flex h-4 min-w-[1.15rem] shrink-0 items-center justify-center rounded-full px-1 text-[10px] font-bold tabular-nums leading-none ${
-                              count > 0
-                                ? "bg-[var(--ink)] text-white"
-                                : "bg-[#e8eaed] text-[#5f6368]"
-                            }`}
-                          >
-                            {count}
-                          </span>
-                        </span>
-                        <span
-                          className={`max-w-full truncate rounded-md px-1.5 py-0.5 text-[10px] font-medium leading-none ${
-                            active
-                              ? "bg-white/70 text-[var(--accent)]"
-                              : "bg-[#f1f3f4] text-[var(--muted)]"
-                          }`}
-                        >
-                          {active ? "Assigning" : roleLabel}
-                        </span>
+                      <span
+                        className={`inline-flex h-4 min-w-[1.15rem] items-center justify-center rounded-full px-1 text-[10px] font-bold tabular-nums leading-none ${
+                          count > 0
+                            ? "bg-[var(--ink)] text-white"
+                            : "bg-[#e8eaed] text-[#5f6368]"
+                        }`}
+                      >
+                        {count}
                       </span>
                     </span>
+                    <span className="hidden max-w-full min-w-0 items-center justify-center gap-2 md:flex">
+                        <span
+                          className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-bold leading-none tracking-wide ring-2 ring-white ${
+                            unassigned ? "border border-dashed border-[#c0c4c8]" : ""
+                          } ${active ? "ring-[var(--accent)]/35" : ""}`}
+                          style={{
+                            background: active ? "var(--accent)" : tone.bg,
+                            color: active ? "#fff" : tone.fg,
+                          }}
+                        >
+                          {unassigned ? "?" : personInitials(m.name)}
+                        </span>
+                        <span className="flex min-w-0 flex-col items-start gap-0.5 text-left">
+                          <span className="flex max-w-full items-center gap-1">
+                            <span className="truncate text-[12px] font-semibold leading-none text-[var(--foreground)]">
+                              {m.name}
+                            </span>
+                            <span
+                              className={`inline-flex h-4 min-w-[1.15rem] shrink-0 items-center justify-center rounded-full px-1 text-[10px] font-bold tabular-nums leading-none ${
+                                count > 0
+                                  ? "bg-[var(--ink)] text-white"
+                                  : "bg-[#e8eaed] text-[#5f6368]"
+                              }`}
+                            >
+                              {count}
+                            </span>
+                          </span>
+                          <span
+                            className={`max-w-full truncate rounded-md px-1.5 py-0.5 text-[10px] font-medium leading-none ${
+                              active
+                                ? "bg-white/70 text-[var(--accent)]"
+                                : "bg-[#f1f3f4] text-[var(--muted)]"
+                            }`}
+                          >
+                            {active ? "Assigning" : roleLabel}
+                          </span>
+                        </span>
+                      </span>
                   </button>
                 );
               })}
@@ -2396,7 +2443,7 @@ function DaySchedule({
             <div
               className="relative grid"
               style={{
-                gridTemplateColumns: `${SCHEDULE_GUTTER_PX}px repeat(${columns.length}, minmax(${SCHEDULE_COL_MIN_PX}px, 1fr))`,
+                gridTemplateColumns,
                 height: `${gridHeight}px`,
               }}
             >
@@ -2413,7 +2460,7 @@ function DaySchedule({
                     >
                       {i > 0 ? (
                         <span
-                          className={`absolute -top-2 right-2 text-[10px] font-medium tabular-nums ${
+                          className={`absolute -top-2 right-1 text-[9px] font-medium tabular-nums md:right-2 md:text-[10px] ${
                             isToday &&
                             nowParts.date === dayAnchor &&
                             nowParts.hour === h
@@ -2424,13 +2471,13 @@ function DaySchedule({
                           {hourLabel(h)}
                         </span>
                       ) : (
-                        <span className="absolute top-1 right-2 text-[10px] font-medium tabular-nums text-[#70757a]">
+                        <span className="absolute top-1 right-1 text-[9px] font-medium tabular-nums text-[#70757a] md:right-2 md:text-[10px]">
                           {hourLabel(h)}
                         </span>
                       )}
                       {isLast && endHour <= 24 ? (
                         <span
-                          className={`absolute bottom-1 right-2 text-[10px] font-medium tabular-nums ${
+                          className={`absolute bottom-1 right-1 text-[9px] font-medium tabular-nums md:right-2 md:text-[10px] ${
                             isToday &&
                             nowParts.date === dayAnchor &&
                             nowParts.hour === endHour
@@ -2567,7 +2614,7 @@ function DaySchedule({
                               }
                             }}
                             title={canDrag ? "Drag to move" : undefined}
-                            className={`asa-schedule-event absolute z-[3] touch-none overflow-hidden px-1.5 py-1 text-left text-[11px] leading-tight select-none ${
+                            className={`asa-schedule-event absolute z-[3] touch-none overflow-hidden px-1 py-0.5 text-left text-[10px] leading-tight select-none md:px-1.5 md:py-1 md:text-[11px] ${
                               selected ? tone.cardSelected : tone.card
                             } ${canDrag ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"} ${
                               isDragging || isMoving ? "opacity-45" : ""
@@ -3044,8 +3091,8 @@ function BookForm({
             </select>
           </label>
 
-          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-            <label className="block text-xs font-medium text-[var(--muted)]">
+          <div className="grid grid-cols-2 gap-2 sm:gap-2.5">
+            <label className="block min-w-0 text-xs font-medium text-[var(--muted)]">
               Assign to
               <select
                 className={fieldClass}
@@ -3065,7 +3112,7 @@ function BookForm({
                 })}
               </select>
             </label>
-            <label className="block text-xs font-medium text-[var(--muted)]">
+            <label className="block min-w-0 text-xs font-medium text-[var(--muted)]">
               Preferred start
               <input
                 type="datetime-local"

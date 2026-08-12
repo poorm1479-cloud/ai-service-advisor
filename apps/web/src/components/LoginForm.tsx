@@ -188,228 +188,261 @@ export function LoginForm({
   }
 
   return (
-    <div className={variant === "modal" ? "relative w-full" : "w-full"}>
-      {variant === "page" ? (
-        <Link
-          href="/"
-          className="inline-flex items-center gap-1.5 text-sm text-[var(--muted)] transition-colors hover:text-[var(--ink)]"
-        >
-          <span aria-hidden="true">←</span>
-          Back to home
-        </Link>
-      ) : (
-        <button
-          type="button"
-          onClick={onClose}
-          className="absolute right-0 top-0 z-10 inline-flex h-9 w-9 items-center justify-center rounded-full text-[var(--muted)] transition-colors hover:bg-black/5 hover:text-[var(--ink)]"
-          aria-label="Close sign in"
-        >
-          <span aria-hidden className="text-xl leading-none">
-            ×
-          </span>
-        </button>
-      )}
-
-      <p className={`section-label ${variant === "page" ? "mt-5" : "pr-10"}`}>Welcome back</p>
-      <h1
-        id={variant === "modal" ? "home-login-title" : undefined}
-        className={`font-display text-[1.75rem] font-extrabold tracking-tight sm:text-[2rem] ${
-          variant === "modal" ? "pr-10" : "mt-2"
-        }`}
-      >
-        {mfaToken ? "Two-factor authentication" : "Sign in"}
-      </h1>
-      {mfaToken ? (
-        <p className="mt-2 text-sm leading-relaxed text-[var(--muted)]">
-          Enter the 6-digit authenticator code or a one-time backup code.
-        </p>
-      ) : null}
-
-      {!mfaToken && (
-        <div className="auth-segment mt-6" role="tablist" aria-label="Sign-in method">
-          {(
-            [
-              ["phone", "Phone", IconPhone],
-              ["email", "Email", IconMail],
-            ] as const
-          ).map(([id, label, Icon]) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={mode === id}
-              data-active={mode === id}
-              onClick={() => {
-                if (id === mode) return;
-                userEditedContact.current = true;
-                expectedRef.current = null;
-                setMode(id);
-                setFieldEpoch((n) => n + 1);
-              }}
-              className="auth-segment-btn"
-            >
-              <Icon className="h-3.5 w-3.5 shrink-0" />
-              {label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      <form onSubmit={onSubmit} className="mt-6 space-y-4" autoComplete="off">
-        {!mfaToken ? (
-          <>
-            <Field
-              key={`shop-name-${fieldEpoch}`}
-              label="Shop name"
-              icon={<IconBuilding />}
-              name={`asa-login-shop-name-${fieldEpoch}`}
-              autoComplete="off"
-              value={shopName}
-              onChange={(v) => {
-                userEditedShopName.current = true;
-                setShopName(v);
-              }}
-              placeholder="Your shop name"
-              required
-              guardAutofill
-            />
-            {hydrated ? (
-              <div key={`contact-${mode}-${fieldEpoch}`}>
-                {mode === "phone" ? (
-                  <Field
-                    label="Phone"
-                    icon={<IconPhone />}
-                    name={`asa-login-phone-${fieldEpoch}`}
-                    type="tel"
-                    autoComplete="off"
-                    value={phone}
-                    onChange={(v) => {
-                      userEditedContact.current = true;
-                      setPhone(formatPhoneInput(v));
-                    }}
-                    placeholder={PHONE_PLACEHOLDER}
-                    required
-                    guardAutofill
-                  />
-                ) : (
-                  <Field
-                    label="Email"
-                    icon={<IconMail />}
-                    name={`asa-login-email-${fieldEpoch}`}
-                    type="email"
-                    autoComplete="off"
-                    value={email}
-                    onChange={(v) => {
-                      userEditedContact.current = true;
-                      setEmail(v);
-                    }}
-                    required
-                    guardAutofill
-                  />
-                )}
-              </div>
-            ) : null}
-            <PasswordField
-              key={`password-${fieldEpoch}`}
-              label="Password"
-              icon={<IconLock />}
-              name={`asa-login-password-${fieldEpoch}`}
-              value={password}
-              onChange={(v) => {
-                userEditedPassword.current = true;
-                setPassword(v);
-              }}
-              required
-              autoComplete="current-password"
-              guardAutofill
-            />
-            <div className="space-y-2 pt-0.5">
-              <label className="flex items-center gap-2 text-sm text-[var(--muted)]">
-                <input
-                  type="checkbox"
-                  checked={rememberInfo}
-                  onChange={(e) => {
-                    const next = e.target.checked;
-                    setRememberInfo(next);
-                    if (!next) {
-                      clearRememberedLogin();
-                      expectedRef.current = null;
-                    }
-                  }}
-                  className="h-4 w-4 rounded border-[var(--line)] accent-[var(--accent)]"
-                />
-                <span>Remember info</span>
-              </label>
-              <label className="flex items-center gap-2 text-sm text-[var(--muted)]">
-                <input
-                  type="checkbox"
-                  checked={rememberPassword}
-                  onChange={(e) => {
-                    const next = e.target.checked;
-                    setRememberPassword(next);
-                    if (!next) {
-                      clearRememberedLoginPassword();
-                      if (expectedRef.current) {
-                        expectedRef.current = { ...expectedRef.current, password: "" };
-                      }
-                    }
-                  }}
-                  className="h-4 w-4 rounded border-[var(--line)] accent-[var(--accent)]"
-                />
-                <span>Remember password</span>
-              </label>
-            </div>
-          </>
-        ) : (
-          <Field label="Authenticator code" value={mfaCode} onChange={setMfaCode} required />
-        )}
-
-        {error && (
-          <p className="rounded-xl border border-red-200/80 bg-red-50 px-3.5 py-2.5 text-sm text-red-700" role="alert">
-            {error}
-          </p>
-        )}
-
-        <button
-          type="submit"
-          disabled={submitting || !hydrated}
-          className="btn-primary mt-1 w-full py-3 text-base disabled:opacity-60"
-        >
-          {submitting ? "Please wait…" : mfaToken ? "Verify" : "Sign in"}
-        </button>
-        {mfaToken && (
-          <button
-            type="button"
-            onClick={() => {
-              setMfaToken(null);
-              setMfaCode("");
-            }}
-            className="w-full text-sm text-[var(--muted)] transition-colors hover:text-[var(--ink)]"
-          >
-            Back
-          </button>
-        )}
-      </form>
-
-      <div className="mt-4 text-center text-sm text-[var(--muted)]">
-        New shop?{" "}
-        {variant === "modal" && onSwitchToRegister ? (
-          <button
-            type="button"
-            onClick={onSwitchToRegister}
-            className="font-medium text-[var(--accent)] transition-colors hover:text-[var(--accent-hover)]"
-          >
-            Create an account
-          </button>
-        ) : (
+    <div
+      className={
+        variant === "modal"
+          ? "relative flex min-h-0 w-full flex-1 flex-col overflow-hidden"
+          : "flex min-h-0 w-full flex-1 flex-col overflow-hidden"
+      }
+    >
+      <div className={`min-w-0 shrink-0 ${variant === "modal" ? "pr-10" : ""}`}>
+        {variant === "page" ? (
           <Link
-            href="/register"
-            className="font-medium text-[var(--accent)] transition-colors hover:text-[var(--accent-hover)]"
+            href="/"
+            className="inline-flex items-center gap-1.5 text-sm text-[var(--muted)] transition-colors hover:text-[var(--ink)]"
           >
-            Create an account
+            <span aria-hidden="true">←</span>
+            Back to home
           </Link>
+        ) : (
+          <button
+            type="button"
+            onClick={onClose}
+            className="absolute right-0 top-0 z-10 inline-flex h-9 w-9 items-center justify-center rounded-full text-[var(--muted)] transition-colors hover:bg-black/5 hover:text-[var(--ink)]"
+            aria-label="Close sign in"
+          >
+            <span aria-hidden className="text-xl leading-none">
+              ×
+            </span>
+          </button>
+        )}
+
+        <p className={`section-label ${variant === "page" ? "mt-4" : ""}`}>Welcome back</p>
+        <h1
+          id={variant === "modal" ? "home-login-title" : undefined}
+          className="mt-1.5 inline-flex items-center gap-2.5 font-display text-[1.5rem] font-extrabold tracking-tight sm:text-[1.75rem]"
+        >
+          {mfaToken ? (
+            "Two-factor authentication"
+          ) : (
+            <>
+              <IconUser className="h-6 w-6 shrink-0 text-[var(--accent)] sm:h-7 sm:w-7" />
+              Sign in
+            </>
+          )}
+        </h1>
+        {mfaToken ? (
+          <p className="mt-2 text-sm leading-relaxed text-[var(--muted)]">
+            Enter the 6-digit authenticator code or a one-time backup code.
+          </p>
+        ) : null}
+
+        {!mfaToken && (
+          <div className="auth-segment mt-5" role="tablist" aria-label="Sign-in method">
+            {(
+              [
+                ["phone", "Phone", IconPhone],
+                ["email", "Email", IconMail],
+              ] as const
+            ).map(([id, label, Icon]) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={mode === id}
+                data-active={mode === id}
+                onClick={() => {
+                  if (id === mode) return;
+                  userEditedContact.current = true;
+                  expectedRef.current = null;
+                  setMode(id);
+                  setFieldEpoch((n) => n + 1);
+                }}
+                className="auth-segment-btn"
+              >
+                <Icon className="h-3.5 w-3.5 shrink-0" />
+                {label}
+              </button>
+            ))}
+          </div>
         )}
       </div>
+
+      <form
+        onSubmit={onSubmit}
+        className="mt-5 flex min-h-0 flex-1 flex-col overflow-hidden"
+        autoComplete="off"
+      >
+        <div className="auth-form-scroll min-h-0 flex-1 space-y-3.5 overflow-y-auto overscroll-contain pr-1 [-webkit-overflow-scrolling:touch]">
+          {!mfaToken ? (
+            <>
+              <Field
+                key={`shop-name-${fieldEpoch}`}
+                label="Shop name"
+                icon={<IconBuilding />}
+                name={`asa-login-shop-name-${fieldEpoch}`}
+                autoComplete="off"
+                value={shopName}
+                onChange={(v) => {
+                  userEditedShopName.current = true;
+                  setShopName(v);
+                }}
+                placeholder="Your shop name"
+                required
+                guardAutofill
+              />
+              {hydrated ? (
+                <div key={`contact-${mode}-${fieldEpoch}`}>
+                  {mode === "phone" ? (
+                    <Field
+                      label="Phone"
+                      icon={<IconPhone />}
+                      name={`asa-login-phone-${fieldEpoch}`}
+                      type="tel"
+                      autoComplete="off"
+                      value={phone}
+                      onChange={(v) => {
+                        userEditedContact.current = true;
+                        setPhone(formatPhoneInput(v));
+                      }}
+                      placeholder={PHONE_PLACEHOLDER}
+                      required
+                      guardAutofill
+                    />
+                  ) : (
+                    <Field
+                      label="Email"
+                      icon={<IconMail />}
+                      name={`asa-login-email-${fieldEpoch}`}
+                      type="email"
+                      autoComplete="off"
+                      value={email}
+                      onChange={(v) => {
+                        userEditedContact.current = true;
+                        setEmail(v);
+                      }}
+                      required
+                      guardAutofill
+                    />
+                  )}
+                </div>
+              ) : null}
+              <PasswordField
+                key={`password-${fieldEpoch}`}
+                label="Password"
+                icon={<IconLock />}
+                name={`asa-login-password-${fieldEpoch}`}
+                value={password}
+                onChange={(v) => {
+                  userEditedPassword.current = true;
+                  setPassword(v);
+                }}
+                required
+                autoComplete="current-password"
+                guardAutofill
+              />
+              <div className="space-y-2 pb-1 pt-0.5">
+                <label className="flex items-center gap-2 text-sm text-[var(--muted)]">
+                  <input
+                    type="checkbox"
+                    checked={rememberInfo}
+                    onChange={(e) => {
+                      const next = e.target.checked;
+                      setRememberInfo(next);
+                      if (!next) {
+                        clearRememberedLogin();
+                        expectedRef.current = null;
+                      }
+                    }}
+                    className="h-4 w-4 rounded border-[var(--line)] accent-[var(--accent)]"
+                  />
+                  <span>Remember info</span>
+                </label>
+                <label className="flex items-center gap-2 text-sm text-[var(--muted)]">
+                  <input
+                    type="checkbox"
+                    checked={rememberPassword}
+                    onChange={(e) => {
+                      const next = e.target.checked;
+                      setRememberPassword(next);
+                      if (!next) {
+                        clearRememberedLoginPassword();
+                        if (expectedRef.current) {
+                          expectedRef.current = { ...expectedRef.current, password: "" };
+                        }
+                      }
+                    }}
+                    className="h-4 w-4 rounded border-[var(--line)] accent-[var(--accent)]"
+                  />
+                  <span>Remember password</span>
+                </label>
+              </div>
+            </>
+          ) : (
+            <Field label="Authenticator code" value={mfaCode} onChange={setMfaCode} required />
+          )}
+        </div>
+
+        <div className="shrink-0 space-y-3 border-t border-[var(--line)]/70 pt-3">
+          {error && (
+            <p
+              className="rounded-xl border border-red-200/80 bg-red-50 px-3.5 py-2.5 text-sm text-red-700"
+              role="alert"
+            >
+              {error}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={submitting || !hydrated}
+            className="btn-primary mt-1 w-full gap-2 py-3 text-base disabled:opacity-60"
+          >
+            {submitting ? (
+              "Please wait…"
+            ) : mfaToken ? (
+              "Verify"
+            ) : (
+              <>
+                <IconUser className="h-4 w-4" />
+                Sign in
+              </>
+            )}
+          </button>
+          {mfaToken && (
+            <button
+              type="button"
+              onClick={() => {
+                setMfaToken(null);
+                setMfaCode("");
+              }}
+              className="w-full text-sm text-[var(--muted)] transition-colors hover:text-[var(--ink)]"
+            >
+              Back
+            </button>
+          )}
+
+          <p className="text-center text-sm text-[var(--muted)]">
+            New shop?{" "}
+            {variant === "modal" && onSwitchToRegister ? (
+              <button
+                type="button"
+                onClick={onSwitchToRegister}
+                className="font-medium text-[var(--accent)] transition-colors hover:text-[var(--accent-hover)]"
+              >
+                Create an account
+              </button>
+            ) : (
+              <Link
+                href="/register"
+                className="font-medium text-[var(--accent)] transition-colors hover:text-[var(--accent-hover)]"
+              >
+                Create an account
+              </Link>
+            )}
+          </p>
+        </div>
+      </form>
     </div>
   );
 }
@@ -533,6 +566,24 @@ function IconLock({ className = "h-3.5 w-3.5" }: { className?: string }) {
     >
       <rect x="3" y="11" width="18" height="11" rx="2" />
       <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
+  );
+}
+
+function IconUser({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
     </svg>
   );
 }

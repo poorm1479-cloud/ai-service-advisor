@@ -472,27 +472,14 @@ async def admin_me_get(
 
 @router.patch("/me", response_model=AdminProfileOut)
 async def admin_me_patch(
-    body: UpdateAdminProfileRequest,
-    username: str = Depends(require_platform_admin),
-    current: CurrentUser = Depends(get_current_user),
-    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
+    _body: UpdateAdminProfileRequest,
+    _username: str = Depends(require_platform_admin),
+    _current: CurrentUser = Depends(get_current_user),
 ) -> AdminProfileOut:
-    full_name = body.full_name.strip()
-    if not full_name:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Full name is required")
-
-    existing = await uow.users.get_by_id(current.user_id)
-    if existing is None or not existing.is_active:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
-    user = await uow.users.update_profile(current.user_id, full_name=full_name)
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    await uow.commit()
-    return AdminProfileOut(
-        user_id=user.id,
-        username=username,
-        full_name=user.full_name,
+    """Admin username is immutable after bootstrap."""
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Admin username cannot be changed",
     )
 
 

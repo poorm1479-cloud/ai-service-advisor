@@ -93,7 +93,9 @@ class OpenAIChatProvider:
         self._model = model or settings.openai_extraction_model
 
     def available(self) -> bool:
-        return bool((self._api_key or "").strip())
+        from app.infrastructure.ai.openai_runtime import is_openai_enabled
+
+        return is_openai_enabled() and bool((self._api_key or "").strip())
 
     async def complete(
         self,
@@ -103,6 +105,10 @@ class OpenAIChatProvider:
         response_format: dict[str, str] | None = None,
         timeout: float = 60.0,
     ) -> ChatCompletionResult:
+        from app.infrastructure.ai.openai_runtime import is_openai_enabled
+
+        if not is_openai_enabled():
+            raise AIProviderUnavailable("OpenAI usage is disabled by platform admin")
         if not self.available():
             raise AIProviderUnavailable("OPENAI_API_KEY is not set")
 
@@ -299,10 +305,10 @@ class FallbackChatProvider:
 
 
 def build_chat_provider(provider_name: str | None = None) -> ChatProvider:
-    """Build chat provider from AI_PROVIDER (openai → OpenAI with Ollama fallback)."""
+    """Build chat provider from AI_PROVIDER (openai = OpenAI only; ollama = Ollama only)."""
     name = (provider_name or settings.ai_provider or "heuristic").strip().lower()
     if name == "ollama":
         return OllamaChatProvider()
     if name == "openai":
-        return FallbackChatProvider(OpenAIChatProvider(), OllamaChatProvider())
+        return OpenAIChatProvider()
     raise ValueError(f"No chat provider for AI_PROVIDER={name!r}")

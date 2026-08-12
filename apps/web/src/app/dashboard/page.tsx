@@ -36,28 +36,33 @@ export default function DashboardPage() {
   const [data, setData] = useState<ExecutiveDashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [aiPaused, setAiPaused] = useState(false);
+  const [aiUsageAvailable, setAiUsageAvailable] = useState(true);
   const [pauseBusy, setPauseBusy] = useState(false);
   // null until mount — avoids SSR/client clock mismatch (hydration error)
   const [now, setNow] = useState<Date | null>(null);
 
+  const applyShopSettings = useCallback((s: { ai_paused?: boolean; ai_usage_available?: boolean }) => {
+    setAiPaused(Boolean(s.ai_paused));
+    setAiUsageAvailable(s.ai_usage_available !== false);
+  }, []);
+
   const load = useCallback(async () => {
     try {
-      const dash = await getExecutiveDashboard(false);
+      const [dash, shop] = await Promise.all([
+        getExecutiveDashboard(false),
+        getShopSettings().catch(() => null),
+      ]);
       setData(dash);
+      if (shop) applyShopSettings(shop);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load dashboard");
     }
-  }, []);
+  }, [applyShopSettings]);
 
   useEffect(() => {
     if (!session) return;
     void load();
-    void getShopSettings()
-      .then((s) => setAiPaused(Boolean(s.ai_paused)))
-      .catch(() => {
-        /* keep default */
-      });
   }, [session, load]);
 
   useEffect(() => {
@@ -86,11 +91,12 @@ export default function DashboardPage() {
   }, [session, load]);
 
   async function onToggleAiPause() {
+    if (!aiUsageAvailable && aiPaused) return;
     setPauseBusy(true);
     try {
       const next = !aiPaused;
       const shop = await setShopAiPaused(next);
-      setAiPaused(Boolean(shop.ai_paused));
+      applyShopSettings(shop);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update AI pause");
     } finally {
@@ -121,6 +127,8 @@ export default function DashboardPage() {
 
   const revenueCard = cardsById.get("todays_revenue");
   const potentialCard = cardsById.get("expected_revenue");
+  const greeting = greetingFor(now);
+  const workStatusLine = summarizeWorkStatus(repairGroups);
   const dateLabel = now
     ? now.toLocaleDateString(undefined, {
         weekday: "long",
@@ -128,80 +136,82 @@ export default function DashboardPage() {
         day: "numeric",
       })
     : null;
+  const timeLabel = now
+    ? now.toLocaleTimeString(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : null;
 
   return (
-    <div className="relative -mt-1 space-y-7 pb-6 sm:-mt-2 md:-mt-3 md:space-y-8">
+    <div className="relative -mt-1 space-y-6 pb-6 sm:-mt-2 md:-mt-3 md:space-y-7">
       <div
         aria-hidden
-        className="pointer-events-none absolute -inset-x-4 -top-4 h-[22rem] overflow-hidden rounded-[1.75rem]"
+        className="pointer-events-none absolute -inset-x-4 -top-6 h-[28rem] overflow-hidden rounded-[1.75rem]"
       >
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_12%_0%,var(--accent-soft),transparent_42%),linear-gradient(180deg,rgba(255,255,255,0.72),transparent_70%)]" />
-        <div className="absolute inset-x-8 top-10 h-px bg-[linear-gradient(90deg,transparent,rgba(0,0,0,0.08),transparent)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_8%_-10%,var(--accent-soft),transparent_46%),radial-gradient(ellipse_at_92%_8%,rgba(0,0,0,0.035),transparent_42%),linear-gradient(180deg,rgba(255,255,255,0.78),transparent_72%)]" />
+        <div className="absolute inset-x-10 top-14 h-px bg-[linear-gradient(90deg,transparent,rgba(0,0,0,0.07),transparent)]" />
       </div>
 
       {/* Command hero */}
-      <header className="hero-motion relative overflow-hidden rounded-[1.35rem] border border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white px-5 py-5 text-[var(--foreground)] shadow-[var(--shadow-soft)] sm:px-6 sm:py-6">
+      <header className="hero-motion relative overflow-hidden rounded-[1.5rem] border border-[var(--line)] bg-[linear-gradient(145deg,rgba(255,255,255,0.96)_0%,rgba(255,255,255,0.88)_48%,rgba(255,248,244,0.92)_100%)] px-5 py-5 shadow-[var(--shadow-soft)] sm:px-6 sm:py-6">
         <div
           aria-hidden
-          className="pointer-events-none absolute right-0 top-0 h-40 w-40 translate-x-1/4 -translate-y-1/4 rounded-full bg-[var(--accent-glow)] blur-2xl"
+          className="pointer-events-none absolute -right-10 -top-16 h-48 w-48 rounded-full bg-[var(--accent-glow)] blur-3xl"
         />
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-y-0 left-0 w-px bg-[linear-gradient(180deg,transparent_8%,rgba(240,90,36,0.45)_48%,transparent_92%)]"
+          className="pointer-events-none absolute -bottom-20 left-1/3 h-40 w-40 rounded-full bg-[rgba(0,0,0,0.035)] blur-3xl"
         />
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[linear-gradient(90deg,transparent,rgba(240,90,36,0.28),transparent)]"
+          className="pointer-events-none absolute inset-y-0 left-0 w-[3px] bg-[linear-gradient(180deg,transparent_6%,var(--accent)_48%,transparent_94%)]"
         />
 
-        <div className="relative flex flex-wrap items-start justify-between gap-5">
-          <div className="min-w-0">
-            <p className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-[var(--muted)]">
-              <span className="inline-flex h-6 w-6 items-center justify-center rounded-lg bg-[var(--accent)] text-white shadow-sm shadow-[var(--accent-glow)]">
-                <IconGauge className="h-3.5 w-3.5" />
-              </span>
-              Operations
-            </p>
-            <h1 className="font-display mt-2.5 text-[1.65rem] font-semibold leading-none tracking-tight text-[var(--foreground)] sm:text-3xl">
+        <div className="relative pl-2">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+            {greeting}
+          </p>
+          <div className="mt-2 flex items-center justify-between gap-3">
+            <h1 className="font-display min-w-0 flex-1 truncate text-[1.75rem] font-semibold leading-[1.05] tracking-tight text-[var(--foreground)] sm:text-[2.05rem]">
               {session?.shopName ?? "Loading shop…"}
             </h1>
-            <div className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-sm text-[var(--muted)]">
-              {session && (
-                <span className="inline-flex items-center gap-1.5">
-                  <IconUser className="h-3.5 w-3.5 text-[var(--muted)]" />
-                  {ROLE_LABELS[session.role]}
-                </span>
+            <div className="flex shrink-0 items-center gap-3 sm:gap-4">
+              {timeLabel && (
+                <div className="text-right">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
+                    Local time
+                  </p>
+                  <p className="font-display mt-0.5 text-xl font-semibold tabular-nums tracking-tight text-[var(--foreground)] sm:text-2xl">
+                    {timeLabel}
+                  </p>
+                </div>
               )}
-              {dateLabel && (
-                <>
-                  <span className="text-[var(--line)]" aria-hidden>
-                    ·
-                  </span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <IconCalendar className="h-3.5 w-3.5 text-[var(--muted)]" />
-                    {dateLabel}
-                  </span>
-                </>
-              )}
-              {now && (
-                <>
-                  <span className="text-[var(--line)]" aria-hidden>
-                    ·
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 tabular-nums text-[var(--foreground)]">
-                    <IconClock className="h-3.5 w-3.5 text-[var(--muted)]" />
-                    {now.toLocaleTimeString()}
-                  </span>
-                </>
-              )}
+              <StatusPill
+                live={!aiPaused}
+                busy={pauseBusy}
+                usageAvailable={aiUsageAvailable}
+                onToggle={() => void onToggleAiPause()}
+              />
             </div>
           </div>
-
-          <StatusPill
-            live={!aiPaused}
-            busy={pauseBusy}
-            onToggle={() => void onToggleAiPause()}
-          />
+          <p className="mt-2.5 break-words text-sm leading-relaxed text-[var(--muted)] whitespace-normal md:overflow-hidden md:text-ellipsis md:leading-normal md:whitespace-nowrap">
+            {`Today's shop pulse — revenue, appointments, and AI activity. Work status: ${workStatusLine}. Pause AI anytime from the control on the right.`}
+          </p>
+          <div className="mt-3.5 flex flex-wrap items-center gap-2 text-sm text-[var(--muted)]">
+            {session && (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--line)] bg-white/70 px-2.5 py-1 text-xs font-medium text-[var(--foreground)]/80">
+                <IconUser className="h-3.5 w-3.5 text-[var(--muted)]" />
+                {ROLE_LABELS[session.role]}
+              </span>
+            )}
+            {dateLabel && (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--line)] bg-white/70 px-2.5 py-1 text-xs font-medium">
+                <IconCalendar className="h-3.5 w-3.5 text-[var(--muted)]" />
+                {dateLabel}
+              </span>
+            )}
+          </div>
         </div>
       </header>
 
@@ -217,119 +227,150 @@ export default function DashboardPage() {
             aria-hidden
             className="pointer-events-none absolute inset-y-0 left-0 w-1 bg-[var(--accent)]"
           />
-          <div className="relative flex flex-wrap items-center justify-between gap-3 pl-2">
-            <div className="flex min-w-0 items-start gap-3">
-              <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]">
-                <IconImport className="h-4 w-4" />
-              </span>
-              <div>
-                <p className="text-sm font-semibold tracking-tight">No shop data yet</p>
-                <p className="mt-1 max-w-md text-sm text-[var(--muted)]">
-                  Import customers and history to populate this dashboard.
-                </p>
+          <div className="relative flex items-start gap-3 pl-2">
+            <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]">
+              <IconImport className="h-4 w-4" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-3">
+                <p className="min-w-0 text-sm font-semibold tracking-tight">No shop data yet</p>
+                <Link href="/dashboard/import" className="btn-primary shrink-0 px-3 py-1.5 text-sm sm:px-4 sm:py-2">
+                  Import data
+                </Link>
+              </div>
+              <p className="mt-1 max-w-md text-sm text-[var(--muted)]">
+                Import customers and history to populate this dashboard.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!data && !error ? (
+        <DashboardSkeleton />
+      ) : data ? (
+        <>
+          {/* Revenue spotlight — one composition */}
+          <section className="hero-motion-delay relative overflow-hidden rounded-[1.4rem] border border-[var(--line)] bg-[var(--panel)] shadow-[var(--shadow-soft)]">
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_0%_0%,var(--accent-soft),transparent_42%),linear-gradient(135deg,rgba(255,255,255,0.4),transparent_55%)]"
+            />
+            <div className="relative grid grid-cols-2 sm:grid-cols-[1.25fr_1fr]">
+              <SpotlightMetric
+                label={OVERVIEW_LABELS.todays_revenue}
+                value={revenueCard?.value ?? "—"}
+                detail={revenueCard?.detail}
+                tone={revenueCard?.tone}
+                icon={<IconRevenue className="h-3.5 w-3.5 sm:h-4 sm:w-4" />}
+                featured
+                flush
+              />
+              <div className="border-l border-[var(--line)]">
+                <SpotlightMetric
+                  label={OVERVIEW_LABELS.expected_revenue}
+                  value={potentialCard?.value ?? "—"}
+                  detail={potentialCard?.detail}
+                  tone={potentialCard?.tone}
+                  icon={<IconTrend className="h-3.5 w-3.5 sm:h-4 sm:w-4" />}
+                  flush
+                />
               </div>
             </div>
-            <Link href="/dashboard/import" className="btn-primary px-4 py-2 text-sm">
-              Import data
-            </Link>
-          </div>
-        </div>
-      )}
+          </section>
 
-      {/* Revenue spotlight */}
-      <section className="hero-motion-delay relative grid grid-cols-2 gap-3">
-        <SpotlightMetric
-          label={OVERVIEW_LABELS.todays_revenue}
-          value={revenueCard?.value ?? "—"}
-          detail={revenueCard?.detail}
-          tone={revenueCard?.tone}
-          icon={<IconRevenue className="h-4 w-4" />}
-          featured
-        />
-        <SpotlightMetric
-          label={OVERVIEW_LABELS.expected_revenue}
-          value={potentialCard?.value ?? "—"}
-          detail={potentialCard?.detail}
-          tone={potentialCard?.tone}
-          icon={<IconTrend className="h-4 w-4" />}
-        />
-      </section>
-
-      {/* Secondary pulse */}
-      <section className="hero-motion-late relative">
-        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-          {SECONDARY_IDS.map((id, i) => {
-            const card = cardsById.get(id);
-            return (
-              <Metric
-                key={id}
-                label={OVERVIEW_LABELS[id]}
-                value={card?.value ?? "—"}
-                tone={card?.tone}
-                detail={card?.detail}
-                delayMs={40 * i}
-                icon={METRIC_ICONS[id]}
-                href={id === "revenue_opportunities" ? "/dashboard/marketing" : undefined}
-              />
-            );
-          })}
-        </div>
-      </section>
-
-      {/* AI + Repair */}
-      <div className="relative grid gap-6 lg:grid-cols-[0.9fr_1.1fr] lg:gap-5">
-        <section>
-          <SectionHeading
-            title="AI Activity"
-            icon={<IconSpark className="h-3.5 w-3.5" />}
-          />
-          <div className="relative mt-3 overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[var(--shadow-soft)]">
-            <div
-              aria-hidden
-              className="pointer-events-none absolute inset-0 bg-gradient-to-br from-[var(--accent-soft)] via-transparent to-transparent"
-            />
-            <div className="relative grid grid-cols-2 divide-x divide-[var(--line)]">
-              <AiStat
-                label="Calls handled"
-                value={String(aiActivity.callsHandled)}
-                icon={<IconPhone className="h-3.5 w-3.5" />}
-              />
-              <AiStat
-                label="Appointments"
-                value={String(aiActivity.appointmentsCreated)}
-                icon={<IconCalendar className="h-3.5 w-3.5" />}
-              />
+          {/* Secondary pulse */}
+          <section className="hero-motion-late relative">
+            <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5">
+              {SECONDARY_IDS.map((id, i) => {
+                const card = cardsById.get(id);
+                return (
+                  <Metric
+                    key={id}
+                    label={OVERVIEW_LABELS[id]}
+                    value={card?.value ?? "—"}
+                    tone={card?.tone}
+                    detail={card?.detail}
+                    delayMs={40 * i}
+                    icon={METRIC_ICONS[id]}
+                    href={id === "revenue_opportunities" ? "/dashboard/marketing" : undefined}
+                  />
+                );
+              })}
             </div>
-          </div>
-        </section>
+          </section>
 
-        <section>
-          <SectionHeading
-            title="Repair Status"
-            icon={<IconWrench className="h-3.5 w-3.5" />}
-          />
-          <div className="relative mt-3 overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[var(--shadow-soft)]">
-            <div
-              aria-hidden
-              className="pointer-events-none absolute inset-0 bg-gradient-to-br from-[var(--accent-soft)]/50 via-transparent to-transparent"
-            />
-            <div className="relative grid grid-cols-3 divide-x divide-[var(--line)]">
-              <RepairColumn title="Active" tone="active" items={repairGroups.active} />
-              <RepairColumn title="Waiting" tone="waiting" items={repairGroups.waiting} />
-              <RepairColumn title="Scheduled" tone="scheduled" items={repairGroups.scheduled} />
-            </div>
-          </div>
-        </section>
-      </div>
+          {/* AI + Repair */}
+          <div className="relative grid gap-5 lg:grid-cols-[0.88fr_1.12fr]">
+            <section>
+              <SectionHeading
+                title="AI Activity"
+                icon={<IconSpark className="h-3.5 w-3.5" />}
+              />
+              <div className="relative mt-3 overflow-hidden rounded-[1.25rem] border border-[var(--line)] bg-[var(--panel)] shadow-[var(--shadow-soft)]">
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_0%_0%,var(--accent-soft),transparent_55%)]"
+                />
+                <div className="relative grid grid-cols-2 divide-x divide-[var(--line)]">
+                  <AiStat
+                    label="Calls handled"
+                    value={String(aiActivity.callsHandled)}
+                    icon={<IconPhone className="h-3.5 w-3.5" />}
+                  />
+                  <AiStat
+                    label="Appointments"
+                    value={String(aiActivity.appointmentsCreated)}
+                    icon={<IconCalendar className="h-3.5 w-3.5" />}
+                  />
+                </div>
+              </div>
+            </section>
 
-      {!data && !error && (
-        <div className="relative grid grid-cols-2 gap-3">
-          <div className="h-36 animate-pulse rounded-2xl border border-[var(--line)] bg-[linear-gradient(90deg,rgba(0,0,0,0.02),rgba(0,0,0,0.05),rgba(0,0,0,0.02))]" />
-          <div className="h-36 animate-pulse rounded-2xl border border-[var(--line)] bg-[linear-gradient(90deg,rgba(0,0,0,0.02),rgba(0,0,0,0.05),rgba(0,0,0,0.02))]" />
-        </div>
-      )}
+            <section>
+              <SectionHeading
+                title="Repair Status"
+                icon={<IconWrench className="h-3.5 w-3.5" />}
+              />
+              <div className="relative mt-3 overflow-hidden rounded-[1.25rem] border border-[var(--line)] bg-[var(--panel)] shadow-[var(--shadow-soft)]">
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_100%_0%,var(--accent-soft),transparent_50%)]"
+                />
+                <div className="relative grid grid-cols-3 divide-x divide-[var(--line)]">
+                  <RepairColumn title="Active" tone="active" items={repairGroups.active} />
+                  <RepairColumn title="Waiting" tone="waiting" items={repairGroups.waiting} />
+                  <RepairColumn title="Scheduled" tone="scheduled" items={repairGroups.scheduled} />
+                </div>
+              </div>
+            </section>
+          </div>
+        </>
+      ) : null}
     </div>
   );
+}
+
+function greetingFor(now: Date | null) {
+  if (!now) return "Welcome back";
+  const hour = now.getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 17) return "Good afternoon";
+  return "Good evening";
+}
+
+function summarizeWorkStatus(groups: {
+  active: WidgetItem[];
+  waiting: WidgetItem[];
+  scheduled: WidgetItem[];
+}) {
+  const active = groups.active.length;
+  const waiting = groups.waiting.length;
+  const scheduled = groups.scheduled.length;
+  if (active + waiting + scheduled === 0) {
+    return "no jobs in bay yet";
+  }
+  return `${active} active · ${waiting} waiting · ${scheduled} scheduled`;
 }
 
 function deriveAiActivity(data: ExecutiveDashboard | null) {
@@ -372,6 +413,25 @@ function groupRepairStatus(items: WidgetItem[]) {
   return { active, waiting, scheduled };
 }
 
+function DashboardSkeleton() {
+  const wash =
+    "animate-pulse border border-[var(--line)] bg-[linear-gradient(90deg,rgba(0,0,0,0.02),rgba(0,0,0,0.05),rgba(0,0,0,0.02))]";
+  return (
+    <div className="relative space-y-5">
+      <div className={`h-40 rounded-[1.4rem] ${wash}`} />
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+        <div className={`h-24 rounded-2xl ${wash}`} />
+        <div className={`h-24 rounded-2xl ${wash}`} />
+        <div className={`h-24 rounded-2xl ${wash}`} />
+      </div>
+      <div className="grid gap-5 lg:grid-cols-2">
+        <div className={`h-40 rounded-[1.25rem] ${wash}`} />
+        <div className={`h-40 rounded-[1.25rem] ${wash}`} />
+      </div>
+    </div>
+  );
+}
+
 function SectionHeading({
   title,
   hint,
@@ -401,34 +461,45 @@ function SectionHeading({
 function StatusPill({
   live,
   busy,
+  usageAvailable,
   onToggle,
 }: {
   live: boolean;
   busy: boolean;
+  usageAvailable: boolean;
   onToggle: () => void;
 }) {
-  const label = busy
-    ? "Updating…"
-    : live
-      ? "AI answering — click to pause"
-      : "Calls paused — click to resume";
+  // Resume requires quota; pause stays available so shops can stop AI when over limit.
+  const canToggle = usageAvailable || live;
+  const disabled = busy || !canToggle;
+  const label = !usageAvailable && !live
+    ? "AI quota used up — upgrade plan to resume"
+    : !usageAvailable && live
+      ? "AI quota used up — click to pause"
+      : busy
+        ? "Updating…"
+        : live
+          ? "AI answering — click to pause"
+          : "Calls paused — click to resume";
 
   return (
     <button
       type="button"
-      disabled={busy}
+      disabled={disabled}
       onClick={onToggle}
       title={label}
       aria-label={label}
       aria-pressed={!live}
-      className={`group inline-flex items-center gap-2 rounded-full border p-1.5 pr-3 text-xs font-semibold tracking-wide transition-[background-color,border-color,opacity,transform] duration-200 hover:scale-[1.02] disabled:opacity-60 ${
-        live
-          ? "border-[var(--line)] bg-[rgba(0,0,0,0.03)] text-[var(--foreground)] hover:bg-[rgba(0,0,0,0.05)]"
-          : "border-amber-300/50 bg-amber-50 text-amber-900 hover:bg-amber-100/80"
+      className={`group inline-flex items-center gap-2 rounded-full border p-1.5 pr-2.5 text-xs font-semibold tracking-wide transition-[background-color,border-color,opacity,transform] duration-200 hover:scale-[1.02] disabled:pointer-events-none disabled:opacity-55 disabled:hover:scale-100 ${
+        !usageAvailable
+          ? "border-red-200/80 bg-red-50 text-red-800 hover:bg-red-100/80"
+          : live
+            ? "border-[var(--line)] bg-white/80 text-[var(--foreground)] shadow-[var(--shadow-soft)] hover:bg-white"
+            : "border-amber-300/50 bg-amber-50 text-amber-900 hover:bg-amber-100/80"
       }`}
     >
       <span className="relative inline-flex h-8 w-8 items-center justify-center">
-        {live && !busy && (
+        {live && !busy && usageAvailable && (
           <span
             aria-hidden
             className="absolute inset-0 animate-ping rounded-full bg-emerald-400/35"
@@ -437,21 +508,30 @@ function StatusPill({
         <span
           aria-hidden
           className={`relative inline-flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
-            live ? "bg-emerald-500/12 text-emerald-700" : "bg-amber-500/15 text-amber-800"
+            !usageAvailable
+              ? "bg-red-500/12 text-red-700"
+              : live
+                ? "bg-emerald-500/12 text-emerald-700"
+                : "bg-amber-500/15 text-amber-800"
           }`}
         >
-          <IconAiAnswering paused={!live} className="h-4 w-4" />
+          <IconAiAnswering paused={!live || !usageAvailable} className="h-4 w-4" />
         </span>
       </span>
-      <span className="hidden sm:inline">{live ? "AI live" : "Paused"}</span>
       <span
         aria-hidden
         className={`inline-flex h-6 w-6 items-center justify-center rounded-full transition-colors ${
-          live ? "bg-[rgba(0,0,0,0.05)] text-[var(--foreground)]" : "bg-amber-200/60 text-amber-900"
+          !usageAvailable
+            ? "bg-red-200/60 text-red-900"
+            : live
+              ? "bg-[rgba(0,0,0,0.05)] text-[var(--foreground)]"
+              : "bg-amber-200/60 text-amber-900"
         }`}
       >
         {busy ? (
           <span className="text-[10px] leading-none">…</span>
+        ) : !usageAvailable && !live ? (
+          <IconPause className="h-3 w-3 opacity-50" />
         ) : live ? (
           <IconPause className="h-3 w-3" />
         ) : (
@@ -545,25 +625,6 @@ function IconCalendar({ className }: { className?: string }) {
   );
 }
 
-function IconGauge({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.75"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden
-    >
-      <path d="M12 15l3.5-6.5" />
-      <path d="M4.9 17.5A9 9 0 1 1 19.1 17.5" />
-      <circle cx="12" cy="15" r="1.2" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-
 function IconUser({ className }: { className?: string }) {
   return (
     <svg
@@ -598,24 +659,6 @@ function IconUsers({ className }: { className?: string }) {
       <circle cx="9.5" cy="7" r="3.5" />
       <path d="M21 21v-2a4 4 0 0 0-3-3.87" />
       <path d="M16 3.13a3.5 3.5 0 0 1 0 6.74" />
-    </svg>
-  );
-}
-
-function IconClock({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.75"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden
-    >
-      <circle cx="12" cy="12" r="8.5" />
-      <path d="M12 7.5V12l3 2" />
     </svg>
   );
 }
@@ -737,6 +780,7 @@ function SpotlightMetric({
   caption,
   icon,
   featured,
+  flush,
 }: {
   label: string;
   value: string;
@@ -745,6 +789,7 @@ function SpotlightMetric({
   caption?: string;
   icon?: ReactNode;
   featured?: boolean;
+  flush?: boolean;
 }) {
   const toneClass =
     tone === "positive"
@@ -753,31 +798,37 @@ function SpotlightMetric({
         ? "text-amber-600"
         : tone === "negative"
           ? "text-red-600"
-          : featured
-            ? "text-[var(--foreground)]"
-            : "text-[var(--foreground)]";
+          : "text-[var(--foreground)]";
 
   return (
     <div
-      className={`group relative overflow-hidden rounded-[1.25rem] border border-[var(--line)] px-5 py-5 shadow-[var(--shadow-soft)] transition-[transform,box-shadow,border-color] duration-200 hover:-translate-y-0.5 hover:border-[var(--accent)]/35 hover:shadow-[0_1px_0_rgba(255,255,255,0.9)_inset,0_22px_44px_-28px_rgba(0,0,0,0.28)] ${
-        featured
-          ? "bg-gradient-to-br from-[var(--accent-soft)] via-white to-white"
-          : "bg-[var(--panel)]"
+      className={`group relative overflow-hidden px-3.5 py-3.5 transition-[background-color] duration-200 sm:px-5 sm:py-5 ${
+        flush
+          ? featured
+            ? "bg-transparent"
+            : "bg-transparent hover:bg-[rgba(0,0,0,0.015)]"
+          : `rounded-[1.25rem] border border-[var(--line)] shadow-[var(--shadow-soft)] hover:-translate-y-0.5 hover:border-[var(--accent)]/35 hover:shadow-[0_1px_0_rgba(255,255,255,0.9)_inset,0_22px_44px_-28px_rgba(0,0,0,0.28)] ${
+              featured
+                ? "bg-gradient-to-br from-[var(--accent-soft)] via-white to-white"
+                : "bg-[var(--panel)]"
+            }`
       }`}
     >
-      <div
-        aria-hidden
-        className={`pointer-events-none absolute inset-0 ${
-          featured
-            ? "bg-[radial-gradient(ellipse_at_92%_0%,var(--accent-glow),transparent_55%)]"
-            : "bg-gradient-to-br from-[var(--accent-soft)]/40 via-transparent to-transparent"
-        }`}
-      />
-      <div className="relative flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2.5">
+      {!flush && (
+        <div
+          aria-hidden
+          className={`pointer-events-none absolute inset-0 ${
+            featured
+              ? "bg-[radial-gradient(ellipse_at_92%_0%,var(--accent-glow),transparent_55%)]"
+              : "bg-gradient-to-br from-[var(--accent-soft)]/40 via-transparent to-transparent"
+          }`}
+        />
+      )}
+      <div className="relative flex items-start justify-between gap-2 sm:gap-3">
+        <div className="flex min-w-0 items-center gap-1.5 sm:gap-2.5">
           {icon && (
             <span
-              className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${
+              className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg sm:h-9 sm:w-9 sm:rounded-xl ${
                 featured
                   ? "bg-[var(--accent)] text-white shadow-sm shadow-[var(--accent-glow)]"
                   : "bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--accent)]/20"
@@ -786,7 +837,7 @@ function SpotlightMetric({
               {icon}
             </span>
           )}
-          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+          <p className="min-w-0 text-[9px] font-semibold uppercase leading-snug tracking-[0.1em] text-[var(--muted)] sm:text-[10px] sm:tracking-[0.14em]">
             {label}
           </p>
         </div>
@@ -797,12 +848,14 @@ function SpotlightMetric({
         )}
       </div>
       <p
-        className={`font-display relative mt-4 text-[2rem] font-semibold leading-none tracking-tight sm:text-[2.35rem] ${toneClass}`}
+        className={`font-display relative mt-2.5 text-[1.45rem] font-semibold leading-none tracking-tight sm:mt-4 sm:text-[2.45rem] ${toneClass}`}
       >
         {value}
       </p>
       {detail ? (
-        <p className="relative mt-3 max-w-sm text-xs leading-relaxed text-[var(--muted)]">{detail}</p>
+        <p className="relative mt-2 line-clamp-2 max-w-sm text-[11px] leading-relaxed text-[var(--muted)] sm:mt-3 sm:line-clamp-none sm:text-xs">
+          {detail}
+        </p>
       ) : null}
     </div>
   );
@@ -835,7 +888,7 @@ function Metric({
           : "text-[var(--foreground)]";
 
   const className =
-    "group relative overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] px-4 py-3.5 shadow-[var(--shadow-soft)] transition-[transform,box-shadow,border-color] duration-200 hover:-translate-y-0.5 hover:border-[var(--accent)]/35 hover:shadow-[0_1px_0_rgba(255,255,255,0.9)_inset,0_22px_44px_-28px_rgba(0,0,0,0.28)]";
+    "group relative overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] px-2.5 py-2.5 shadow-[var(--shadow-soft)] transition-[transform,box-shadow,border-color] duration-200 hover:-translate-y-0.5 hover:border-[var(--accent)]/35 hover:shadow-[0_1px_0_rgba(255,255,255,0.9)_inset,0_22px_44px_-28px_rgba(0,0,0,0.28)] sm:rounded-2xl sm:px-4 sm:py-3.5";
 
   const body = (
     <>
@@ -843,23 +896,25 @@ function Metric({
         aria-hidden
         className="pointer-events-none absolute inset-0 bg-gradient-to-br from-[var(--accent-soft)]/35 via-transparent to-transparent"
       />
-      <div className="relative flex items-start justify-between gap-2">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-[var(--muted)]">
-          {label}
-        </p>
+      <div className="relative flex items-center gap-1 sm:gap-2">
         {icon && (
-          <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--accent)]/15">
+          <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--accent)]/15 sm:h-7 sm:w-7 sm:rounded-lg">
             {icon}
           </span>
         )}
+        <p className="min-w-0 text-[8px] font-semibold uppercase leading-snug tracking-[0.08em] text-[var(--muted)] sm:text-[10px] sm:tracking-[0.13em]">
+          {label}
+        </p>
       </div>
       <p
-        className={`font-display relative mt-2 text-[1.45rem] font-semibold leading-none tracking-tight sm:text-[1.55rem] ${toneClass}`}
+        className={`font-display relative mt-1.5 text-[1.15rem] font-semibold leading-none tracking-tight sm:mt-2 sm:text-[1.55rem] ${toneClass}`}
       >
         {value}
       </p>
       {detail && (
-        <p className="relative mt-2 text-[10px] leading-snug text-[var(--muted)]">{detail}</p>
+        <p className="relative mt-1.5 hidden text-[10px] leading-snug text-[var(--muted)] sm:mt-2 sm:block">
+          {detail}
+        </p>
       )}
     </>
   );
@@ -896,14 +951,14 @@ function AiStat({
   icon: ReactNode;
 }) {
   return (
-    <div className="px-4 py-4">
+    <div className="px-4 py-5">
       <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
         <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-[var(--accent-soft)] text-[var(--accent)]">
           {icon}
         </span>
         {label}
       </p>
-      <p className="font-display mt-2.5 text-[1.65rem] font-semibold leading-none tracking-tight">
+      <p className="font-display mt-3 text-[1.85rem] font-semibold leading-none tracking-tight">
         {value}
       </p>
     </div>
@@ -1085,5 +1140,23 @@ function RepairColumn({
         )}
       </div>
     </div>
+  );
+}
+
+function IconClock({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7.5V12l3 2" />
+    </svg>
   );
 }

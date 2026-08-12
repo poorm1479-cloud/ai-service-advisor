@@ -81,3 +81,27 @@ async def test_get_usage_includes_seats(monkeypatch: pytest.MonkeyPatch) -> None
     usage = await svc.get_usage(shop_id)
     assert usage["limits"]["seats"] == 2
     assert usage["usage"]["seats"] == 2
+
+
+@pytest.mark.asyncio
+async def test_ai_usage_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    shop_id = uuid4()
+    svc = QuotaService()
+
+    async def _ok(_shop_id):
+        return {
+            "usage": {"ai_calls": 10},
+            "limits": {"ai_calls": 50},
+        }
+
+    async def _full(_shop_id):
+        return {
+            "usage": {"ai_calls": 50},
+            "limits": {"ai_calls": 50},
+        }
+
+    monkeypatch.setattr(svc, "get_usage", _ok)
+    assert await svc.ai_usage_available(shop_id) is True
+
+    monkeypatch.setattr(svc, "get_usage", _full)
+    assert await svc.ai_usage_available(shop_id) is False

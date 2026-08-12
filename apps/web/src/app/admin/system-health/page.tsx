@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AdminShell, Panel, Stat } from "@/components/admin/AdminShell";
+import { AdminShell, LiveBadge, Panel, Stat } from "@/components/admin/AdminShell";
 import { statusTone, streamAdminSystem, type SystemStatus } from "@/lib/admin";
 import {
   HEALTH_FEATURE_GROUPS,
@@ -125,35 +125,19 @@ function SystemHealthBody({ accessToken }: { accessToken: string }) {
 
   return (
     <div className="flex h-[calc(100dvh-8.5rem)] min-h-[32rem] flex-col gap-3">
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <p className="text-sm font-medium">System Health</p>
-          <p className="text-xs text-[var(--muted)]">
-            {new Date(data.generated_at).toLocaleString()}
-          </p>
-        </div>
+      <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
+        <h1 className="page-title">System Health</h1>
         <div className="flex flex-wrap items-center gap-2">
           <span className="hidden text-[11px] text-[var(--muted)] sm:inline-flex sm:gap-3">
             <LegendDot level="green" label="healthy" />
             <LegendDot level="yellow" label="degraded" />
             <LegendDot level="red" label="outage" />
           </span>
-          <span
-            className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium ${
-              live
-                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                : "border-[var(--line)] bg-[var(--background)] text-[var(--muted)]"
-            }`}
-          >
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${live ? "bg-emerald-500" : "bg-[var(--muted)]"}`}
-            />
-            {live ? "Live" : "Connecting"}
-          </span>
+          <LiveBadge live={live} />
         </div>
       </div>
 
-      <section className="grid shrink-0 gap-2 sm:grid-cols-3">
+      <section className="grid shrink-0 gap-2.5 sm:grid-cols-2">
         <Stat
           label="Overall"
           value={overallLabel}
@@ -164,11 +148,6 @@ function SystemHealthBody({ accessToken }: { accessToken: string }) {
           label="Open incidents"
           value={String(openIncidents.length)}
           tone={openIncidents.length > 0 ? "text-amber-700" : "text-emerald-700"}
-        />
-        <Stat
-          label="Live voice"
-          value={String(data.metrics.voice.live_calls ?? 0)}
-          hint={`${data.metrics.sms.conversations_active ?? 0} SMS active`}
         />
       </section>
 

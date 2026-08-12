@@ -486,108 +486,127 @@ export function ServicesPanel({
         </div>
       ) : (
         <ul className="divide-y divide-[var(--line)]">
-          {services.map((svc) => (
-            <li
-              key={svc.id}
-              className={`group flex flex-col gap-3 py-3.5 first:pt-1 last:pb-1 sm:flex-row sm:items-center sm:justify-between ${
-                svc.active ? "" : "opacity-70"
-              }`}
-            >
-              <div className="min-w-0 flex items-start gap-3">
+          {services.map((svc) => {
+            const activeToggle = canEdit ? (
+              <button
+                type="button"
+                role="switch"
+                aria-checked={svc.active}
+                aria-label={`${svc.name} ${svc.active ? "active" : "inactive"}`}
+                onClick={() => void toggleActive(svc)}
+                className="inline-flex shrink-0 items-center gap-2 rounded-full px-1 py-1 transition hover:opacity-90"
+              >
                 <span
-                  className={`mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ring-1 ${
+                  className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
                     svc.active
-                      ? "bg-[var(--accent-soft)] text-[var(--accent)] ring-[var(--accent)]/15"
-                      : "bg-black/[0.04] text-[var(--muted)] ring-black/5"
+                      ? "bg-[var(--accent)] shadow-sm shadow-[var(--accent-glow)]"
+                      : "bg-black/15"
                   }`}
                 >
-                  <IconWrench className="h-4 w-4" />
-                </span>
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="truncate text-sm font-semibold tracking-tight text-[var(--ink)]">
-                      {svc.name}
-                    </p>
-                    <span className="rounded-full bg-black/[0.04] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)] ring-1 ring-inset ring-black/5">
-                      {titleCase(svc.category)}
-                    </span>
-                    {!svc.active && (
-                      <span className="rounded-full bg-black/[0.04] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
-                        Inactive
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--muted)]">
-                    <span className="inline-flex items-center gap-1">
-                      <IconClock className="h-3 w-3" />
-                      {svc.duration_minutes} min
-                    </span>
-                    <span className="font-medium tabular-nums text-[var(--ink)]">
-                      ${formatPrice(svc.price)}
-                    </span>
-                    <span>{titleCase(svc.skill)}</span>
-                    <span className="text-[var(--line)]">·</span>
-                    <span>{titleCase(svc.bay)} bay</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex shrink-0 items-center gap-2 self-end sm:self-center">
-                {canEdit ? (
-                  <>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={svc.active}
-                      aria-label={`${svc.name} ${svc.active ? "active" : "inactive"}`}
-                      onClick={() => void toggleActive(svc)}
-                      className="inline-flex items-center gap-2 rounded-full px-1 py-1 transition hover:opacity-90"
-                    >
-                      <span
-                        className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
-                          svc.active
-                            ? "bg-[var(--accent)] shadow-sm shadow-[var(--accent-glow)]"
-                            : "bg-black/15"
-                        }`}
-                      >
-                        <span
-                          className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-all duration-200 ${
-                            svc.active ? "left-[1.125rem]" : "left-0.5"
-                          }`}
-                        />
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => startEdit(svc)}
-                      className="btn-ghost inline-flex items-center gap-1 px-2.5 py-1.5 text-xs"
-                    >
-                      <IconPencil className="h-3.5 w-3.5" />
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => openDeleteConfirm(svc)}
-                      className="inline-flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs font-semibold text-red-600 transition hover:bg-red-50"
-                    >
-                      <IconTrash className="h-3.5 w-3.5" />
-                      Delete
-                    </button>
-                  </>
-                ) : (
                   <span
-                    className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] ${
+                    className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-all duration-200 ${
+                      svc.active ? "left-[1.125rem]" : "left-0.5"
+                    }`}
+                  />
+                </span>
+              </button>
+            ) : (
+              <span
+                className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] sm:hidden ${
+                  svc.active
+                    ? "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200/80"
+                    : "bg-black/[0.04] text-[var(--muted)] ring-1 ring-inset ring-black/5"
+                }`}
+              >
+                {svc.active ? "Active" : "Inactive"}
+              </span>
+            );
+
+            return (
+              <li
+                key={svc.id}
+                className={`group flex flex-col gap-2 py-3.5 first:pt-1 last:pb-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3 ${
+                  svc.active ? "" : "opacity-70"
+                }`}
+              >
+                <div className="min-w-0 flex flex-1 items-start gap-3">
+                  <span
+                    className={`mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ring-1 ${
                       svc.active
-                        ? "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200/80"
-                        : "bg-black/[0.04] text-[var(--muted)] ring-1 ring-inset ring-black/5"
+                        ? "bg-[var(--accent-soft)] text-[var(--accent)] ring-[var(--accent)]/15"
+                        : "bg-black/[0.04] text-[var(--muted)] ring-black/5"
                     }`}
                   >
-                    {svc.active ? "Active" : "Inactive"}
+                    <IconWrench className="h-4 w-4" />
                   </span>
-                )}
-              </div>
-            </li>
-          ))}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex flex-wrap items-center gap-2">
+                        <p className="truncate text-sm font-semibold tracking-tight text-[var(--ink)]">
+                          {svc.name}
+                        </p>
+                        <span className="rounded-full bg-black/[0.04] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)] ring-1 ring-inset ring-black/5">
+                          {titleCase(svc.category)}
+                        </span>
+                        {!svc.active && (
+                          <span className="rounded-full bg-black/[0.04] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+                            Inactive
+                          </span>
+                        )}
+                      </div>
+                      <div className="sm:hidden">{activeToggle}</div>
+                    </div>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--muted)]">
+                      <span className="inline-flex items-center gap-1">
+                        <IconClock className="h-3 w-3" />
+                        {svc.duration_minutes} min
+                      </span>
+                      <span className="font-medium tabular-nums text-[var(--ink)]">
+                        ${formatPrice(svc.price)}
+                      </span>
+                      <span>{titleCase(svc.skill)}</span>
+                      <span className="text-[var(--line)]">·</span>
+                      <span>{titleCase(svc.bay)} bay</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex shrink-0 items-center gap-2 self-end sm:self-center">
+                  {canEdit ? (
+                    <>
+                      <div className="hidden sm:block">{activeToggle}</div>
+                      <button
+                        type="button"
+                        onClick={() => startEdit(svc)}
+                        className="btn-ghost inline-flex items-center gap-1 px-2.5 py-1.5 text-xs"
+                      >
+                        <IconPencil className="h-3.5 w-3.5" />
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openDeleteConfirm(svc)}
+                        className="inline-flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs font-semibold text-red-600 transition hover:bg-red-50"
+                      >
+                        <IconTrash className="h-3.5 w-3.5" />
+                        Delete
+                      </button>
+                    </>
+                  ) : (
+                    <span
+                      className={`hidden rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] sm:inline ${
+                        svc.active
+                          ? "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200/80"
+                          : "bg-black/[0.04] text-[var(--muted)] ring-1 ring-inset ring-black/5"
+                      }`}
+                    >
+                      {svc.active ? "Active" : "Inactive"}
+                    </span>
+                  )}
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
     </>
@@ -620,8 +639,8 @@ export function ServicesPanel({
               closeDeleteConfirm();
             }}
           />
-          <div className="pointer-events-none relative flex h-full items-end justify-center p-4 sm:items-center">
-            <div className="pointer-events-auto w-full max-w-sm overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]">
+          <div className="pointer-events-none relative flex h-full items-center justify-center p-4">
+            <div className="pointer-events-auto w-full max-w-sm min-w-[min(100%,20rem)] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]">
             <div className="relative overflow-hidden border-b border-red-100 bg-gradient-to-br from-red-50 via-white to-white px-4 pb-4 pt-5">
               <div
                 className="pointer-events-none absolute -right-8 -top-10 h-32 w-32 rounded-full bg-red-100/70 blur-2xl"
@@ -697,8 +716,8 @@ export function ServicesPanel({
               resetForm();
             }}
           />
-          <div className="pointer-events-none relative flex h-full items-end justify-center p-4 sm:items-center">
-            <div className="pointer-events-auto flex max-h-[min(90dvh,32rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]">
+          <div className="pointer-events-none relative flex h-full items-center justify-center p-4">
+            <div className="pointer-events-auto flex max-h-[min(90dvh,32rem)] w-full max-w-md min-w-[min(100%,20rem)] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]">
             <div className="relative shrink-0 overflow-hidden border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white px-5 pb-5 pt-6">
               <div
                 className="pointer-events-none absolute right-0 top-0 h-40 w-40 translate-x-1/4 -translate-y-1/4 rounded-full bg-[var(--accent-glow)] blur-2xl"
@@ -775,7 +794,7 @@ export function ServicesPanel({
                   </label>
                 </div>
 
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
                     <label className="block space-y-1">
                       <span className="text-[11px] font-medium text-[var(--muted)]">
@@ -837,7 +856,7 @@ export function ServicesPanel({
                   </label>
                 </div>
 
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid grid-cols-2 gap-3">
                   <label className="block space-y-1">
                     <span className="text-[11px] font-medium text-[var(--muted)]">Skill</span>
                     <select
@@ -986,10 +1005,8 @@ export function ServicesPanel({
             {success}
           </p>
         )}
-        <div className="relative flex max-h-[min(50vh,22rem)] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[var(--shadow-soft)]">
-          <div className="asa-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3 sm:px-5">
-            {catalogBody}
-          </div>
+        <div className="asa-scroll max-h-[min(40vh,22rem)] overflow-y-auto overscroll-contain rounded-2xl border border-[var(--line)] bg-[var(--panel)] px-4 py-3 shadow-[var(--shadow-soft)] sm:px-5">
+          {catalogBody}
         </div>
         {modals}
       </section>

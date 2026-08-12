@@ -73,7 +73,7 @@ class PasswordResetService:
             if user.email:
                 await build_email_sender().send(
                     to=user.email,
-                    subject="Reset your AI Service Advisor password",
+                    subject="Reset your RatchetHub password",
                     body=f"Use this link to reset your password (expires in 1 hour):\n\n{reset_url}\n",
                 )
             return {

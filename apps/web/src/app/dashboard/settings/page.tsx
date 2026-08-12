@@ -12,7 +12,13 @@ import {
   useState,
 } from "react";
 import { PasswordField } from "@/components/PasswordField";
-import { fetchMe, ROLE_LABELS } from "@/lib/api";
+import {
+  fetchMe,
+  loadRememberedLoginPassword,
+  ROLE_LABELS,
+  saveRememberedLoginPassword,
+  saveRememberedRegisterPassword,
+} from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import {
   BusinessHours,
@@ -648,6 +654,7 @@ function SettingsContent() {
   function beginEditProfile() {
     setError(null);
     setProfileSuccess(null);
+    setPasswordSuccess(null);
     setEditingProfile(true);
   }
 
@@ -655,9 +662,13 @@ function SettingsContent() {
     setFullName(savedFullName);
     setProfilePhone(savedProfilePhone);
     setProfileEmail(savedProfileEmail);
+    setCurrentPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
     setEditingProfile(false);
     setError(null);
     setProfileSuccess(null);
+    setPasswordSuccess(null);
   }
 
   async function onSaveProfile(e: FormEvent) {
@@ -697,6 +708,7 @@ function SettingsContent() {
 
   async function onChangePassword(e: FormEvent) {
     e.preventDefault();
+    if (!editingProfile) return;
     setError(null);
     setPasswordSuccess(null);
     if (newPassword !== confirmPassword) {
@@ -713,6 +725,11 @@ function SettingsContent() {
         currentPassword,
         newPassword,
       });
+      // Keep remembered login/register passwords in sync so Sign in still works.
+      if (loadRememberedLoginPassword() !== null) {
+        saveRememberedLoginPassword(newPassword);
+      }
+      saveRememberedRegisterPassword(newPassword);
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
@@ -890,7 +907,7 @@ function SettingsContent() {
                   <form
                     id="shop-settings-form"
                     onSubmit={onSaveShop}
-                    className="grid gap-3 sm:grid-cols-2"
+                    className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 sm:grid-cols-2 sm:gap-3 [&>*]:min-w-0"
                   >
                     <ProfileField
                       label="Shop name"
@@ -902,7 +919,7 @@ function SettingsContent() {
                       minLength={2}
                       maxLength={255}
                     />
-                    <label className="block space-y-1.5">
+                    <label className="block w-[7.25rem] space-y-1.5 sm:w-auto">
                       <span className="inline-flex items-center gap-1.5 text-sm font-medium">
                         <span className="text-[var(--muted)]">
                           <IconShield />
@@ -911,9 +928,16 @@ function SettingsContent() {
                       </span>
                       <input
                         type="text"
+                        value={isOwner ? "Owner" : "Team"}
+                        disabled
+                        title={isOwner ? "Owner — can edit" : "Team — view only"}
+                        className="w-full rounded-md border border-[var(--line)] bg-[var(--background)] px-2 py-2 text-xs text-[var(--muted)] outline-none sm:hidden"
+                      />
+                      <input
+                        type="text"
                         value={isOwner ? "Owner — can edit" : "Team — view only"}
                         disabled
-                        className="w-full rounded-md border border-[var(--line)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--muted)] outline-none"
+                        className="hidden w-full rounded-md border border-[var(--line)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--muted)] outline-none sm:block"
                       />
                     </label>
                   </form>
@@ -976,27 +1000,69 @@ function SettingsContent() {
                     {hours.map((h, idx) => {
                       const canEdit = isOwner && editingShop && !savingShop;
                       const open = !h.closed;
+                      const dayName = WEEKDAY_NAMES[h.weekday];
                       return (
                         <div
                           key={h.weekday}
-                          className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2.5 px-4 py-3.5 transition-colors sm:grid-cols-[8.5rem_minmax(0,1fr)_auto] ${
+                          className={`grid grid-cols-[3.25rem_minmax(0,1fr)_auto] items-center gap-x-2 px-3 py-2.5 transition-colors sm:grid-cols-[8.5rem_minmax(0,1fr)_auto] sm:gap-x-3 sm:px-4 sm:py-3.5 ${
                             idx > 0 ? "border-t border-[var(--line)]" : ""
                           } ${h.closed ? "bg-[var(--background)]/50" : "bg-white/40"}`}
                         >
                           <div className="min-w-0">
-                            <p className="text-sm font-semibold tracking-tight text-[var(--ink)]">
-                              {WEEKDAY_NAMES[h.weekday]}
+                            <p className="truncate text-sm font-semibold tracking-tight text-[var(--ink)]">
+                              <span className="sm:hidden">{dayName.slice(0, 3)}</span>
+                              <span className="hidden sm:inline">{dayName}</span>
                             </p>
+                          </div>
+
+                          <div className="min-w-0">
+                            {h.closed ? (
+                              <span className="inline-flex items-center rounded-full bg-black/[0.04] px-2 py-1 text-[11px] font-medium text-[var(--muted)] ring-1 ring-inset ring-black/5 sm:px-2.5 sm:text-xs">
+                                Closed
+                              </span>
+                            ) : canEdit ? (
+                              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-1 sm:gap-1.5">
+                                <input
+                                  type="time"
+                                  value={h.open_time}
+                                  disabled={!canEdit}
+                                  aria-label={`${dayName} open`}
+                                  onChange={(e) =>
+                                    updateHour(h.weekday, { open_time: e.target.value })
+                                  }
+                                  className="min-w-0 w-full rounded-md border border-[var(--line)] bg-white px-1 py-1.5 text-xs tabular-nums outline-none ring-[var(--accent)] focus:ring-2 disabled:cursor-not-allowed disabled:opacity-40 sm:px-2.5 sm:text-sm"
+                                />
+                                <span className="shrink-0 text-xs font-medium text-[var(--muted)]" aria-hidden>
+                                  –
+                                </span>
+                                <input
+                                  type="time"
+                                  value={h.close_time}
+                                  disabled={!canEdit}
+                                  aria-label={`${dayName} close`}
+                                  onChange={(e) =>
+                                    updateHour(h.weekday, { close_time: e.target.value })
+                                  }
+                                  className="min-w-0 w-full rounded-md border border-[var(--line)] bg-white px-1 py-1.5 text-xs tabular-nums outline-none ring-[var(--accent)] focus:ring-2 disabled:cursor-not-allowed disabled:opacity-40 sm:px-2.5 sm:text-sm"
+                                />
+                              </div>
+                            ) : (
+                              <p className="truncate text-xs font-medium tabular-nums tracking-tight text-[var(--ink)] sm:text-sm">
+                                <span>{formatHourLabel(h.open_time)}</span>
+                                <span className="mx-1 text-[var(--muted)] sm:mx-2">–</span>
+                                <span>{formatHourLabel(h.close_time)}</span>
+                              </p>
+                            )}
                           </div>
 
                           <button
                             type="button"
                             role="switch"
                             aria-checked={open}
-                            aria-label={`${WEEKDAY_NAMES[h.weekday]} ${open ? "open" : "closed"}`}
+                            aria-label={`${dayName} ${open ? "open" : "closed"}`}
                             disabled={!canEdit}
                             onClick={() => updateHour(h.weekday, { closed: open })}
-                            className={`col-start-2 row-start-1 inline-flex shrink-0 items-center gap-2 justify-self-end rounded-full px-1 py-1 transition disabled:cursor-not-allowed sm:col-start-3 ${
+                            className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-0.5 py-1 transition disabled:cursor-not-allowed sm:gap-2 sm:px-1 ${
                               canEdit ? "hover:opacity-90" : "opacity-90"
                             }`}
                           >
@@ -1014,53 +1080,13 @@ function SettingsContent() {
                               />
                             </span>
                             <span
-                              className={`min-w-[2.75rem] text-left text-xs font-semibold ${
+                              className={`hidden min-w-[2.75rem] text-left text-xs font-semibold sm:inline ${
                                 open ? "text-[var(--ink)]" : "text-[var(--muted)]"
                               }`}
                             >
                               {open ? "Open" : "Closed"}
                             </span>
                           </button>
-
-                          <div className="col-span-2 min-w-0 sm:col-span-1 sm:col-start-2 sm:row-start-1">
-                            {h.closed ? (
-                              <span className="inline-flex items-center rounded-full bg-black/[0.04] px-2.5 py-1 text-xs font-medium text-[var(--muted)] ring-1 ring-inset ring-black/5">
-                                Closed all day
-                              </span>
-                            ) : canEdit ? (
-                              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-1.5">
-                                <input
-                                  type="time"
-                                  value={h.open_time}
-                                  disabled={!canEdit}
-                                  aria-label={`${WEEKDAY_NAMES[h.weekday]} open`}
-                                  onChange={(e) =>
-                                    updateHour(h.weekday, { open_time: e.target.value })
-                                  }
-                                  className="min-w-0 w-full rounded-md border border-[var(--line)] bg-white px-1.5 py-1.5 text-sm tabular-nums outline-none ring-[var(--accent)] focus:ring-2 disabled:cursor-not-allowed disabled:opacity-40 sm:px-2.5"
-                                />
-                                <span className="shrink-0 text-xs font-medium text-[var(--muted)]" aria-hidden>
-                                  –
-                                </span>
-                                <input
-                                  type="time"
-                                  value={h.close_time}
-                                  disabled={!canEdit}
-                                  aria-label={`${WEEKDAY_NAMES[h.weekday]} close`}
-                                  onChange={(e) =>
-                                    updateHour(h.weekday, { close_time: e.target.value })
-                                  }
-                                  className="min-w-0 w-full rounded-md border border-[var(--line)] bg-white px-1.5 py-1.5 text-sm tabular-nums outline-none ring-[var(--accent)] focus:ring-2 disabled:cursor-not-allowed disabled:opacity-40 sm:px-2.5"
-                                />
-                              </div>
-                            ) : (
-                              <p className="text-sm font-medium tabular-nums tracking-tight text-[var(--ink)]">
-                                <span>{formatHourLabel(h.open_time)}</span>
-                                <span className="mx-2 text-[var(--muted)]">–</span>
-                                <span>{formatHourLabel(h.close_time)}</span>
-                              </p>
-                            )}
-                          </div>
                         </div>
                       );
                     })}
@@ -1153,7 +1179,7 @@ function SettingsContent() {
               <form
                 id="account-profile-form"
                 onSubmit={onSaveProfile}
-                className="grid gap-3 sm:grid-cols-2"
+                className="grid grid-cols-2 gap-3"
               >
                 <ProfileField
                   label="Name"
@@ -1219,7 +1245,9 @@ function SettingsContent() {
 
               <form
                 onSubmit={onChangePassword}
-                className="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 shadow-[var(--shadow-soft)] sm:p-5"
+                className={`rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 shadow-[var(--shadow-soft)] sm:p-5 ${
+                  !editingProfile ? "opacity-60" : ""
+                }`}
               >
                 {passwordSuccess && (
                   <p
@@ -1237,6 +1265,7 @@ function SettingsContent() {
                       value={currentPassword}
                       onChange={setCurrentPassword}
                       required
+                      disabled={!editingProfile || savingPassword}
                       autoComplete="current-password"
                     />
                   </div>
@@ -1246,6 +1275,7 @@ function SettingsContent() {
                     onChange={setNewPassword}
                     required
                     minLength={8}
+                    disabled={!editingProfile || savingPassword}
                     autoComplete="new-password"
                   />
                   <PasswordField
@@ -1254,24 +1284,27 @@ function SettingsContent() {
                     onChange={setConfirmPassword}
                     required
                     minLength={8}
+                    disabled={!editingProfile || savingPassword}
                     autoComplete="new-password"
                   />
                 </div>
-                <div className="mt-4 flex flex-wrap items-center gap-3">
-                  <button
-                    type="submit"
-                    disabled={
-                      savingPassword ||
-                      !currentPassword ||
-                      newPassword.length < 8 ||
-                      confirmPassword.length < 8
-                    }
-                    className="btn-primary inline-flex items-center gap-1.5 px-4 py-2 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <IconSave />
-                    {savingPassword ? "Saving…" : "Update password"}
-                  </button>
-                </div>
+                {editingProfile ? (
+                  <div className="mt-4 flex flex-wrap items-center gap-3">
+                    <button
+                      type="submit"
+                      disabled={
+                        savingPassword ||
+                        !currentPassword ||
+                        newPassword.length < 8 ||
+                        confirmPassword.length < 8
+                      }
+                      className="btn-primary inline-flex items-center gap-1.5 px-4 py-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <IconSave />
+                      {savingPassword ? "Saving…" : "Update password"}
+                    </button>
+                  </div>
+                ) : null}
               </form>
             </section>
           </div>

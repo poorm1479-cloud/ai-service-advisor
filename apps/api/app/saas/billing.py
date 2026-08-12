@@ -24,19 +24,21 @@ FAILED_PAYMENT_STATUSES = frozenset({"past_due", "unpaid", "incomplete", "incomp
 
 # Canonical plan quotas (UI + enforcement). Keeps existing DBs in sync without waiting on ops.
 FREE_PLAN_QUOTAS = {
-    "ai_calls_monthly": 50,
+    "ai_calls_monthly": 10,
     "sms_monthly": 50,
     "seats": 2,
 }
 PRO_PLAN_QUOTAS = {
-    "ai_calls_monthly": 200,
+    "ai_calls_monthly": 150,
     "sms_monthly": 200,
     "seats": 4,
+    "price_cents_monthly": 15000,
 }
 ENTERPRISE_PLAN_QUOTAS = {
     "ai_calls_monthly": 500,
     "sms_monthly": 500,
     "seats": 10,
+    "price_cents_monthly": 40000,
 }
 
 
@@ -271,18 +273,10 @@ class BillingService:
                 await session.flush()
 
             if not settings.stripe_secret_key:
-                # Dev checkout: activate plan immediately
-                sub.plan_id = plan.id
-                sub.status = "active"
-                sub.current_period_end = datetime.now(timezone.utc) + timedelta(days=30)
-                sub.updated_at = datetime.now(timezone.utc)
-                await session.commit()
-                return {
-                    "mode": "dev",
-                    "checkout_url": success_url,
-                    "message": "Stripe not configured; plan activated in development mode.",
-                    "plan_id": plan.id,
-                }
+                # Never activate a paid plan without a successful Stripe payment.
+                raise ValidationError(
+                    "Paid plan upgrades require a successful checkout payment."
+                )
 
             price_id = plan.stripe_price_id
             if not price_id:
@@ -311,7 +305,7 @@ class BillingService:
                 )
             if res.status_code >= 400:
                 logger.error("stripe.checkout_failed status=%s body=%s", res.status_code, res.text)
-                raise ValidationError("Unable to create Stripe checkout session")
+                raise ValidationError("Unable to create checkout session")
             payload = res.json()
             await session.commit()
             return {
@@ -457,13 +451,13 @@ class BillingService:
             )
             if sub is None or not sub.stripe_customer_id:
                 raise ValidationError(
-                    "No Stripe customer on file. Complete a paid checkout first, or configure Stripe."
+                    "No billing customer on file. Complete a paid checkout first."
                 )
             if not settings.stripe_secret_key:
                 return {
                     "mode": "dev",
                     "portal_url": return_url or settings.billing_portal_return_url,
-                    "message": "Stripe not configured; returning to billing page.",
+                    "message": "Billing portal is unavailable; returning to billing page.",
                 }
             data = {
                 "customer": sub.stripe_customer_id,
@@ -477,7 +471,7 @@ class BillingService:
                 )
             if res.status_code >= 400:
                 logger.error("stripe.portal_failed status=%s body=%s", res.status_code, res.text)
-                raise ValidationError("Unable to create Stripe portal session")
+                raise ValidationError("Unable to open billing portal")
             payload = res.json()
             return {"mode": "stripe", "portal_url": payload["url"]}
 

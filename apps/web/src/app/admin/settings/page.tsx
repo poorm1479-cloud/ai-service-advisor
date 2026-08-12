@@ -1,19 +1,16 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import { AdminShell, Panel } from "@/components/admin/AdminShell";
+import { AdminShell, LiveBadge, Panel } from "@/components/admin/AdminShell";
 import { PasswordField } from "@/components/PasswordField";
 import {
   AdminEditableSettings,
   AdminSettingsResponse,
   changeAdminPassword,
-  getAdminProfile,
   getAdminSettings,
   streamAdminSettings,
-  updateAdminProfile,
   updateAdminSettings,
 } from "@/lib/admin";
-import { useAuth } from "@/lib/auth";
 
 const DEFAULT_EDITABLE: AdminEditableSettings = {
   dashboard_poll_seconds: 3,
@@ -21,6 +18,7 @@ const DEFAULT_EDITABLE: AdminEditableSettings = {
   toast_enabled: true,
   maintenance_mode: false,
   twilio_auto_provision_numbers: true,
+  openai_enabled: true,
 };
 
 const POLL_MS = 3000;
@@ -28,35 +26,23 @@ const POLL_MS = 3000;
 export default function AdminSettingsPage() {
   return (
     <AdminShell>
-      {({ accessToken, username }) => (
-        <SettingsBody accessToken={accessToken} username={username} />
-      )}
+      {({ accessToken }) => <SettingsBody accessToken={accessToken} />}
     </AdminShell>
   );
 }
 
-function SettingsBody({
-  accessToken,
-  username,
-}: {
-  accessToken: string;
-  username: string;
-}) {
-  const { session, updateSession } = useAuth();
+function SettingsBody({ accessToken }: { accessToken: string }) {
   const [data, setData] = useState<AdminSettingsResponse | null>(null);
   const [form, setForm] = useState<AdminEditableSettings>(DEFAULT_EDITABLE);
-  const [fullName, setFullName] = useState(session?.fullName ?? "");
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [profileSuccess, setProfileSuccess] = useState<string | null>(null);
   const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [live, setLive] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [savingProfile, setSavingProfile] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
   const formDirtyRef = useRef(false);
 
@@ -76,19 +62,8 @@ function SettingsBody({
         setError(null);
       }
       try {
-        if (quiet) {
-          // Quiet poll: platform settings only — do not clobber form / password fields.
-          applySettings(await getAdminSettings(accessToken));
-        } else {
-          const [next, profile] = await Promise.all([
-            getAdminSettings(accessToken),
-            getAdminProfile(accessToken),
-          ]);
-          applySettings(next);
-          formDirtyRef.current = false;
-          setFullName(profile.full_name);
-          updateSession({ fullName: profile.full_name });
-        }
+        applySettings(await getAdminSettings(accessToken));
+        if (!quiet) formDirtyRef.current = false;
       } catch (err) {
         if (!quiet) {
           setLive(false);
@@ -99,7 +74,7 @@ function SettingsBody({
         if (!quiet) setBusy(false);
       }
     },
-    [accessToken, updateSession, applySettings],
+    [accessToken, applySettings],
   );
 
   // REST polling is the reliable live path while this page stays mounted.
@@ -153,25 +128,6 @@ function SettingsBody({
     }
   }
 
-  async function onSaveProfile(e: FormEvent) {
-    e.preventDefault();
-    setSavingProfile(true);
-    setError(null);
-    setProfileSuccess(null);
-    try {
-      const updated = await updateAdminProfile(accessToken, {
-        fullName: fullName.trim(),
-      });
-      setFullName(updated.full_name);
-      updateSession({ fullName: updated.full_name });
-      setProfileSuccess("Admin name saved.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save admin name");
-    } finally {
-      setSavingProfile(false);
-    }
-  }
-
   async function onChangePassword(e: FormEvent) {
     e.preventDefault();
     setError(null);
@@ -210,78 +166,21 @@ function SettingsBody({
 
   return (
     <>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="font-display text-lg font-semibold tracking-tight">Settings</h1>
-          <p className="mt-1 text-xs text-[var(--muted)]">
-            Account security and runtime platform knobs. Login username stays in environment
-            allowlist.
-            {data.updated_at
-              ? ` · updated ${new Date(data.updated_at).toLocaleString()}`
-              : null}
-          </p>
-        </div>
-        <span
-          className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium ${
-            live
-              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-              : "border-[var(--line)] bg-[var(--background)] text-[var(--muted)]"
-          }`}
-        >
-          <span
-            className={`h-1.5 w-1.5 rounded-full ${live ? "bg-emerald-500" : "bg-[var(--muted)]"}`}
-          />
-          {live ? "Live" : "Connecting"}
-        </span>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <h1 className="page-title">Setting</h1>
+        <LiveBadge live={live} />
       </div>
 
-      {error ? <p className="text-sm text-red-700">{error}</p> : null}
-      {success ? <p className="text-sm text-emerald-700">{success}</p> : null}
-
-      <Panel title="Admin account">
-        <form onSubmit={onSaveProfile} className="space-y-4 px-5 py-4">
-          <label className="block text-sm">
-            <span className="font-medium">Login username</span>
-            <span className="mt-0.5 block text-xs text-[var(--muted)]">
-              Controlled by PLATFORM_ADMIN_USERNAMES. Cannot be changed here.
-            </span>
-            <input
-              type="text"
-              value={username}
-              disabled
-              className="mt-2 w-full max-w-md rounded-md border border-[var(--line)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--muted)]"
-            />
-          </label>
-          <label className="block text-sm">
-            <span className="font-medium">Admin name</span>
-            <span className="mt-0.5 block text-xs text-[var(--muted)]">
-              Display name shown in the admin console.
-            </span>
-            <input
-              type="text"
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-              disabled={savingProfile}
-              minLength={1}
-              maxLength={255}
-              required
-              className="mt-2 w-full max-w-md rounded-md border border-[var(--line)] bg-white px-3 py-2 text-sm disabled:opacity-60"
-            />
-          </label>
-          {profileSuccess ? (
-            <p className="text-sm text-emerald-700" role="status">
-              {profileSuccess}
-            </p>
-          ) : null}
-          <button
-            type="submit"
-            disabled={savingProfile || !fullName.trim()}
-            className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-          >
-            {savingProfile ? "Saving…" : "Save name"}
-          </button>
-        </form>
-      </Panel>
+      {error ? (
+        <p className="rounded-xl border border-red-200/80 bg-red-50/90 px-4 py-3 text-sm text-red-700">
+          {error}
+        </p>
+      ) : null}
+      {success ? (
+        <p className="rounded-xl border border-emerald-200/80 bg-emerald-50/90 px-4 py-3 text-sm text-emerald-800">
+          {success}
+        </p>
+      ) : null}
 
       <Panel title="Change password">
         <form onSubmit={onChangePassword} className="space-y-4 px-5 py-4">

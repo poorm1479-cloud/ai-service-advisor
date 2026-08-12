@@ -213,7 +213,7 @@ class AuthOtpService:
                 OutboundSms(
                     to_number=target,
                     from_number=from_number,
-                    body=f"AI Service Advisor verification code: {code}",
+                    body=f"RatchetHub verification code: {code}",
                 )
             )
             logger.info("auth.otp.sms_sent phone=%s purpose=%s", target, purpose)
@@ -222,7 +222,7 @@ class AuthOtpService:
 
             await build_email_sender().send(
                 to=target,
-                subject="AI Service Advisor verification code",
+                subject="RatchetHub verification code",
                 body=f"Your verification code is: {code}",
             )
             # Keep local mirror for tests when fake provider is used

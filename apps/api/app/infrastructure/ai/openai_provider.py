@@ -59,12 +59,17 @@ class OpenAISpeechToText(SpeechToTextPort):
     name = "openai_whisper"
 
     def available(self) -> bool:
-        return bool((settings.openai_api_key or "").strip())
+        from app.infrastructure.ai.openai_runtime import is_openai_enabled
+
+        return is_openai_enabled() and bool((settings.openai_api_key or "").strip())
 
     async def transcribe(self, *, audio_bytes: bytes, filename: str, content_type: str | None) -> str:
+        from app.infrastructure.ai.openai_runtime import is_openai_enabled
         from app.saas.quota_context import consume_ai_quota_if_scoped
 
         await consume_ai_quota_if_scoped(1)
+        if not is_openai_enabled():
+            raise AIProviderUnavailable("OpenAI usage is disabled by platform admin")
         if not self.available():
             raise AIProviderUnavailable("OPENAI_API_KEY is required for OpenAI speech-to-text")
 
@@ -111,12 +116,17 @@ class OpenAITextToSpeech(TextToSpeechPort):
     name = "openai_tts"
 
     def available(self) -> bool:
-        return bool((settings.openai_api_key or "").strip())
+        from app.infrastructure.ai.openai_runtime import is_openai_enabled
+
+        return is_openai_enabled() and bool((settings.openai_api_key or "").strip())
 
     async def synthesize(self, *, text: str, voice: str | None = None) -> SpeechSynthesisResult:
+        from app.infrastructure.ai.openai_runtime import is_openai_enabled
         from app.saas.quota_context import consume_ai_quota_if_scoped
 
         await consume_ai_quota_if_scoped(1)
+        if not is_openai_enabled():
+            raise AIProviderUnavailable("OpenAI usage is disabled by platform admin")
         if not self.available():
             raise AIProviderUnavailable("OPENAI_API_KEY is required for OpenAI text-to-speech")
 

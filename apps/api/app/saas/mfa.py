@@ -13,7 +13,7 @@ def generate_mfa_secret() -> str:
     return pyotp.random_base32()
 
 
-def provisioning_uri(*, secret: str, account_name: str, issuer: str = "AI Service Advisor") -> str:
+def provisioning_uri(*, secret: str, account_name: str, issuer: str = "RatchetHub") -> str:
     return pyotp.TOTP(secret).provisioning_uri(name=account_name, issuer_name=issuer)
 
 

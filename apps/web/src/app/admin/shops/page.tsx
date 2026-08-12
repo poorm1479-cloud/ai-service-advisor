@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AdminShell, Panel, Stat } from "@/components/admin/AdminShell";
+import { AdminShell, LiveBadge, Panel, Stat } from "@/components/admin/AdminShell";
 import {
   activateAdminShop,
   getAdminOrganizations,
@@ -173,31 +173,21 @@ function ShopsBody({ accessToken }: { accessToken: string }) {
 
   return (
     <div className="flex h-[calc(100dvh-7.25rem)] flex-col gap-4 overflow-hidden sm:h-[calc(100dvh-7.75rem)] md:h-[calc(100dvh-9.25rem)] md:gap-5">
-      <div className="flex shrink-0 items-center justify-end">
-        <span
-          className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium ${
-            live
-              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-              : "border-[var(--line)] bg-[var(--background)] text-[var(--muted)]"
-          }`}
-        >
-          <span
-            className={`h-1.5 w-1.5 rounded-full ${live ? "bg-emerald-500" : "bg-[var(--muted)]"}`}
-          />
-          {live ? "Live" : "Connecting"}
-        </span>
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+        <h1 className="page-title">Shops</h1>
+        <LiveBadge live={live} />
       </div>
 
-      <section className="grid shrink-0 gap-3 sm:grid-cols-3">
+      <section className="grid shrink-0 gap-2.5 sm:grid-cols-2">
         <Stat label="Shops" value={String(data.shops.length)} />
         <Stat label="Suspended" value={String(suspended)} />
-        <Stat
-          label="Users (sum)"
-          value={String(data.shops.reduce((n, s) => n + (s.users ?? 0), 0))}
-        />
       </section>
 
-      {error && <p className="shrink-0 text-sm text-red-700">{error}</p>}
+      {error && (
+        <p className="shrink-0 rounded-xl border border-red-200/80 bg-red-50/90 px-4 py-3 text-sm text-red-700">
+          {error}
+        </p>
+      )}
 
       <Panel
         className="flex min-h-0 flex-1 flex-col"
@@ -207,7 +197,7 @@ function ShopsBody({ accessToken }: { accessToken: string }) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search shop, owner, plan…"
-            className="w-full max-w-xs rounded-md border border-[var(--line)] px-3 py-1.5 text-sm"
+            className="w-full max-w-xs rounded-xl border border-[var(--line)] bg-white/90 px-3 py-1.5 text-sm shadow-[var(--shadow-soft)] outline-none ring-[var(--accent)] focus:ring-2"
           />
         }
       >

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { BrandLogo } from "@/components/BrandLogo";
 
 const PLANS = [
   {
@@ -6,21 +7,45 @@ const PLANS = [
     name: "Free",
     price: "$0",
     blurb: "14-day trial for independent shops",
-    features: ["50 AI calls / mo", "50 SMS / mo", "2 seats"],
+    features: [
+      "Walk-in + VIN decode",
+      "Appointments",
+      "Customer CRM",
+      "Team roles & permissions",
+      "CSV / data import",
+      "10 AI calls / mo",
+      "2 seats",
+    ],
   },
   {
     id: "pro",
     name: "Pro",
-    price: "$99",
+    price: "$150",
     blurb: "For growing repair shops",
-    features: ["200 AI calls / mo", "200 SMS / mo", "4 seats"],
+    features: [
+      "Walk-in + VIN decode",
+      "Appointments",
+      "Customer CRM",
+      "Team roles & permissions",
+      "CSV / data import",
+      "150 AI calls / mo",
+      "4 seats",
+    ],
   },
   {
     id: "enterprise",
     name: "Enterprise",
-    price: "$299",
+    price: "$400",
     blurb: "Multi-location and custom limits",
-    features: ["500 AI calls / mo", "500 SMS / mo", "10 seats"],
+    features: [
+      "Walk-in + VIN decode",
+      "Appointments",
+      "Customer CRM",
+      "Team roles & permissions",
+      "CSV / data import",
+      "500 AI calls / mo",
+      "10 seats",
+    ],
   },
 ];
 
@@ -29,9 +54,10 @@ export default function PricingPage() {
     <main className="min-h-screen bg-white">
       <header className="site-nav">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 sm:px-6">
-          <Link href="/" className="font-display text-lg font-extrabold tracking-tight">
-            AI Service Advisor
-          </Link>
+          <BrandLogo
+            size={40}
+            wordmarkClassName="text-2xl font-extrabold tracking-tight"
+          />
           <div className="flex items-center gap-2 text-sm">
             <Link href="/?login=1" className="rounded-full px-3 py-2 text-[#5c5c5c] hover:text-black">
               Sign in

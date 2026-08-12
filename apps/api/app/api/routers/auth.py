@@ -231,11 +231,13 @@ async def me(
         )
     service = AuthService(uow)
     try:
+        # Load capabilities from membership (not JWT) so Team permission edits apply
+        # without waiting for the staff member to re-login / refresh tokens.
         result = await service.me(
             user_id=current.user_id,
             shop_id=current.shop_id,
             role=current.role,
-            capabilities=list(current.capabilities),
+            capabilities=None,
         )
     except AuthenticationError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc

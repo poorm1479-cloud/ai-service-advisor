@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { BrandHexMark } from "@/components/BrandLogo";
 import { useAuth } from "@/lib/auth";
 
 type NavIcon = (props: { className?: string }) => ReactNode;
@@ -12,19 +13,18 @@ type AdminNavItem = {
   label: string;
   exact?: boolean;
   Icon: NavIcon;
-  group: "platform" | "system";
 };
 
 export const ADMIN_NAV: AdminNavItem[] = [
-  { href: "/admin", label: "Dashboard", exact: true, Icon: IconGauge, group: "platform" },
-  { href: "/admin/shops", label: "Shops", Icon: IconBuilding, group: "platform" },
-  { href: "/admin/users", label: "Users", Icon: IconUsers, group: "platform" },
-  { href: "/admin/twilio-numbers", label: "Twilio Numbers", Icon: IconPhone, group: "platform" },
-  { href: "/admin/billing", label: "Billing", Icon: IconCard, group: "platform" },
-  { href: "/admin/ai-usage", label: "AI Usage", Icon: IconSpark, group: "system" },
-  { href: "/admin/notifications", label: "Notifications", Icon: IconBell, group: "system" },
-  { href: "/admin/system-health", label: "System Health", Icon: IconPulse, group: "system" },
-  { href: "/admin/settings", label: "Settings", Icon: IconGear, group: "system" },
+  { href: "/admin", label: "Dashboard", exact: true, Icon: IconGauge },
+  { href: "/admin/shops", label: "Shops", Icon: IconBuilding },
+  { href: "/admin/users", label: "Users", Icon: IconUsers },
+  { href: "/admin/twilio-numbers", label: "Twilio Numbers", Icon: IconPhone },
+  { href: "/admin/billing", label: "Billing", Icon: IconCard },
+  { href: "/admin/ai-usage", label: "AI Usage", Icon: IconSpark },
+  { href: "/admin/notifications", label: "Notifications", Icon: IconBell },
+  { href: "/admin/system-health", label: "System Health", Icon: IconPulse },
+  { href: "/admin/settings", label: "Setting", Icon: IconGear },
 ];
 
 type AdminSidebarProps = {
@@ -48,6 +48,15 @@ export function AdminSidebar({
   const pathname = usePathname();
   const router = useRouter();
   const { logout } = useAuth();
+  const [isDesktop, setIsDesktop] = useState(false);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 768px)");
+    const sync = () => setIsDesktop(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
 
   const shellClass = [
     // fixed on mobile (drawer); relative on md+ so the rail stays in-flow.
@@ -62,67 +71,85 @@ export function AdminSidebar({
     mobileOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0",
   ].join(" ");
 
-  const platformItems = ADMIN_NAV.filter((item) => item.group === "platform");
-  const systemItems = ADMIN_NAV.filter((item) => item.group === "system");
+  const hiddenFromA11y = !isDesktop && !mobileOpen;
 
   return (
-    <aside id="admin-nav" className={shellClass} aria-label="Admin navigation">
-      <div className="relative shrink-0 border-b border-[var(--rail-line)] px-4 pb-4 pt-5">
-        <div className="flex items-start gap-3">
+    <aside
+      id="admin-nav"
+      className={shellClass}
+      aria-label="Admin navigation"
+      aria-hidden={hiddenFromA11y}
+    >
+      <div className="relative shrink-0 border-b border-[var(--rail-line)] px-3.5 pb-3 pt-3.5 md:px-4 md:pb-4 md:pt-5">
+        <div className="flex items-start gap-2.5 md:gap-3">
           <div
-            className="relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-gradient-to-br from-[#2a2a2a] to-[#111] shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_10px_24px_-16px_rgba(240,90,36,0.55)]"
+            className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-[#c94418] md:h-11 md:w-11"
             aria-hidden
           >
-            <span className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(240,90,36,0.35),transparent_60%)]" />
-            <span className="relative font-display text-[13px] font-semibold tracking-tight text-white">
-              AC
-            </span>
+            <BrandHexMark className="h-5 w-5 text-white md:h-6 md:w-6" />
           </div>
-          <div className="min-w-0 flex-1 pt-0.5">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--rail-muted)]">
-              Platform
-            </p>
+          <div className="min-w-0 flex-1 self-center">
             <Link
               href="/admin"
               onClick={onNavigate}
-              className="mt-1 block rounded-md outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+              tabIndex={hiddenFromA11y ? -1 : undefined}
+              className="block rounded-md outline-none focus-visible:ring-2 focus-visible:ring-white/40"
             >
-              <p className="font-display truncate text-[15px] font-semibold leading-snug tracking-tight text-white transition-colors hover:text-[var(--rail-active-fg)]">
+              <p className="font-display truncate text-sm font-semibold leading-snug tracking-tight text-white transition-colors hover:text-[var(--rail-active-fg)] md:text-[15px]">
                 Admin Console
               </p>
             </Link>
           </div>
         </div>
-        <div className="mt-3.5 flex items-center gap-2 rounded-xl border border-[var(--rail-line)] bg-white/[0.03] px-2.5 py-2">
+        <div className="mt-2.5 flex items-center gap-2 rounded-xl border border-[var(--rail-line)] bg-white/[0.03] px-2.5 py-1.5 md:mt-3.5 md:py-2">
           <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white/[0.06] text-[var(--rail-muted)]">
             <IconUsers className="h-3.5 w-3.5" />
           </span>
           <p className="min-w-0 flex-1 truncate text-xs text-[var(--rail-muted)]">
-            <span className="text-white/90">{username || "Platform ops"}</span>
+            <span className="text-white/90">{username || "Admin"}</span>
+            <span className="mx-1.5 text-white/25">·</span>
+            <span>Admin</span>
           </p>
         </div>
       </div>
 
-      <nav className="asa-scroll flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto overscroll-contain px-2.5 py-4">
-        <NavGroup
-          label="Platform"
-          items={platformItems}
-          pathname={pathname}
-          unreadCount={unreadCount}
-          onNavigate={onNavigate}
-        />
-        <NavGroup
-          label="System"
-          items={systemItems}
-          pathname={pathname}
-          unreadCount={unreadCount}
-          onNavigate={onNavigate}
-        />
+      <nav className="asa-scroll flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-2.5 py-3 md:py-4">
+        <div className="flex flex-col gap-0.5">
+          {ADMIN_NAV.map((item) => {
+            const active = isActivePath(pathname, item.href, item.exact);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={onNavigate}
+                tabIndex={hiddenFromA11y ? -1 : undefined}
+                data-active={active ? "true" : "false"}
+                aria-current={active ? "page" : undefined}
+                className={`asa-rail-link flex min-h-10 items-center gap-2.5 rounded-xl px-2 py-2 text-sm transition-colors ${
+                  active
+                    ? "font-medium"
+                    : "text-[var(--rail-muted)] hover:bg-[var(--rail-hover)] hover:text-white"
+                }`}
+              >
+                <span className="asa-rail-icon">
+                  <item.Icon className="h-4 w-4 opacity-95" />
+                </span>
+                <span className="truncate">{item.label}</span>
+                {item.href === "/admin/notifications" && unreadCount > 0 ? (
+                  <span className="ml-auto inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-[var(--accent)] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                    {unreadCount > 99 ? "99+" : unreadCount}
+                  </span>
+                ) : null}
+              </Link>
+            );
+          })}
+        </div>
       </nav>
 
-      <div className="mt-auto shrink-0 border-t border-[var(--rail-line)] p-3">
+      <div className="mt-auto shrink-0 border-t border-[var(--rail-line)] p-2.5 md:p-3">
         <button
           type="button"
+          tabIndex={hiddenFromA11y ? -1 : undefined}
           onClick={async () => {
             onNavigate?.();
             await logout();
@@ -137,57 +164,6 @@ export function AdminSidebar({
         </button>
       </div>
     </aside>
-  );
-}
-
-function NavGroup({
-  label,
-  items,
-  pathname,
-  unreadCount,
-  onNavigate,
-}: {
-  label: string;
-  items: AdminNavItem[];
-  pathname: string;
-  unreadCount: number;
-  onNavigate?: () => void;
-}) {
-  return (
-    <div>
-      <p className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/35">
-        {label}
-      </p>
-      <div className="flex flex-col gap-0.5">
-        {items.map((item) => {
-          const active = isActivePath(pathname, item.href, item.exact);
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              onClick={onNavigate}
-              data-active={active ? "true" : "false"}
-              aria-current={active ? "page" : undefined}
-              className={`asa-rail-link flex min-h-10 items-center gap-2.5 rounded-xl px-2 py-2 text-sm transition-colors ${
-                active
-                  ? "font-medium"
-                  : "text-[var(--rail-muted)] hover:bg-[var(--rail-hover)] hover:text-white"
-              }`}
-            >
-              <span className="asa-rail-icon">
-                <item.Icon className="h-4 w-4 opacity-95" />
-              </span>
-              <span className="truncate">{item.label}</span>
-              {item.href === "/admin/notifications" && unreadCount > 0 ? (
-                <span className="ml-auto inline-flex min-w-[1.25rem] items-center justify-center rounded-md bg-[var(--accent)] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
-                  {unreadCount > 99 ? "99+" : unreadCount}
-                </span>
-              ) : null}
-            </Link>
-          );
-        })}
-      </div>
-    </div>
   );
 }
 

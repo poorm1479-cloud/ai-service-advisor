@@ -1,1 +1,1 @@
-"""AI Service Advisor API package."""
+"""RatchetHub API package."""

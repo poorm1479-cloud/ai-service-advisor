@@ -698,47 +698,53 @@ function WalkInsContent() {
               ) : null}
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                <Field
-                  label={`Year${autoFilled ? " · auto" : ""}`}
-                  value={year}
-                  onChange={setYear}
-                  required
-                  placeholder={entryMode === "vin" ? "Auto from VIN" : "e.g. 2018"}
-                />
-                <Field
-                  label={`Make${autoFilled ? " · auto" : ""}`}
-                  value={make}
-                  onChange={setMake}
-                  required
-                  placeholder={entryMode === "vin" ? "Auto from VIN" : "e.g. Toyota"}
-                />
-                <Field
-                  label={`Model${autoFilled ? " · auto" : ""}`}
-                  value={model}
-                  onChange={setModel}
-                  required
-                  placeholder={entryMode === "vin" ? "Auto from VIN" : "e.g. Camry"}
-                />
-                <Field
-                  label="License plate"
-                  value={plate}
-                  onChange={setPlate}
-                  placeholder="Optional"
-                />
-                <Field
-                  label="Mileage"
-                  value={mileage}
-                  onChange={setMileage}
-                  required
-                  placeholder="Current odometer"
-                />
-                <Field
-                  label="Arrival time"
-                  type="datetime-local"
-                  value={arrivedAt}
-                  onChange={setArrivedAt}
-                  required
-                />
+                <div className="grid grid-cols-2 gap-3 sm:contents">
+                  <Field
+                    label={`Year${autoFilled ? " · auto" : ""}`}
+                    value={year}
+                    onChange={setYear}
+                    required
+                    placeholder={entryMode === "vin" ? "Auto from VIN" : "e.g. 2018"}
+                  />
+                  <Field
+                    label={`Make${autoFilled ? " · auto" : ""}`}
+                    value={make}
+                    onChange={setMake}
+                    required
+                    placeholder={entryMode === "vin" ? "Auto from VIN" : "e.g. Toyota"}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3 sm:contents">
+                  <Field
+                    label={`Model${autoFilled ? " · auto" : ""}`}
+                    value={model}
+                    onChange={setModel}
+                    required
+                    placeholder={entryMode === "vin" ? "Auto from VIN" : "e.g. Camry"}
+                  />
+                  <Field
+                    label="License plate"
+                    value={plate}
+                    onChange={setPlate}
+                    placeholder="Optional"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3 sm:contents">
+                  <Field
+                    label="Mileage"
+                    value={mileage}
+                    onChange={setMileage}
+                    required
+                    placeholder="Current odometer"
+                  />
+                  <Field
+                    label="Arrival time"
+                    type="datetime-local"
+                    value={arrivedAt}
+                    onChange={setArrivedAt}
+                    required
+                  />
+                </div>
               </div>
 
               <section className="rounded-xl border border-[var(--line)] bg-[var(--background)]/55 p-4">
@@ -749,7 +755,7 @@ function WalkInsContent() {
                   compact
                 />
 
-                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <div className="mt-3 grid grid-cols-2 gap-2">
                   <MatchOption
                     active={customerMatchMode === "existing"}
                     disabled={!matchedExisting}

@@ -44,23 +44,31 @@ function formatDate(iso: string | null | undefined): string | null {
   });
 }
 
+function MetaValue({ value }: { value: string }) {
+  return (
+    <dd className="mt-2 font-display text-[13px] font-bold leading-tight tracking-tight text-white tabular-nums sm:text-sm">
+      {value}
+    </dd>
+  );
+}
+
 function statusMeta(status: string): { label: string; tone: string } {
   const s = status.toLowerCase();
   if (s === "active") {
-    return { label: "Active", tone: "bg-emerald-50 text-emerald-800 ring-emerald-200/80" };
+    return { label: "Active", tone: "bg-emerald-400/15 text-emerald-300 ring-emerald-400/30" };
   }
   if (s === "trialing") {
-    return { label: "Trial", tone: "bg-[var(--accent-soft)] text-[var(--accent)] ring-[var(--accent)]/25" };
+    return { label: "Trial", tone: "bg-[var(--accent)]/20 text-[var(--signal)] ring-[var(--accent)]/35" };
   }
   if (s === "past_due" || s === "unpaid") {
-    return { label: "Past due", tone: "bg-red-50 text-red-700 ring-red-200/80" };
+    return { label: "Past due", tone: "bg-red-400/15 text-red-300 ring-red-400/30" };
   }
   if (s === "canceled" || s === "cancelled") {
-    return { label: "Canceled", tone: "bg-black/5 text-[var(--muted)] ring-black/10" };
+    return { label: "Canceled", tone: "bg-white/8 text-white/60 ring-white/15" };
   }
   return {
     label: status.replace(/_/g, " "),
-    tone: "bg-black/5 text-[var(--muted)] ring-black/10",
+    tone: "bg-white/8 text-white/60 ring-white/15",
   };
 }
 
@@ -69,56 +77,47 @@ function usagePct(used: number, limit: number): number {
   return Math.min(100, Math.round((used / limit) * 100));
 }
 
+function planBlurb(plan: Plan): string {
+  if (plan.id === "free") return "";
+  if (plan.id === "pro") return "";
+  if (plan.id === "enterprise") return "";
+  const raw = (plan.description || "").trim();
+  // Hide legacy quota copy that still mentions SMS.
+  if (!raw || /\bsms\b/i.test(raw)) return "Custom plan for your shop";
+  return raw;
+}
+
 function UsageMeter({
   label,
   used,
   limit,
   unit,
-  tone = "light",
 }: {
   label: string;
   used: number;
   limit: number;
   unit?: string;
-  tone?: "light" | "dark";
 }) {
   const pct = usagePct(used, limit);
   const hot = pct >= 90;
   const warn = pct >= 70 && !hot;
-  const dark = tone === "dark";
 
   return (
     <div className="min-w-0">
       <div className="flex items-baseline justify-between gap-3">
-        <p
-          className={`text-xs font-semibold uppercase tracking-[0.14em] ${
-            dark ? "text-white/55" : "text-[var(--muted)]"
-          }`}
-        >
+        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/50">
           {label}
         </p>
-        <p
-          className={`font-display text-sm font-semibold tabular-nums tracking-tight ${
-            dark ? "text-white" : ""
-          }`}
-        >
+        <p className="font-display text-sm font-semibold tabular-nums tracking-tight text-white">
           {used.toLocaleString()}
-          <span
-            className={`font-sans text-xs font-medium ${
-              dark ? "text-white/55" : "text-[var(--muted)]"
-            }`}
-          >
+          <span className="font-sans text-xs font-medium text-white/45">
             {" "}
             / {limit.toLocaleString()}
             {unit ? ` ${unit}` : ""}
           </span>
         </p>
       </div>
-      <div
-        className={`mt-2.5 h-1.5 overflow-hidden rounded-full ${
-          dark ? "bg-white/10" : "bg-black/[0.06]"
-        }`}
-      >
+      <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-white/10">
         <div
           className={`h-full rounded-full transition-[width] duration-700 ease-out ${
             hot
@@ -130,13 +129,7 @@ function UsageMeter({
           style={{ width: `${pct}%` }}
         />
       </div>
-      <p
-        className={`mt-1.5 text-[11px] tabular-nums ${
-          dark ? "text-white/45" : "text-[var(--muted)]"
-        }`}
-      >
-        {pct}% used
-      </p>
+      <p className="mt-1.5 text-[11px] tabular-nums text-white/40">{pct}% used</p>
     </div>
   );
 }
@@ -146,8 +139,6 @@ export default function BillingPage() {
   const [data, setData] = useState<BillingState | null>(null);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [portalBusy, setPortalBusy] = useState(false);
 
   async function authFetch(path: string, init?: RequestInit) {
     const s = loadSession();
@@ -170,8 +161,11 @@ export default function BillingPage() {
 
   useEffect(() => {
     if (loading || !session) return;
-    if (session.role !== "owner") {
-      setError("Only shop owners can manage billing.");
+    const canBilling =
+      session.role === "owner" ||
+      (session.capabilities || []).includes("payment_handling");
+    if (!canBilling) {
+      setError("Payments permission required to manage billing.");
       return;
     }
     void (async () => {
@@ -188,47 +182,17 @@ export default function BillingPage() {
     })();
   }, [loading, session]);
 
-  async function onCheckout(planId: string) {
-    setBusy(planId);
-    setError(null);
-    try {
-      const result = await authFetch("/v1/billing/checkout", {
-        method: "POST",
-        body: JSON.stringify({ plan_id: planId }),
-      });
-      if (result?.checkout_url) {
-        window.location.href = result.checkout_url;
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Checkout failed");
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function onManageBilling() {
-    setPortalBusy(true);
-    setError(null);
-    try {
-      const result = await authFetch("/v1/billing/portal", { method: "POST" });
-      if (result?.portal_url) {
-        window.location.href = result.portal_url;
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to open billing portal");
-    } finally {
-      setPortalBusy(false);
-    }
-  }
-
   if (loading) {
     return (
-      <div className="mx-auto max-w-5xl space-y-6 p-1">
-        <div className="h-8 w-48 animate-pulse rounded-lg bg-black/5" />
-        <div className="h-56 animate-pulse rounded-2xl bg-black/5" />
-        <div className="grid gap-3 sm:gap-5 md:grid-cols-3">
+      <div className="w-full space-y-6 px-5 sm:px-8 md:px-12">
+        <div className="space-y-2">
+          <div className="h-8 w-40 animate-pulse rounded-lg bg-black/5" />
+          <div className="h-4 w-64 animate-pulse rounded bg-black/5" />
+        </div>
+        <div className="h-64 animate-pulse rounded-2xl bg-black/5" />
+        <div className="grid gap-5 md:grid-cols-3">
           {[0, 1, 2].map((i) => (
-            <div key={i} className="h-36 animate-pulse rounded-lg bg-black/5 sm:h-72 sm:rounded-2xl" />
+            <div key={i} className="h-72 animate-pulse rounded-2xl bg-black/5" />
           ))}
         </div>
       </div>
@@ -240,9 +204,14 @@ export default function BillingPage() {
   const trialEnds = formatDate(data?.subscription.trial_ends_at);
   const periodEnds = formatDate(data?.subscription.current_period_end);
   const price = data ? formatMoney(data.subscription.plan.price_cents_monthly) : null;
+  const isTrialing = data?.subscription.status.toLowerCase() === "trialing";
+  const showTrialEnds = Boolean(isTrialing && trialEnds);
+  const showPeriodEnds = Boolean(periodEnds);
+  const metaCardCount = (showTrialEnds ? 1 : 0) + (showPeriodEnds ? 1 : 0);
+  const currentBlurb = data ? planBlurb(data.subscription.plan) : "";
 
   return (
-    <div className="mx-auto max-w-5xl space-y-4">
+    <div className="w-full space-y-8 px-5 sm:px-8 md:px-12">
       <header className="hero-motion">
         <div className="flex items-center gap-2">
           <IconCard className="h-5 w-5 shrink-0 text-[var(--muted)]" />
@@ -260,82 +229,88 @@ export default function BillingPage() {
       )}
 
       {data && status && (
-        <section className="hero-motion-delay relative overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] text-[var(--ink)] shadow-[var(--shadow-soft)]">
+        <section className="hero-motion-delay relative overflow-hidden rounded-2xl bg-[var(--ink)] text-white shadow-[0_28px_60px_-36px_rgba(0,0,0,0.55)]">
           <div
-            className="pointer-events-none absolute inset-0 bg-gradient-to-br from-[var(--accent-soft)] via-transparent to-transparent"
+            className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,rgba(240,90,36,0.28),transparent_55%),radial-gradient(ellipse_at_bottom_left,rgba(255,133,65,0.12),transparent_50%)]"
+            aria-hidden
+          />
+          <div
+            className="pointer-events-none absolute -right-16 top-1/2 h-56 w-56 -translate-y-1/2 rounded-full bg-[var(--accent)]/20 blur-3xl"
             aria-hidden
           />
 
-          <div className="relative grid gap-5 p-4 sm:grid-cols-[1.15fr_1fr] sm:items-center sm:gap-6 sm:p-5">
-            <div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span
-                  className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ring-1 ring-inset ${status.tone}`}
-                >
-                  {status.label}
-                </span>
-                {data.subscription.cancel_at_period_end && (
-                  <span className="inline-flex items-center rounded-full bg-black/[0.04] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)] ring-1 ring-inset ring-black/10">
-                    Cancels at period end
+          <div className="relative flex flex-row items-stretch gap-3 p-4 sm:gap-4 sm:p-7">
+            <div className="flex min-w-0 flex-1 flex-col justify-between gap-4 sm:gap-5">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={`inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ring-1 ring-inset ${status.tone}`}
+                  >
+                    {status.label}
                   </span>
-                )}
-              </div>
+                  {data.subscription.cancel_at_period_end && (
+                    <span className="inline-flex items-center rounded-full bg-white/8 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/65 ring-1 ring-inset ring-white/15">
+                      Cancels at period end
+                    </span>
+                  )}
+                </div>
 
-              <p className="mt-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">
-                Current plan
-              </p>
-              <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <h2 className="font-display text-xl font-extrabold tracking-tight sm:text-2xl">
-                  {data.subscription.plan.name}
-                </h2>
-                <p className="flex items-baseline gap-1">
-                  <span className="font-display text-2xl font-extrabold tracking-tight sm:text-3xl">
-                    {price}
-                  </span>
-                  <span className="text-xs font-medium text-[var(--muted)]">/ mo</span>
+                <p className="mt-4 text-[11px] font-semibold uppercase tracking-[0.16em] text-white/45 sm:mt-5">
+                  Current plan
                 </p>
+                <div className="mt-1.5 flex flex-wrap items-end gap-x-3 gap-y-1 sm:gap-x-4">
+                  <h2 className="font-display text-2xl font-extrabold tracking-tight sm:text-4xl">
+                    {data.subscription.plan.name}
+                  </h2>
+                  <p className="mb-0.5 flex items-baseline gap-1 sm:mb-1">
+                    <span className="font-display text-xl font-extrabold tracking-tight text-white/95 sm:text-3xl">
+                      {price}
+                    </span>
+                    <span className="text-sm font-medium text-white/45">/ mo</span>
+                  </p>
+                </div>
+
+                {currentBlurb && (
+                  <p className="mt-2 max-w-md text-xs leading-relaxed text-white/55 sm:mt-3 sm:text-sm">
+                    {currentBlurb}
+                  </p>
+                )}
               </div>
 
-              <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[var(--muted)]">
-                {trialEnds && data.subscription.status.toLowerCase() === "trialing" && (
-                  <span>
-                    Trial ends <span className="font-semibold text-[var(--ink)]">{trialEnds}</span>
-                  </span>
-                )}
-                {periodEnds && (
-                  <span>
-                    Period ends <span className="font-semibold text-[var(--ink)]">{periodEnds}</span>
-                  </span>
-                )}
-                <span>
-                  Usage period{" "}
-                  <span className="font-semibold text-[var(--ink)]">{data.usage.period}</span>
-                </span>
-              </div>
-
-              <div className="mt-4 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => void onManageBilling()}
-                  disabled={portalBusy}
-                  className="inline-flex items-center justify-center rounded-full bg-[var(--accent)] px-3.5 py-1.5 text-xs font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-50"
+              {metaCardCount > 0 && (
+                <dl
+                  className={`grid w-fit max-w-full gap-2.5 sm:gap-3 ${
+                    metaCardCount >= 2 ? "grid-cols-2" : "grid-cols-1"
+                  }`}
                 >
-                  {portalBusy ? "Opening…" : "Manage billing"}
-                </button>
-                <a
-                  href="#plans"
-                  className="inline-flex items-center justify-center rounded-full border border-[var(--line)] bg-white px-3.5 py-1.5 text-xs font-semibold text-[var(--ink)] transition hover:bg-black/[0.03]"
-                >
-                  Compare plans
-                </a>
-              </div>
+                  {showTrialEnds && (
+                    <div className="flex min-h-[4.5rem] w-full min-w-0 max-w-[9rem] flex-col justify-between rounded-xl bg-white/[0.06] px-3 py-2.5 ring-1 ring-inset ring-white/10 sm:min-h-[5rem] sm:max-w-[10rem] sm:px-3.5 sm:py-3">
+                      <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-white/45">
+                        Trial ends
+                      </dt>
+                      <MetaValue value={trialEnds!} />
+                    </div>
+                  )}
+                  {showPeriodEnds && (
+                    <div className="flex min-h-[4.5rem] w-full min-w-0 max-w-[9rem] flex-col justify-between rounded-xl bg-white/[0.06] px-3 py-2.5 ring-1 ring-inset ring-white/10 sm:min-h-[5rem] sm:max-w-[10rem] sm:px-3.5 sm:py-3">
+                      <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-white/45">
+                        Period ends
+                      </dt>
+                      <MetaValue value={periodEnds!} />
+                    </div>
+                  )}
+                </dl>
+              )}
             </div>
 
-            <div className="rounded-lg border border-[var(--line)] bg-[#f7f7f7] p-3.5 sm:p-4">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
-                This period
-              </p>
-              <div className="mt-3 space-y-3.5">
+            <div className="flex min-w-0 flex-1 flex-col justify-center rounded-2xl bg-white/[0.06] p-3 ring-1 ring-inset ring-white/10 backdrop-blur-sm sm:p-5">
+              <div className="flex items-center justify-between gap-2 sm:gap-3">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45 sm:text-[11px]">
+                  This period
+                </p>
+                <IconPulse className="h-4 w-4 text-white/35" />
+              </div>
+              <div className="mt-4 space-y-4 sm:mt-5 sm:space-y-5">
                 <UsageMeter
                   label="AI calls"
                   used={data.usage.usage.ai_calls}
@@ -352,95 +327,71 @@ export default function BillingPage() {
         </section>
       )}
 
-      <section id="plans" className="hero-motion-late space-y-4 sm:space-y-6">
-        <div className="flex items-center gap-2">
-          <IconPlans className="h-5 w-5 shrink-0 text-[var(--muted)]" />
-          <h2 className="page-title">Plans</h2>
+      <section id="plans" className="hero-motion-late space-y-5">
+        <div>
+          <p className="section-label">Plans</p>
+          <h2 className="font-display mt-1.5 text-xl font-extrabold tracking-tight sm:text-2xl">
+            Choose what fits your shop
+          </h2>
         </div>
 
-        <div className="grid grid-cols-3 gap-1.5 sm:gap-5">
+        <div className="grid gap-3 sm:gap-4 md:grid-cols-3 md:items-stretch">
           {plans.map((plan, index) => {
             const isCurrent = currentPlanId === plan.id;
             const isPro = plan.id === "pro";
             const planPrice = formatMoney(plan.price_cents_monthly);
             const features = [
+              "Walk-in + VIN decode",
+              "Appointments",
+              "Customer CRM",
+              "Team roles & permissions",
+              "CSV / data import",
               `${plan.ai_calls_monthly.toLocaleString()} AI calls / mo`,
-              `${plan.seats} seats`,
+              plan.id === "enterprise" ? "10+ seats" : `${plan.seats} seats`,
             ];
             const ctaLabel =
-              plan.price_cents_monthly === 0
-                ? isCurrent
-                  ? "Current plan"
-                  : "Included"
-                : isCurrent
-                  ? "Current plan"
-                  : busy === plan.id
-                    ? "Redirecting…"
-                    : "Upgrade";
-            const disabled =
-              busy === plan.id || plan.price_cents_monthly === 0 || isCurrent;
+              plan.price_cents_monthly === 0 ? "Included" : "Upgrade";
 
             return (
               <div
                 key={plan.id}
-                className={`group relative flex min-w-0 flex-col overflow-hidden rounded-md border bg-[var(--panel)] p-1.5 transition duration-300 sm:rounded-xl sm:p-4 sm:hover:-translate-y-1 ${
-                  isPro
-                    ? "border-[var(--accent)] shadow-[0_24px_60px_-36px_rgba(240,90,36,0.55)] ring-1 ring-[var(--accent)]/20 sm:ring-2"
-                    : isCurrent
-                      ? "border-black/12 shadow-[var(--shadow-soft)]"
-                      : "border-[var(--line)] shadow-[0_20px_50px_-36px_rgba(0,0,0,0.28)] hover:border-black/15"
-                }`}
-                style={{ animationDelay: `${index * 70}ms` }}
+                className={`landing-plan-card ${isPro ? "landing-plan-card--featured" : ""}`}
+                style={{ animationDelay: `${index * 80}ms` }}
               >
-                {isPro && (
-                  <div
-                    className="pointer-events-none absolute -right-8 -top-10 hidden h-28 w-28 rounded-full bg-[var(--accent-glow)] blur-2xl sm:block"
-                    aria-hidden
-                  />
-                )}
-
-                <div className="relative">
-                  <p className="truncate text-[11px] font-semibold leading-tight text-[var(--accent)] sm:text-sm">
+                <div className="flex items-baseline justify-between gap-3">
+                  <h3 className="font-display text-xl font-bold tracking-tight sm:text-2xl">
                     {plan.name}
-                  </p>
+                  </h3>
                 </div>
 
-                <div className="relative mt-0.5 sm:mt-2">
-                  <p className="font-display text-sm font-extrabold leading-none tracking-tight sm:text-3xl">
+                <p className="mt-4 flex items-end gap-1.5">
+                  <span className="font-display text-[2.6rem] font-extrabold leading-none tracking-[-0.04em] sm:text-[2.75rem]">
                     {planPrice}
-                    <span className="text-[9px] font-medium text-[var(--muted)] sm:text-sm">
-                      /mo
-                    </span>
-                  </p>
-                  <p className="mt-1.5 hidden text-xs leading-snug text-[var(--muted)] sm:block">
-                    {plan.description ||
-                      (plan.id === "free"
-                        ? "14-day trial for independent shops"
-                        : plan.id === "pro"
-                          ? "For growing repair shops"
-                          : "Multi-location and custom limits")}
-                  </p>
-                </div>
+                  </span>
+                  <span className="mb-1 text-sm text-[#8a8a8a]">/mo</span>
+                </p>
 
-                <ul className="relative mt-1 space-y-0 text-[9px] leading-tight text-[var(--muted)] sm:mt-3 sm:space-y-1.5 sm:text-sm sm:leading-normal">
+                <div className="my-5 h-px bg-gradient-to-r from-black/10 via-black/5 to-transparent" aria-hidden />
+
+                <ul className="flex-1 space-y-2.5 text-sm text-[#5c5c5c]">
                   {features.map((f) => (
-                    <li key={f} className="flex gap-1 sm:gap-2">
-                      <span className="mt-0.5 hidden h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-[var(--accent-soft)] sm:mt-1 sm:flex">
-                        <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />
-                      </span>
-                      <span className="min-w-0 truncate sm:whitespace-normal">{f}</span>
+                    <li key={f} className="flex items-center gap-2.5">
+                      <span className="h-1 w-1 shrink-0 rounded-full bg-[var(--accent)]" />
+                      <span>{f}</span>
                     </li>
                   ))}
                 </ul>
 
                 <button
                   type="button"
-                  disabled={disabled}
-                  onClick={() => void onCheckout(plan.id)}
-                  className={`relative mt-1.5 inline-flex w-full items-center justify-center rounded-full px-1 py-0.5 text-[10px] font-semibold leading-tight transition disabled:opacity-50 sm:mt-4 sm:px-4 sm:py-2 sm:text-sm sm:leading-normal ${
+                  disabled
+                  aria-disabled
+                  className={`mt-7 inline-flex w-full cursor-not-allowed items-center justify-center rounded-full px-5 py-3 text-sm font-semibold ${
                     isCurrent
                       ? "border border-[var(--accent)]/25 bg-[var(--accent-soft)] text-[var(--accent)]"
-                      : "bg-[var(--accent)] text-white shadow-[0_14px_32px_-16px_rgba(240,90,36,0.9)] hover:bg-[var(--accent-hover)]"
+                      : isPro
+                        ? "border border-black/12 bg-black/[0.03] text-[#8a8a8a]"
+                        : "border border-black/10 text-[#9a9a9a]"
                   }`}
                 >
                   {ctaLabel}
@@ -472,7 +423,7 @@ function IconCard({ className = "h-5 w-5" }: { className?: string }) {
   );
 }
 
-function IconPlans({ className = "h-5 w-5" }: { className?: string }) {
+function IconPulse({ className = "h-4 w-4" }: { className?: string }) {
   return (
     <svg
       className={className}
@@ -484,9 +435,7 @@ function IconPlans({ className = "h-5 w-5" }: { className?: string }) {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <path d="M12 3 3.5 7.5 12 12l8.5-4.5L12 3Z" />
-      <path d="M3.5 12 12 16.5 20.5 12" />
-      <path d="M3.5 16.5 12 21l8.5-4.5" />
+      <path d="M22 12h-4l-3 7L9 5l-3 7H2" />
     </svg>
   );
 }

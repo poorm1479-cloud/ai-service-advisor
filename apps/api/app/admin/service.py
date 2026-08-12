@@ -9,7 +9,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, func, select, text, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.enterprise.factory import get_enterprise_runtime
 from app.infrastructure.config import settings
@@ -59,6 +60,16 @@ def _dashboard_guard() -> asyncio.Lock:
     if _dashboard_lock is None:
         _dashboard_lock = asyncio.Lock()
     return _dashboard_lock
+
+
+async def _enable_cross_shop_read(session: AsyncSession) -> None:
+    """Permit platform-admin SELECT across FORCE RLS sms/voice tables.
+
+    Shop-scoped policies require ``app.shop_id``. Admin rollups set
+    ``app.sid_lookup='1'`` (migration 0041) so counts survive API restarts
+    from durable rows instead of process-local monitors.
+    """
+    await session.execute(text("SELECT set_config('app.sid_lookup', '1', true)"))
 
 
 class AdminConsoleService:
@@ -965,6 +976,7 @@ class AdminConsoleService:
         """Durable SMS counts from PostgreSQL; keep process-local ops counters from monitor."""
         monitor = get_sms_runtime().monitor.snapshot()
         async with SessionLocal() as session:
+            await _enable_cross_shop_read(session)
             msg_row = (
                 await session.execute(
                     select(
@@ -1023,12 +1035,17 @@ class AdminConsoleService:
             ).one()
         inbound, outbound, last_at = msg_row
         escalations, active = conv_row
+        # Durable KPIs from DB; keep only process-lifetime ops fields from the monitor.
         return {
-            **monitor,
             "inbound_received": int(inbound or 0),
             "outbound_sent": int(outbound or 0),
             "escalations": int(escalations or 0),
             "conversations_active": int(active or 0),
+            "appointments_booked": int(monitor.get("appointments_booked") or 0),
+            "appointments_cancelled": int(monitor.get("appointments_cancelled") or 0),
+            "appointments_rescheduled": int(monitor.get("appointments_rescheduled") or 0),
+            "queue_failures": int(monitor.get("queue_failures") or 0),
+            "webhook_rejected": int(monitor.get("webhook_rejected") or 0),
             "last_event_at": last_at.isoformat() if last_at else monitor.get("last_event_at"),
             "source": "database",
         }
@@ -1042,6 +1059,7 @@ class AdminConsoleService:
             VoiceCallStatus.ESCALATED.value,
         )
         async with SessionLocal() as session:
+            await _enable_cross_shop_read(session)
             started, completed, escalations, live, last_at = (
                 await session.execute(
                     select(
@@ -1068,11 +1086,15 @@ class AdminConsoleService:
                 )
             ).one()
         return {
-            **monitor,
             "calls_started": int(started or 0),
             "calls_completed": int(completed or 0),
             "escalations": int(escalations or 0),
             "live_calls": int(live or 0),
+            "turns_processed": int(monitor.get("turns_processed") or 0),
+            "interrupts": int(monitor.get("interrupts") or 0),
+            "owner_notifications": int(monitor.get("owner_notifications") or 0),
+            "stream_events": int(monitor.get("stream_events") or 0),
+            "webhook_rejected": int(monitor.get("webhook_rejected") or 0),
             "last_event_at": last_at.isoformat() if last_at else monitor.get("last_event_at"),
             "source": "database",
         }
@@ -1237,6 +1259,7 @@ class AdminConsoleService:
                 activity[key] = ts
 
         async with SessionLocal() as session:
+            await _enable_cross_shop_read(session)
             token_rows = (
                 await session.execute(
                     select(RefreshTokenModel.shop_id, func.max(RefreshTokenModel.created_at)).group_by(

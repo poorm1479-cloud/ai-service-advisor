@@ -1,4 +1,4 @@
-# AI Service Advisor
+# RatchetHub
 
 Multi-tenant SaaS platform for independent auto repair shops. Helps shops manage customers, vehicles, appointments, AI-assisted conversations (SMS/voice), workflows, revenue insights, and shop knowledge — with strong tenant isolation.
 
@@ -103,7 +103,7 @@ pnpm dev:web
 | Register | http://localhost:3000/register |
 | Login | http://localhost:3000/login |
 | Shop dashboard | http://localhost:3000/dashboard |
-| Admin login | http://localhost:3000/admin/login → `POST /v1/auth/admin/login` (default `RyanChen` / `Albert824@`) |
+| Admin login | http://localhost:3000/admin/login → `POST /v1/auth/admin/login` (default `admin` / `admin`) |
 | Admin console | http://localhost:3000/admin (`PLATFORM_ADMIN_USERNAMES`, `account_type=platform_admin`) |
 | API docs | http://localhost:8000/docs |
 

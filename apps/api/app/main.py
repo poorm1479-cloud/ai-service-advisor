@@ -101,6 +101,13 @@ async def lifespan(app: FastAPI):
         logger.warning("startup bootstrap skipped: %s", exc)
 
     try:
+        from app.admin.settings import PlatformSettingsService
+
+        await PlatformSettingsService().sync_openai_runtime()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("openai runtime sync skipped: %s", exc)
+
+    try:
         from app.infrastructure.database import SessionLocal
         from app.saas.billing import _sync_canonical_plan_quotas
 

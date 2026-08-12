@@ -772,7 +772,7 @@ export function TeamPanel() {
           <>
       {isOwner && showForm && (
         <div
-          className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-[2px]"
           role="dialog"
           aria-modal="true"
           aria-labelledby="invite-member-title"
@@ -783,7 +783,7 @@ export function TeamPanel() {
             className="flex max-h-[min(88dvh,36rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--panel)] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.45)]"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="relative shrink-0 overflow-hidden border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white px-4 pb-4 pt-4">
+            <div className="relative shrink-0 overflow-hidden border-b border-[var(--line)] bg-gradient-to-br from-[var(--accent-soft)] via-white to-white px-5 pb-4 pt-5">
               <div
                 className="pointer-events-none absolute right-0 top-0 h-32 w-32 translate-x-1/4 -translate-y-1/4 rounded-full bg-[var(--accent-glow)] blur-2xl"
                 aria-hidden="true"
@@ -801,8 +801,8 @@ export function TeamPanel() {
               </div>
             </div>
 
-            <div className="asa-scroll min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-4 py-3.5">
-              <div className="grid items-start gap-x-4 gap-y-3 sm:grid-cols-2">
+            <div className="asa-scroll min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-5 py-3.5">
+              <div className="grid grid-cols-2 items-start gap-x-4 gap-y-3">
                 <Field
                   label="Full name"
                   icon={<IconUser />}
@@ -826,7 +826,7 @@ export function TeamPanel() {
                   value={email}
                   onChange={setEmail}
                 />
-                <div className="sm:col-span-2 grid items-start gap-x-4 gap-y-3 sm:grid-cols-2">
+                <div className="col-span-2 grid grid-cols-2 items-start gap-x-4 gap-y-3">
                   <PasswordField
                     label="Password"
                     icon={<IconLock />}
@@ -875,6 +875,7 @@ export function TeamPanel() {
                 items={catalogItems}
                 selected={selectedCaps}
                 onChange={setSelectedCaps}
+                desktopLayout
               />
 
               {error && (
@@ -887,7 +888,7 @@ export function TeamPanel() {
               )}
             </div>
 
-            <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-[var(--line)] bg-white/70 px-4 py-3">
+            <div className="flex shrink-0 flex-nowrap justify-end gap-2 border-t border-[var(--line)] bg-white/70 px-5 py-3">
               <button
                 type="button"
                 onClick={closeInvite}
@@ -918,7 +919,7 @@ export function TeamPanel() {
 
       {pendingRemove && (
         <div
-          className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-[2px]"
           role="dialog"
           aria-modal="true"
           aria-labelledby="remove-member-title"
@@ -960,7 +961,7 @@ export function TeamPanel() {
                   {error}
                 </p>
               )}
-              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <div className="flex flex-nowrap justify-end gap-2">
                 <button
                   type="button"
                   onClick={closeRemoveConfirm}
@@ -1019,9 +1020,10 @@ export function TeamPanel() {
                 items={catalogItems}
                 selected={editCaps}
                 onChange={setEditCaps}
+                desktopLayout
               />
             </div>
-            <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-[var(--line)] bg-white/70 px-5 py-3">
+            <div className="flex shrink-0 flex-nowrap justify-end gap-2 border-t border-[var(--line)] bg-white/70 px-5 py-3">
               <button
                 type="button"
                 onClick={closeEdit}
@@ -1079,7 +1081,7 @@ function MemberCard({
 
   return (
     <div className="group px-4 py-4 transition-colors hover:bg-[var(--accent-soft)]/25 sm:px-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
         <div className="flex min-w-0 flex-1 items-start gap-3">
           <span
             className={`mt-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-semibold tracking-wide shadow-sm ring-1 ${
@@ -1091,52 +1093,52 @@ function MemberCard({
           >
             {memberInitials(name)}
           </span>
-          <div className="min-w-0 space-y-2.5">
+          <div className="min-w-0 flex-1 space-y-2.5 text-left">
             <div>
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="truncate text-sm font-semibold tracking-tight text-[var(--ink)]">
+              <div className="flex flex-col items-start gap-1.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-2">
+                <p className="w-full truncate text-sm font-semibold leading-5 tracking-tight text-[var(--ink)] sm:w-auto">
                   {name}
                 </p>
                 <span
-                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ${
+                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold leading-4 ring-1 ${
                     isOwner
                       ? "bg-[var(--accent-soft)] text-[var(--accent)] ring-[var(--accent)]/20"
                       : "bg-white/90 text-[var(--ink)] ring-[var(--line)]"
                   }`}
                 >
-                  <IconShield className="h-2.5 w-2.5" />
+                  <IconShield className="h-2.5 w-2.5 shrink-0" />
                   {SHOP_TEAM_ROLE_LABELS[role]}
                 </span>
               </div>
               {phone || email ? (
-                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--muted)]">
+                <div className="mt-1.5 flex flex-nowrap items-center gap-x-3 text-xs leading-4 text-[var(--muted)] sm:mt-1">
                   {phone ? (
-                    <span className="inline-flex min-w-0 items-center gap-1.5">
+                    <span className="inline-flex min-w-0 shrink items-center gap-1.5">
                       <IconPhone className="h-3 w-3 shrink-0 text-[var(--accent)]/80" />
-                      <span className="truncate">{phone}</span>
+                      <span className="min-w-0 truncate">{phone}</span>
                     </span>
                   ) : null}
                   {email ? (
-                    <span className="inline-flex min-w-0 items-center gap-1.5">
+                    <span className="inline-flex min-w-0 shrink items-center gap-1.5">
                       <IconMail className="h-3 w-3 shrink-0 text-[var(--accent)]/80" />
-                      <span className="truncate">{email}</span>
+                      <span className="min-w-0 truncate">{email}</span>
                     </span>
                   ) : null}
                 </div>
               ) : null}
             </div>
 
-            <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-[var(--muted)]">
-              <span className="inline-flex items-center gap-1.5">
-                <IconBriefcase className="h-3 w-3 text-[var(--accent)]/80" />
-                <span>
+            <div className="flex flex-col gap-1.5 text-xs leading-4 text-[var(--muted)] sm:flex-row sm:flex-wrap sm:gap-x-4">
+              <span className="inline-flex min-w-0 items-center gap-1.5">
+                <IconBriefcase className="h-3 w-3 shrink-0 text-[var(--accent)]/80" />
+                <span className="min-w-0">
                   <span className="text-[var(--muted)]">Work </span>
                   <span className="font-medium text-[var(--ink)]">{activeWork}</span>
                 </span>
               </span>
-              <span className="inline-flex items-center gap-1.5">
-                <IconSparkles className="h-3 w-3 text-[var(--accent)]/80" />
-                <span>
+              <span className="inline-flex min-w-0 items-center gap-1.5">
+                <IconSparkles className="h-3 w-3 shrink-0 text-[var(--accent)]/80" />
+                <span className="min-w-0">
                   <span className="text-[var(--muted)]">AI </span>
                   <span className="font-medium text-[var(--ink)]">{aiAssistance}</span>
                 </span>
@@ -1145,25 +1147,29 @@ function MemberCard({
 
             <div className="flex flex-wrap gap-1.5">
               {isOwner && permissionLabels.length === 0 ? (
-                <span className="rounded-full bg-black/[0.04] px-2.5 py-0.5 text-[11px] font-medium text-[var(--muted)] ring-1 ring-inset ring-black/5">
+                <span className="rounded-full bg-black/[0.04] px-2.5 py-0.5 text-[11px] font-medium leading-4 text-[var(--muted)] ring-1 ring-inset ring-black/5">
                   Full access
                 </span>
               ) : permissionLabels.length > 0 ? (
                 permissionLabels.map((p) => (
                   <span
                     key={p.id}
-                    className="rounded-full bg-white/90 px-2.5 py-0.5 text-[11px] font-medium text-[var(--muted)] ring-1 ring-[var(--line)] transition group-hover:bg-white"
+                    className="rounded-full bg-white/90 px-2.5 py-0.5 text-[11px] font-medium leading-4 text-[var(--muted)] ring-1 ring-[var(--line)] transition group-hover:bg-white"
                   >
                     {p.label}
                   </span>
                 ))
               ) : (
-                <span className="text-xs text-[var(--muted)]">No permissions listed</span>
+                <span className="text-xs leading-4 text-[var(--muted)]">No permissions listed</span>
               )}
             </div>
           </div>
         </div>
-        {actions ? <div className="shrink-0 self-start sm:pt-1">{actions}</div> : null}
+        {actions ? (
+          <div className="shrink-0 self-stretch pl-[3.25rem] sm:self-start sm:pl-0 sm:pt-1">
+            {actions}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -1173,10 +1179,12 @@ function CapabilityChecklist({
   items,
   selected,
   onChange,
+  desktopLayout = false,
 }: {
   items: CapabilityCatalogItem[];
   selected: StaffCapability[];
   onChange: (next: StaffCapability[]) => void;
+  desktopLayout?: boolean;
 }) {
   return (
     <fieldset>
@@ -1189,7 +1197,9 @@ function CapabilityChecklist({
       <p className="mt-1 text-xs text-[var(--muted)]">
         Choose what this person can do across the shop floor and desk.
       </p>
-      <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+      <ul
+        className={`mt-3 grid gap-2 ${desktopLayout ? "grid-cols-2" : "grid-cols-1 sm:grid-cols-2"}`}
+      >
         {items.map((item) => {
           const checked = selected.includes(item.id);
           return (

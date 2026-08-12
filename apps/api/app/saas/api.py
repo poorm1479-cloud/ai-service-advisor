@@ -7,7 +7,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from app.api.deps import CurrentUser, require_owner
+from app.api.deps import CurrentUser, require_capabilities
+from app.core.permissions.capabilities import StaffCapability
 from app.domain.exceptions import NotFoundError, ValidationError
 from app.infrastructure.config import settings
 from app.saas.billing import BillingService
@@ -15,6 +16,8 @@ from app.saas.quotas import QuotaService
 from app.saas.usage_tracking import UsageTrackingService
 
 router = APIRouter(prefix="/v1/billing", tags=["billing"])
+
+_require_billing = require_capabilities(StaffCapability.PAYMENT_HANDLING)
 
 
 class CheckoutRequest(BaseModel):
@@ -43,7 +46,7 @@ async def list_plans() -> dict:
 
 
 @router.get("/subscription")
-async def get_subscription(current: CurrentUser = Depends(require_owner())) -> dict:
+async def get_subscription(current: CurrentUser = Depends(_require_billing)) -> dict:
     sub = await BillingService().get_subscription(current.shop_id)
     usage = await QuotaService().get_usage(current.shop_id)
     return {
@@ -68,7 +71,7 @@ async def get_subscription(current: CurrentUser = Depends(require_owner())) -> d
 
 
 @router.get("/ai-usage")
-async def get_ai_usage(current: CurrentUser = Depends(require_owner())) -> dict:
+async def get_ai_usage(current: CurrentUser = Depends(_require_billing)) -> dict:
     """Per-shop AI usage monitoring (requests, tokens, SMS, voice, estimated cost)."""
     return await UsageTrackingService().get_usage(current.shop_id)
 
@@ -76,7 +79,7 @@ async def get_ai_usage(current: CurrentUser = Depends(require_owner())) -> dict:
 @router.post("/checkout")
 async def create_checkout(
     body: CheckoutRequest,
-    current: CurrentUser = Depends(require_owner()),
+    current: CurrentUser = Depends(_require_billing),
 ) -> dict:
     try:
         return await BillingService().create_checkout(
@@ -93,31 +96,63 @@ async def create_checkout(
 
 
 @router.post("/portal")
-async def create_portal(current: CurrentUser = Depends(require_owner())) -> dict:
+async def create_portal(current: CurrentUser = Depends(_require_billing)) -> dict:
     try:
         return await BillingService().create_portal_session(shop_id=current.shop_id)
     except ValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
+_SUCCESSFUL_CHECKOUT_PAYMENT_STATUSES = frozenset({"paid", "no_payment_required"})
+
+
+def _checkout_payment_succeeded(session: dict) -> bool:
+    """True only when Stripe reports the checkout session payment as successful."""
+    return str(session.get("payment_status") or "").lower() in _SUCCESSFUL_CHECKOUT_PAYMENT_STATUSES
+
+
+async def _apply_paid_checkout(billing: BillingService, data: dict) -> bool:
+    """Upgrade plan only after a successful Stripe checkout payment. Returns whether applied."""
+    if not _checkout_payment_succeeded(data):
+        return False
+    meta = data.get("metadata") or {}
+    shop_id = meta.get("shop_id") or data.get("client_reference_id")
+    plan_id = meta.get("plan_id")
+    if not shop_id or not plan_id:
+        return False
+    await billing.apply_checkout_completed(
+        shop_id=UUID(str(shop_id)),
+        plan_id=str(plan_id),
+        stripe_customer_id=data.get("customer") if isinstance(data.get("customer"), str) else None,
+        stripe_subscription_id=(
+            data.get("subscription") if isinstance(data.get("subscription"), str) else None
+        ),
+    )
+    return True
+
+
 @router.post("/webhooks/stripe")
 async def stripe_webhook(request: Request) -> dict:
-    """Minimal Stripe webhook handler for checkout + payment failures."""
+    """Stripe webhook: upgrade only on successful payment; mark delinquent on failures."""
     payload = await request.json()
     event_type = payload.get("type")
     data = (payload.get("data") or {}).get("object") or {}
     billing = BillingService()
-    if event_type == "checkout.session.completed":
+    if event_type in {
+        "checkout.session.completed",
+        "checkout.session.async_payment_succeeded",
+    }:
+        # checkout.session.completed can fire with unpaid async methods — skip those.
+        await _apply_paid_checkout(billing, data)
+    elif event_type == "checkout.session.async_payment_failed":
         meta = data.get("metadata") or {}
-        shop_id = meta.get("shop_id") or data.get("client_reference_id")
-        plan_id = meta.get("plan_id")
-        if shop_id and plan_id:
-            await billing.apply_checkout_completed(
-                shop_id=UUID(shop_id),
-                plan_id=plan_id,
-                stripe_customer_id=data.get("customer"),
-                stripe_subscription_id=data.get("subscription"),
-            )
+        shop_raw = meta.get("shop_id") or data.get("client_reference_id")
+        stripe_sub = data.get("subscription")
+        await billing.apply_payment_failed(
+            shop_id=UUID(str(shop_raw)) if shop_raw else None,
+            stripe_subscription_id=stripe_sub if isinstance(stripe_sub, str) else None,
+            status="incomplete",
+        )
     elif event_type in {"invoice.payment_failed", "customer.subscription.updated"}:
         meta = data.get("metadata") or {}
         shop_raw = meta.get("shop_id")

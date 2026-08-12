@@ -442,6 +442,15 @@ async def test_empty_speech_keeps_line_open_silently(runtime, shop_id):
     assert "Gather" in second.twiml
     assert "still here" in second.spoken_text.lower()
 
+    third = await runtime.service.handle_speech(
+        shop_id=shop_id,
+        speech=SpeechInput(call_sid="CAsilent1", speech_result=""),
+    )
+    assert "Hangup" in third.twiml
+    assert "Gather" not in third.twiml
+    assert third.reply.end_call is True
+    assert "call back" in third.spoken_text.lower()
+
 
 @pytest.mark.asyncio
 async def test_caller_farewell_hangs_up(runtime, shop_id):

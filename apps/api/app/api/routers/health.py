@@ -49,7 +49,7 @@ async def public_status() -> dict:
         overall = "major_outage"
     return {
         "status": overall,
-        "service": "AI Service Advisor",
+        "service": "RatchetHub",
         "environment": settings.environment,
         "components": components,
         "incidents": [

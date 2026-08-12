@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { BrandLogo } from "@/components/BrandLogo";
 import { getApiUrl } from "@/lib/api";
 
 type Incident = {
@@ -50,9 +51,7 @@ export default function StatusPage() {
   return (
     <main className="mx-auto max-w-2xl px-4 py-12 sm:px-6 sm:py-16">
       <header className="flex items-center justify-between gap-3">
-        <Link href="/" className="font-display text-lg font-semibold tracking-tight">
-          AI Service Advisor
-        </Link>
+        <BrandLogo size={40} wordmarkClassName="text-2xl font-semibold tracking-tight" />
         <Link href="/?login=1" className="text-sm text-[var(--muted)] hover:text-[var(--foreground)]">
           Sign in
         </Link>

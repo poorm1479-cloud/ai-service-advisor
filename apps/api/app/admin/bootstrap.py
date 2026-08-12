@@ -9,7 +9,7 @@ from app.domain.entities import User
 from app.domain.enums import AccountType
 from app.infrastructure.config import settings
 from app.infrastructure.database import SessionLocal
-from app.infrastructure.security import hash_password, verify_password
+from app.infrastructure.security import hash_password
 from app.infrastructure.unit_of_work import SqlAlchemyUnitOfWork
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,8 @@ async def ensure_platform_admin() -> None:
     """Create or sync the first PLATFORM_ADMIN_USERNAMES account in development.
 
     Creates a platform_admin user with no shop / membership.
+    Bootstrap password is used only for initial create — never overwrite an
+    existing admin password (Settings → Change password must survive restart).
     """
     if settings.environment.lower() in {"production", "prod", "test", "testing"}:
         return
@@ -56,22 +58,12 @@ async def ensure_platform_admin() -> None:
                 logger.info("platform admin bootstrap: created user=%s (no shop)", username)
                 return
 
-            changed = False
             if (existing.account_type or AccountType.SHOP.value) != AccountType.PLATFORM_ADMIN.value:
                 await uow.users.update_account_type(
                     existing.id, account_type=AccountType.PLATFORM_ADMIN.value
                 )
-                changed = True
-                logger.info("platform admin bootstrap: promoted account_type user=%s", username)
-
-            # Keep local default password in sync for the seeded admin.
-            if not verify_password(password, existing.password_hash):
-                await uow.users.update_password(existing.id, password_hash=hash_password(password))
-                changed = True
-                logger.info("platform admin bootstrap: reset password user=%s", username)
-
-            if changed:
                 await uow.commit()
+                logger.info("platform admin bootstrap: promoted account_type user=%s", username)
             else:
                 logger.debug("platform admin bootstrap: ok user=%s", username)
     except Exception as exc:  # noqa: BLE001

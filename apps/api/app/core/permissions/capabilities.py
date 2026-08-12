@@ -33,6 +33,17 @@ CAPABILITY_LABELS: dict[StaffCapability, str] = {
 
 ALL_STAFF_CAPABILITIES: tuple[StaffCapability, ...] = tuple(StaffCapability)
 
+# Standard staff invite defaults — Calls & Messages / Payments require explicit grant.
+DEFAULT_STAFF_CAPABILITIES: tuple[StaffCapability, ...] = tuple(
+    c
+    for c in ALL_STAFF_CAPABILITIES
+    if c
+    not in (
+        StaffCapability.CUSTOMER_COMMUNICATION,
+        StaffCapability.PAYMENT_HANDLING,
+    )
+)
+
 
 def capability_values(caps: list[StaffCapability] | tuple[StaffCapability, ...] | None = None) -> list[str]:
     items = caps if caps is not None else ALL_STAFF_CAPABILITIES

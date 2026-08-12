@@ -3,8 +3,9 @@
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getApiUrl } from "@/lib/api";
+import { BrandLogo } from "@/components/BrandLogo";
 import { PasswordField } from "@/components/PasswordField";
+import { getApiUrl } from "@/lib/api";
 
 export default function ResetPasswordPage() {
   const router = useRouter();
@@ -41,9 +42,10 @@ export default function ResetPasswordPage() {
   return (
     <main className="relative flex min-h-screen items-center justify-center px-4 py-10">
       <div className="surface-panel w-full max-w-md p-6 sm:p-8">
-        <Link href="/" className="font-display text-lg font-semibold tracking-tight text-[var(--ink)]">
-          AI Service Advisor
-        </Link>
+        <BrandLogo
+          size={40}
+          wordmarkClassName="text-2xl font-semibold tracking-tight text-[var(--ink)]"
+        />
         <h1 className="font-display mt-5 text-2xl font-semibold tracking-tight">Reset password</h1>
         <form onSubmit={onSubmit} className="mt-6 space-y-4">
           <PasswordField

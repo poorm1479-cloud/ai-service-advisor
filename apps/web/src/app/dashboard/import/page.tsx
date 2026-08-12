@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAuth } from "@/lib/auth";
 import {
@@ -232,6 +232,8 @@ function ManualField({
   required,
   placeholder,
   autoComplete,
+  icon,
+  className = "",
 }: {
   label: string;
   value: string;
@@ -240,10 +242,13 @@ function ManualField({
   required?: boolean;
   placeholder?: string;
   autoComplete?: string;
+  icon?: ReactNode;
+  className?: string;
 }) {
   return (
-    <label className="block space-y-1">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+    <label className={`block space-y-1 ${className}`}>
+      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+        {icon ? <span className="text-[var(--muted)]">{icon}</span> : null}
         {label}
       </span>
       <input
@@ -281,14 +286,14 @@ function StatusBadge({ status }: { status: string }) {
 function StepRail({ active }: { active: DisplayStep }) {
   const activeIdx = DISPLAY_STEPS.indexOf(active);
   return (
-    <ol className="surface-panel flex shrink-0 items-center gap-1 overflow-x-auto p-2 sm:gap-0 sm:p-1.5">
+    <ol className="surface-panel flex shrink-0 items-stretch gap-0.5 overflow-x-auto p-2 sm:items-center sm:gap-0 sm:p-1.5">
       {DISPLAY_STEPS.map((label, idx) => {
         const done = idx < activeIdx;
         const current = idx === activeIdx;
         return (
           <li key={label} className="flex min-w-0 flex-1 items-center">
             <div
-              className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 transition-colors ${
+              className={`flex w-full flex-col items-center gap-1 rounded-xl px-1 py-2 text-center transition-colors sm:flex-row sm:gap-2.5 sm:px-3 sm:py-2.5 sm:text-left ${
                 current ? "bg-[var(--accent-soft)]" : done ? "bg-transparent" : ""
               }`}
             >
@@ -313,7 +318,7 @@ function StepRail({ active }: { active: DisplayStep }) {
                 )}
               </span>
               <span
-                className={`truncate text-[11px] font-semibold uppercase tracking-[0.14em] ${
+                className={`max-w-full text-[10px] font-semibold uppercase leading-tight tracking-[0.06em] sm:truncate sm:text-[11px] sm:tracking-[0.14em] ${
                   current ? "text-[var(--accent)]" : done ? "text-[var(--foreground)]" : "text-[var(--muted)]"
                 }`}
               >
@@ -352,7 +357,7 @@ function SourceOptionCard({
     <button
       type="button"
       onClick={onClick}
-      className={`group relative overflow-hidden rounded-2xl border bg-[var(--panel)] p-5 text-left shadow-[var(--shadow-soft)] transition-all duration-200 hover:-translate-y-0.5 hover:border-[var(--accent)] ${
+      className={`group relative min-w-0 overflow-hidden rounded-2xl border bg-[var(--panel)] p-3.5 text-left shadow-[var(--shadow-soft)] transition-all duration-200 hover:-translate-y-0.5 hover:border-[var(--accent)] sm:p-5 ${
         selected ? "border-[var(--accent)] ring-2 ring-[var(--accent)]/15" : "border-[var(--line)]"
       }`}
     >
@@ -360,30 +365,32 @@ function SourceOptionCard({
         className="pointer-events-none absolute -right-8 -top-10 h-28 w-28 rounded-full bg-[radial-gradient(circle,rgba(240,90,36,0.14),transparent_68%)] opacity-0 transition-opacity duration-300 group-hover:opacity-100"
         aria-hidden
       />
-      <div className="relative flex items-start gap-4">
+      <div className="relative flex flex-col items-start gap-2.5 sm:flex-row sm:gap-4">
         <span
-          className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl sm:h-11 sm:w-11 ${
             selected
               ? "bg-[var(--accent)] text-white"
               : "bg-[var(--background)] text-[var(--foreground)] ring-1 ring-[var(--line)] group-hover:bg-[var(--accent-soft)] group-hover:text-[var(--accent)]"
           }`}
         >
           {icon === "file" ? (
-            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
+            <svg viewBox="0 0 24 24" className="h-4 w-4 sm:h-5 sm:w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
               <path d="M8 4h6l4 4v12H8V4z" />
               <path d="M14 4v4h4" />
               <path d="M10 13h6M10 17h4" />
             </svg>
           ) : (
-            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
+            <svg viewBox="0 0 24 24" className="h-4 w-4 sm:h-5 sm:w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
               <path d="M5 19h14" />
               <path d="M7 15.5 16.5 6a1.8 1.8 0 0 1 2.5 2.5L9.5 18l-4 1 1.5-3.5z" />
             </svg>
           )}
         </span>
         <div className="min-w-0">
-          <p className="font-display text-base font-semibold tracking-tight">{title}</p>
-          <p className="mt-1 text-sm leading-relaxed text-[var(--muted)]">{description}</p>
+          <p className="font-display text-sm font-semibold tracking-tight sm:text-base">{title}</p>
+          <p className="mt-0.5 text-xs leading-snug text-[var(--muted)] sm:mt-1 sm:text-sm sm:leading-relaxed">
+            {description}
+          </p>
         </div>
       </div>
     </button>
@@ -579,6 +586,80 @@ function IconManual({ className = "h-5 w-5" }: { className?: string }) {
   );
 }
 
+function IconUser({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  );
+}
+
+function IconCar({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M5 17h14v-5l-1.5-4.5A2 2 0 0 0 15.6 6H8.4a2 2 0 0 0-1.9 1.5L5 12v5Z" />
+      <path d="M5 17H3v-2" />
+      <path d="M21 17h-2v-2" />
+      <circle cx="7.5" cy="17.5" r="1.5" />
+      <circle cx="16.5" cy="17.5" r="1.5" />
+    </svg>
+  );
+}
+
+function IconPhone({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.81.36 1.6.68 2.35a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.75.32 1.54.55 2.35.68A2 2 0 0 1 22 16.92Z" />
+    </svg>
+  );
+}
+
+function IconMail({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+    </svg>
+  );
+}
+
 function IconHistory({ className = "h-5 w-5" }: { className?: string }) {
   return (
     <svg
@@ -633,7 +714,18 @@ export default function ImportPage() {
   const [portalReady, setPortalReady] = useState(false);
   const [fileDragOver, setFileDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const scrollPaneRef = useRef<HTMLDivElement | null>(null);
   const vinAssistSeq = useRef(0);
+
+  /** Mobile: History is below the job view — scroll pane to top when opening a past job. */
+  function scrollImportPaneToTop() {
+    const pane = scrollPaneRef.current;
+    if (!pane) return;
+    // Wait a frame so report/progress content mounts before scrolling.
+    requestAnimationFrame(() => {
+      pane.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  }
 
   useEffect(() => {
     setPortalReady(true);
@@ -1008,6 +1100,7 @@ export default function ImportPage() {
       setJob(j);
       setStep(wizardStepForJob(j));
     }
+    scrollImportPaneToTop();
   }
 
   if (!authLoading && session && session.role !== "owner") {
@@ -1025,9 +1118,9 @@ export default function ImportPage() {
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-hidden">
-      <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
-        <div className="hero-motion min-w-0">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-hidden md:h-full">
+      <div className="flex shrink-0 items-start justify-between gap-3">
+        <div className="hero-motion min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <IconImport className="h-5 w-5 shrink-0 text-[var(--muted)]" />
             <h1 className="page-title">Import</h1>
@@ -1041,7 +1134,9 @@ export default function ImportPage() {
             type="button"
             onClick={resetWizard}
             aria-label="New import"
-            className="btn-primary inline-flex h-10 w-10 items-center justify-center p-0 shadow-[0_14px_32px_-16px_rgba(240,90,36,0.85)]"
+            className={`btn-primary h-10 w-10 shrink-0 items-center justify-center p-0 shadow-[0_14px_32px_-16px_rgba(240,90,36,0.85)] ${
+              step === "report" ? "hidden md:inline-flex" : "inline-flex"
+            }`}
           >
             <IconImportPlus className="h-5 w-5" />
           </button>
@@ -1064,7 +1159,11 @@ export default function ImportPage() {
         </p>
       )}
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-6 overflow-hidden pb-2">
+      {/* Mobile: one internal pane scroll; md+: history list owns scroll */}
+      <div
+        ref={scrollPaneRef}
+        className="asa-scroll flex min-h-0 min-w-0 flex-1 flex-col gap-6 overflow-y-auto overscroll-contain pb-2 [-webkit-overflow-scrolling:touch] md:overflow-hidden md:overscroll-none"
+      >
       {step === "source" && (
         <section className="hero-motion-late shrink-0 space-y-5">
           <aside className="relative overflow-hidden rounded-2xl border border-[var(--accent)]/20 bg-[linear-gradient(145deg,#fff8f3_0%,#ffefe6_45%,#ffe6d8_100%)] px-5 py-5 shadow-[var(--shadow-soft)] sm:px-6">
@@ -1101,7 +1200,7 @@ export default function ImportPage() {
             </div>
           </aside>
 
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
             <SourceOptionCard
               title="CSV / Excel"
               description="Upload spreadsheet exports from your shop system"
@@ -1135,7 +1234,7 @@ export default function ImportPage() {
         step === "source" &&
         createPortal(
           <div
-            className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-[2px]"
             role="dialog"
             aria-modal="true"
             aria-labelledby="file-import-dialog-title"
@@ -1233,7 +1332,7 @@ export default function ImportPage() {
         selectedSource &&
         createPortal(
           <div
-            className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/55 p-4 backdrop-blur-[2px] sm:items-center"
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-[2px]"
             role="dialog"
             aria-modal="true"
             aria-labelledby="import-review-dialog-title"
@@ -1279,6 +1378,10 @@ export default function ImportPage() {
                   {FILE_SOURCES.has(source) ? (
                     <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] text-white shadow-[0_8px_20px_-8px_rgba(240,90,36,0.85)]">
                       {source === "excel" ? <IconExcel className="h-4 w-4" /> : <IconCsv className="h-4 w-4" />}
+                    </span>
+                  ) : source === "manual" ? (
+                    <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] text-white shadow-[0_8px_20px_-8px_rgba(240,90,36,0.85)]">
+                      <IconManual className="h-4 w-4" />
                     </span>
                   ) : null}
                   <div className="min-w-0 flex items-center">
@@ -1471,12 +1574,16 @@ export default function ImportPage() {
                 {source === "manual" && (
                   <div className="space-y-3">
                     <div className="space-y-2.5 rounded-lg border border-[var(--line)] bg-[var(--background)]/35 p-3">
-                      <h3 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+                      <h3 className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+                        <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-[var(--accent-soft)] text-[var(--accent)]">
+                          <IconUser className="h-3.5 w-3.5" />
+                        </span>
                         Customer
                       </h3>
-                      <div className="grid gap-2.5 sm:grid-cols-2">
+                      <div className="grid grid-cols-2 gap-2.5">
                         <ManualField
                           label="Name"
+                          icon={<IconUser className="h-3.5 w-3.5" />}
                           value={manualCustomer.name}
                           onChange={(name) => setManualCustomer((c) => ({ ...c, name }))}
                           autoComplete="name"
@@ -1484,6 +1591,7 @@ export default function ImportPage() {
                         />
                         <ManualField
                           label="Phone"
+                          icon={<IconPhone className="h-3.5 w-3.5" />}
                           value={manualCustomer.phone}
                           onChange={(phone) =>
                             setManualCustomer((c) => ({ ...c, phone: formatPhoneInput(phone) }))
@@ -1492,28 +1600,31 @@ export default function ImportPage() {
                           autoComplete="tel"
                           placeholder={PHONE_PLACEHOLDER}
                         />
-                        <div className="sm:col-span-2">
-                          <ManualField
-                            label="Email (optional)"
-                            value={manualCustomer.email}
-                            onChange={(email) => setManualCustomer((c) => ({ ...c, email }))}
-                            type="email"
-                            autoComplete="email"
-                            placeholder="sam@example.com"
-                          />
-                        </div>
+                        <ManualField
+                          label="Email (optional)"
+                          icon={<IconMail className="h-3.5 w-3.5" />}
+                          value={manualCustomer.email}
+                          onChange={(email) => setManualCustomer((c) => ({ ...c, email }))}
+                          type="email"
+                          autoComplete="email"
+                          placeholder="sam@example.com"
+                          className="col-span-2"
+                        />
                       </div>
                     </div>
 
                     <div className="space-y-2.5 rounded-lg border border-[var(--line)] bg-[var(--background)]/35 p-3">
-                      <h3 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+                      <h3 className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+                        <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-[var(--accent-soft)] text-[var(--accent)]">
+                          <IconCar className="h-3.5 w-3.5" />
+                        </span>
                         Vehicle
                       </h3>
                       <p className="text-xs text-[var(--muted)]">
                         Scan or type a 17-character VIN to auto-fill year, make, and model.
                       </p>
-                      <div className="grid gap-2.5 sm:grid-cols-2">
-                        <div className="sm:col-span-2">
+                      <div className="grid grid-cols-2 gap-2.5">
+                        <div className="col-span-2">
                           <VinInput
                             value={manualVehicle.vin}
                             onChange={(vin) => setManualVehicle((v) => ({ ...v, vin }))}
@@ -1555,12 +1666,10 @@ export default function ImportPage() {
               </div>
 
               <div
-                className={`flex shrink-0 items-center gap-3 border-t border-[var(--line)] bg-[var(--background)]/35 ${
-                  source === "manual" ? "justify-end" : "justify-between"
-                } ${
+                className={`flex shrink-0 items-center justify-end gap-2 border-t border-[var(--line)] bg-[var(--background)]/35 ${
                   FILE_SOURCES.has(source) || source === "manual"
                     ? "px-4 py-3.5"
-                    : "px-5 py-4 sm:px-6"
+                    : "gap-3 px-5 py-4 sm:px-6"
                 }`}
               >
                 {source === "manual" ? (
@@ -1703,18 +1812,28 @@ export default function ImportPage() {
       {step === "report" && job && (
         <section className="shrink-0 space-y-4">
           <div className="surface-panel space-y-5 p-5 sm:p-6">
-            <div className="flex flex-wrap items-center gap-3">
-              <StatusBadge status={job.status} />
-              {job.source ? (
-                <span className="text-sm capitalize text-[var(--muted)]">{job.source}</span>
-              ) : null}
+            <div className="flex items-center gap-3">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
+                <StatusBadge status={job.status} />
+                {job.source ? (
+                  <span className="text-sm capitalize text-[var(--muted)]">{job.source}</span>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={resetWizard}
+                aria-label="New import"
+                className="btn-primary inline-flex h-10 w-10 shrink-0 items-center justify-center p-0 shadow-[0_14px_32px_-16px_rgba(240,90,36,0.85)] md:hidden"
+              >
+                <IconImportPlus className="h-5 w-5" />
+              </button>
             </div>
             {job.error && (
               <p className="rounded-xl border border-red-200/80 bg-red-50 px-3 py-2 text-sm text-red-700">
                 {job.error}
               </p>
             )}
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               <StatCard label="Customers imported" value={entityImported(job, "customer")} />
               <StatCard label="Vehicles imported" value={entityImported(job, "vehicle")} />
               <StatCard label="Repair records" value={entityImported(job, "repair_history")} />
@@ -1726,7 +1845,7 @@ export default function ImportPage() {
                   Duration {job.report.duration_ms}ms · Pending duplicates{" "}
                   {job.report.duplicates_pending}
                 </p>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
                   {Object.entries(job.report.entity_counts).map(([kind, c]) => (
                     <div
                       key={kind}
@@ -1768,12 +1887,12 @@ export default function ImportPage() {
         </section>
       )}
 
-      <section className="flex min-h-0 flex-1 flex-col gap-3">
+      <section className="flex min-h-0 flex-col gap-3 md:min-h-0 md:flex-1 md:overflow-hidden">
         <h2 className="font-display flex shrink-0 items-center gap-2 text-lg font-semibold tracking-tight">
           <IconHistory className="h-5 w-5 text-[var(--muted)]" />
           History
         </h2>
-        <ul className="asa-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-[var(--radius)] border border-[var(--line)] bg-[var(--panel)] shadow-[var(--shadow-soft)] [-webkit-overflow-scrolling:touch]">
+        <ul className="rounded-[var(--radius)] border border-[var(--line)] bg-[var(--panel)] shadow-[var(--shadow-soft)] md:asa-scroll md:min-h-0 md:flex-1 md:overflow-y-auto md:overscroll-contain md:[-webkit-overflow-scrolling:touch]">
           {jobs.map((j) => {
             const selected = job?.id === j.id;
             return (

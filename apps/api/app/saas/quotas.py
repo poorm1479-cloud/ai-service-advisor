@@ -85,6 +85,13 @@ class QuotaService:
             },
         }
 
+    async def ai_usage_available(self, shop_id: UUID) -> bool:
+        """True when the shop has remaining monthly AI call quota."""
+        usage = await self.get_usage(shop_id)
+        used = int(usage["usage"]["ai_calls"])
+        limit = int(usage["limits"]["ai_calls"])
+        return used < limit
+
     async def consume(self, shop_id: UUID, metric: str, amount: int = 1) -> None:
         if amount <= 0:
             return

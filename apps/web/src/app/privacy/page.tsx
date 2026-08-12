@@ -1,18 +1,16 @@
-import Link from "next/link";
+import { BrandLogo } from "@/components/BrandLogo";
 
 export default function PrivacyPage() {
   return (
     <main className="mx-auto max-w-3xl px-4 py-12 sm:px-6 sm:py-16">
-      <Link href="/" className="font-display text-lg font-semibold tracking-tight">
-        AI Service Advisor
-      </Link>
+        <BrandLogo size={40} wordmarkClassName="text-2xl font-semibold tracking-tight" />
       <h1 className="font-display mt-10 text-3xl font-semibold tracking-tight sm:text-4xl">
         Privacy Policy
       </h1>
       <p className="mt-2 text-sm text-[var(--muted)]">Last updated: July 29, 2026</p>
       <div className="surface-panel mt-8 space-y-4 p-6 text-sm leading-relaxed text-[var(--muted)]">
         <p>
-          AI Service Advisor processes shop, customer, vehicle, and communication data to provide
+          RatchetHub processes shop, customer, vehicle, and communication data to provide
           multi-tenant repair-shop operations software.
         </p>
         <p>

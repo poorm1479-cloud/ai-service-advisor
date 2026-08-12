@@ -131,7 +131,7 @@ def build() -> WorkflowDefinition:
                 "Repair recommendation recorded",
                 5,
                 config={
-                    "note": "AI Service Advisor repair recommendation applied to CRM",
+                    "note": "RatchetHub repair recommendation applied to CRM",
                     "fields": {
                         "capability": "AnalyzeConversation|GenerateRepairRecommendation",
                         "ai_decision": "RepairRecommendationDecision",

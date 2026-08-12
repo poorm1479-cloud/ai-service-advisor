@@ -133,6 +133,7 @@ def build_voice_runtime(
         shop_number_map=shop_map,
         public_base_url=settings.twilio_public_base_url,
         stream_enabled=settings.voice_stream_enabled,
+        empty_gather_hangup_after=settings.voice_empty_gather_hangup_after,
         uow_factory=uow_factory,
     )
     return VoiceRuntime(

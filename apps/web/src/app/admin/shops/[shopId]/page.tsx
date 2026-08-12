@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import { AdminShell, Panel, Stat } from "@/components/admin/AdminShell";
+import { AdminPageHeader, AdminShell, LiveBadge, Panel, Stat } from "@/components/admin/AdminShell";
 import {
   activateAdminOrganizationMember,
   activateAdminShop,
@@ -76,9 +76,13 @@ function DetailBody({ accessToken }: { accessToken: string }) {
       setData(next);
       setSelectedPlanId((prev) => prev || next.shop.plan_id || "");
       setError(null);
+      setLive(true);
     } catch (err) {
       if (!quiet) {
         setError(err instanceof Error ? err.message : "Failed to load shop");
+        setLive(false);
+      } else {
+        setLive(false);
       }
     } finally {
       if (!quiet) setBusy(false);
@@ -87,6 +91,20 @@ function DetailBody({ accessToken }: { accessToken: string }) {
 
   useEffect(() => {
     void load(false);
+    const id = window.setInterval(() => void load(true), 3000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") void load(true);
+    };
+    const onRefresh = () => void load(true);
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onRefresh);
+    window.addEventListener("admin:shops-refresh", onRefresh);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onRefresh);
+      window.removeEventListener("admin:shops-refresh", onRefresh);
+    };
   }, [load]);
 
   useEffect(() => {
@@ -262,48 +280,41 @@ function DetailBody({ accessToken }: { accessToken: string }) {
 
   return (
     <>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <Link href="/admin/shops" className="text-sm text-[var(--muted)] hover:text-[var(--accent)]">
-            ← Shops
-          </Link>
-          <h2 className="mt-1 font-display text-xl font-semibold tracking-tight">{shop.shop_name}</h2>
-          <p className="font-mono text-xs text-[var(--muted)]">{shop.shop_slug}</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <span
-            className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium ${
-              live
-                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                : "border-[var(--line)] bg-[var(--background)] text-[var(--muted)]"
-            }`}
-          >
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${live ? "bg-emerald-500" : "bg-[var(--muted)]"}`}
-            />
-            {live ? "Live" : "Connecting"}
-          </span>
-          {shop.status === "suspended" ? (
-            <button
-              type="button"
-              disabled={actionBusy}
-              onClick={() => void onActivate()}
-              className="rounded-md border border-[var(--line)] px-3 py-1.5 text-sm disabled:opacity-50"
-            >
-              Activate shop
-            </button>
-          ) : (
-            <button
-              type="button"
-              disabled={actionBusy || shop.status === "none"}
-              onClick={() => void onSuspend()}
-              className="rounded-md border border-[var(--line)] px-3 py-1.5 text-sm text-red-700 disabled:opacity-50"
-            >
-              Suspend shop
-            </button>
-          )}
-        </div>
-      </div>
+      <AdminPageHeader
+        eyebrow="Shop detail"
+        title={shop.shop_name}
+        description={shop.shop_slug}
+        action={
+          <div className="flex flex-wrap items-center gap-2">
+            <LiveBadge live={live} />
+            {shop.status === "suspended" ? (
+              <button
+                type="button"
+                disabled={actionBusy}
+                onClick={() => void onActivate()}
+                className="rounded-xl border border-[var(--line)] bg-white/80 px-3 py-1.5 text-sm shadow-[var(--shadow-soft)] disabled:opacity-50"
+              >
+                Activate shop
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={actionBusy || shop.status === "none"}
+                onClick={() => void onSuspend()}
+                className="rounded-xl border border-[var(--line)] bg-white/80 px-3 py-1.5 text-sm text-red-700 shadow-[var(--shadow-soft)] disabled:opacity-50"
+              >
+                Suspend shop
+              </button>
+            )}
+          </div>
+        }
+      />
+      <Link
+        href="/admin/shops"
+        className="inline-flex text-sm text-[var(--muted)] transition-colors hover:text-[var(--accent)]"
+      >
+        ← Back to shops
+      </Link>
 
       {error && <p className="text-sm text-red-700">{error}</p>}
       {message && <p className="text-sm text-emerald-700">{message}</p>}

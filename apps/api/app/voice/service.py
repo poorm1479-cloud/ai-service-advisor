@@ -63,6 +63,7 @@ class VoiceAiService:
         stream_ws_path: str = "/v1/webhooks/twilio/voice/stream",
         public_base_url: str = "",
         stream_enabled: bool = True,
+        empty_gather_hangup_after: int = 3,
         uow_factory: Any | None = None,
         owner_notifier: Any | None = None,
     ) -> None:
@@ -82,6 +83,7 @@ class VoiceAiService:
         self._stream_ws_path = stream_ws_path
         self._public_base_url = public_base_url.rstrip("/")
         self._stream_enabled = stream_enabled
+        self._empty_gather_hangup_after = max(1, int(empty_gather_hangup_after))
         self._uow_factory = uow_factory
         self._owner_notifier = owner_notifier
         self._owner_notifications: list[dict[str, Any]] = []
@@ -295,10 +297,40 @@ class VoiceAiService:
 
         text = (speech.speech_result or "").strip()
         if not text:
-            # Silence timeout — keep listening without hanging up or cluttering the line.
+            # Silence / empty Gather — brief re-listen, one soft nudge, then hang up.
+            # Avoids infinite billable no-speech Gathers without cutting real turns.
             empties = int((call.metadata or {}).get("empty_gathers") or 0) + 1
+            hangup_after = self._empty_gather_hangup_after
             call.metadata = {**(call.metadata or {}), "empty_gathers": empties}
             await self._store.update_call(call)
+
+            if empties >= hangup_after:
+                draft = VoiceReplyDraft(
+                    text=(
+                        "I didn't catch anything, so I'll let you go. "
+                        "Feel free to call back anytime. Goodbye."
+                    ),
+                    end_call=True,
+                    reason="empty_gather_timeout",
+                )
+                spoken = await self._speech.speak(text=draft.text, synthesize=False)
+                assistant_turn = await self._persist_turn(
+                    call, role=VoiceTurnRole.ASSISTANT.value, text=spoken.text
+                )
+                await self.complete_call(
+                    shop_id=shop_id, call_id=call.id, finalize_in_background=True
+                )
+                twiml = self._provider.build_hangup_twiml(say_text=spoken.text)
+                return VoiceTurnResult(
+                    call=call,
+                    caller_turn=None,
+                    assistant_turn=assistant_turn,
+                    reply=draft,
+                    spoken_text=spoken.text,
+                    pipeline=None,
+                    twiml=twiml,
+                )
+
             if empties >= 2:
                 draft = VoiceReplyDraft(
                     text="I'm still here whenever you're ready.",

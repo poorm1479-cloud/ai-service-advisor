@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AdminShell, Panel, Stat } from "@/components/admin/AdminShell";
+import { AdminShell, LiveBadge, Panel, Stat } from "@/components/admin/AdminShell";
 import {
   assignAdminOrganizationTwilioNumber,
   clearAdminOrganizationTwilioNumber,
@@ -314,25 +314,7 @@ function TwilioNumbersBody({ accessToken }: { accessToken: string }) {
 
   return (
     <div className="flex h-[calc(100dvh-7.25rem)] flex-col gap-4 overflow-hidden sm:h-[calc(100dvh-7.75rem)] md:h-[calc(100dvh-9.25rem)] md:gap-5">
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
-        <p className="text-xs text-[var(--muted)]">
-          Shop Twilio SMS/Voice channel assignment — enter an E.164 number already on the Twilio account
-        </p>
-        <span
-          className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium ${
-            live
-              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-              : "border-[var(--line)] bg-[var(--background)] text-[var(--muted)]"
-          }`}
-        >
-          <span
-            className={`h-1.5 w-1.5 rounded-full ${live ? "bg-emerald-500" : "bg-[var(--muted)]"}`}
-          />
-          {live ? "Live" : "Connecting"}
-        </span>
-      </div>
-
-      <Panel title="Account creation" className="shrink-0">
+      <Panel className="shrink-0">
         <div className="flex flex-wrap items-start justify-between gap-3 px-5 py-4">
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium">Auto-create Twilio number on account creation</p>
@@ -361,14 +343,6 @@ function TwilioNumbersBody({ accessToken }: { accessToken: string }) {
             />
           </button>
         </div>
-        <div className="border-t border-[var(--line)] px-5 py-2 text-xs text-[var(--muted)]">
-          {autoProvision === null
-            ? "Loading setting…"
-            : autoOn
-              ? "Status: enabled — new accounts get a number automatically"
-              : "Status: disabled — new accounts start without a number"}
-          {autoProvisionBusy ? " · Saving…" : null}
-        </div>
       </Panel>
 
       <section className="grid shrink-0 gap-3 sm:grid-cols-3">
@@ -385,6 +359,7 @@ function TwilioNumbersBody({ accessToken }: { accessToken: string }) {
         title={`Twilio numbers (${filtered.length})`}
         action={
           <div className="flex flex-nowrap items-center gap-2">
+            <LiveBadge live={live} />
             <select
               value={filter}
               onChange={(e) => setFilter(e.target.value as NumberFilter)}
