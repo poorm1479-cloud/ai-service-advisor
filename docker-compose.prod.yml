@@ -57,6 +57,7 @@ services:
     networks: [asa]
 
   api:
+    image: ${API_IMAGE:-ghcr.io/OWNER/REPO/api:latest}
     build:
       context: .
       dockerfile: deploy/docker/Dockerfile.api
@@ -93,6 +94,7 @@ services:
     networks: [asa]
 
   web:
+    image: ${WEB_IMAGE:-ghcr.io/OWNER/REPO/web:latest}
     build:
       context: .
       dockerfile: deploy/docker/Dockerfile.web

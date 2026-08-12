@@ -143,22 +143,29 @@ docker compose -f docker-compose.prod.yml --env-file .env.production exec backup
 | Workflow | Trigger | Actions |
 |----------|---------|---------|
 | `.github/workflows/ci.yml` | PR / push | API pytest, web lint+build, Docker build (no push) |
-| `.github/workflows/deploy.yml` | `v*` tags / manual | Build & push API/Web to GHCR |
+| `.github/workflows/deploy.yml` | `main`/`master` push, `v*` tags, manual | Build & push API/Web to GHCR, then SSH `rollout.sh` |
+
+Push to `main` (or `master`) builds images, tags `latest` + sha, and SSHs into the server to run `deploy/scripts/rollout.sh` (pull + up). Manual runs default to remote deploy; set `remote_deploy=false` to only push images.
 
 ### Required GitHub configuration
 
 - Packages write permission (workflow already sets this).
 - Optional repo variable `NEXT_PUBLIC_API_URL` for production web builds.
 - Protect `main` and require CI green before merge.
+- Secrets for auto remote deploy: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, optional `DEPLOY_PATH`.
 
 ### Rollout on a VM
 
+Set `API_IMAGE` / `WEB_IMAGE` in `.env.production` to your GHCR images (see `.env.production.example`).
+
 ```bash
 docker login ghcr.io
-# update image tags in compose or pull :
+# Or rely on CI: bash deploy/scripts/rollout.sh
 docker compose -f docker-compose.prod.yml --env-file .env.production pull
 docker compose -f docker-compose.prod.yml --env-file .env.production up -d
 ```
+
+The server must be able to pull from GHCR (`docker login ghcr.io` once, or a read token in the Docker config).
 
 ## Security checklist
 
