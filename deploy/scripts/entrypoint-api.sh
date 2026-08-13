@@ -6,13 +6,20 @@ python - <<'PY'
 import os, time, sys
 import psycopg
 
-url = os.environ.get("DATABASE_URL_SYNC") or os.environ.get("database_url_sync")
-if not url:
-    # fallback from async URL
-    async_url = os.environ.get("DATABASE_URL") or os.environ.get("database_url", "")
-    url = async_url.replace("postgresql+asyncpg://", "postgresql://").replace(
-        "postgresql+psycopg://", "postgresql://"
-    )
+url = (
+    os.environ.get("DATABASE_URL_SYNC")
+    or os.environ.get("database_url_sync")
+    or os.environ.get("DATABASE_URL")
+    or os.environ.get("database_url")
+    or ""
+)
+# libpq/psycopg accept postgresql:// — not SQLAlchemy driver prefixes.
+url = (
+    url.replace("postgresql+asyncpg://", "postgresql://")
+    .replace("postgresql+psycopg://", "postgresql://")
+    .replace("postgres+asyncpg://", "postgresql://")
+    .replace("postgres+psycopg://", "postgresql://")
+)
 if not url:
     print("No database URL configured", file=sys.stderr)
     sys.exit(1)
