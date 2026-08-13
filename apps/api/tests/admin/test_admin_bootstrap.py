@@ -89,7 +89,7 @@ async def test_bootstrap_creates_missing_admin_in_production(
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_skips_weak_password_in_production(
+async def test_bootstrap_creates_default_password_in_production(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     username = f"padmin_{uuid4().hex[:8]}"
@@ -103,4 +103,5 @@ async def test_bootstrap_skips_weak_password_in_production(
         row = (
             await session.execute(select(UserModel).where(UserModel.username == username))
         ).scalar_one_or_none()
-        assert row is None
+        assert row is not None
+        assert verify_password("admin", row.password_hash)
