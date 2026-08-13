@@ -23,7 +23,7 @@ import { listAppointments, Appointment } from "@/lib/appointments";
 import { listOpportunities, Opportunity } from "@/lib/revenue";
 import { useAuth } from "@/lib/auth";
 import { formatPhoneInput, PHONE_PLACEHOLDER } from "@/lib/phone";
-import { CustomerDetailContent } from "@/app/dashboard/customer/[id]/page";
+import { CustomerDetailContent } from "@/app/dashboard/customer/[id]/CustomerDetailContent";
 
 type CreateMode = "known" | "unknown" | null;
 
