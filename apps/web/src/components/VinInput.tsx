@@ -95,6 +95,7 @@ function hasValidVinCheckDigit(vin: string): boolean {
 function collectVinCandidates(cleaned: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
+  // Scan the whole cleaned string — dash OCR often prepends other labels (was capped at 40 and missed VINs).
   for (let i = 0; i <= cleaned.length - 17; i++) {
     const slice = cleaned.slice(i, i + 17);
     if (!VIN_EXACT_RE.test(slice) || seen.has(slice)) continue;
@@ -142,22 +143,22 @@ function gatherVinCandidates(upper: string): { candidates: string[]; labeled: st
   for (const token of upper.split(/[^A-HJ-NPR-Z0-9]+/)) {
     if (token.length === 17 && VIN_EXACT_RE.test(token)) {
       tokenCandidates.push(token);
-    } else if (token.length > 17 && token.length <= 40) {
-      // Door-jamb barcodes often prefix/suffix a few chars around the VIN.
+    } else if (token.length > 17) {
       tokenCandidates.push(...collectVinCandidates(token));
     }
   }
   const cleaned = upper.replace(/[\s\-:_]/g, "");
-  const looseCandidates = VIN_EXACT_RE.test(cleaned)
-    ? [cleaned]
-    : cleaned.length >= 17 && cleaned.length <= 40
-      ? collectVinCandidates(cleaned)
-      : [];
+  const looseCandidates =
+    cleaned.length >= 17 ? collectVinCandidates(cleaned) : [];
   // Prefer exact tokens, then labeled, then sliding windows.
-  const ordered = [...tokenCandidates, ...looseCandidates];
+  const ordered = [
+    ...(labeled && VIN_EXACT_RE.test(labeled) ? [labeled] : []),
+    ...tokenCandidates,
+    ...looseCandidates,
+  ];
   const seen = new Set<string>();
   const candidates = ordered.filter((c) => {
-    if (seen.has(c)) return false;
+    if (!VIN_EXACT_RE.test(c) || seen.has(c)) return false;
     seen.add(c);
     return true;
   });
@@ -201,6 +202,17 @@ const OCR_CHAR_ALTS: Record<string, string[]> = {
   "7": ["T"],
   Y: ["4"],
   "4": ["Y"],
+  A: ["4"],
+  H: ["N", "M"],
+  N: ["H", "M"],
+  M: ["H", "N"],
+  U: ["V"],
+  V: ["U"],
+  P: ["R", "F"],
+  R: ["P"],
+  F: ["P"],
+  K: ["X"],
+  X: ["K"],
 };
 
 function repairVinByCheckDigit(vin: string): string | null {
@@ -236,18 +248,33 @@ function repairVinByCheckDigit(vin: string): string | null {
     }
   }
   if (doubles.size === 1) return doubles.values().next().value ?? null;
+
+  // Last resort: exactly one single-char edit (any VIN char) fixes check digit.
+  const brute = new Set<string>();
+  for (let i = 0; i < 17; i++) {
+    for (let c = 0; c < VIN_CHAR_WHITELIST.length; c++) {
+      const ch = VIN_CHAR_WHITELIST[c];
+      if (ch === vin[i]) continue;
+      const next = `${vin.slice(0, i)}${ch}${vin.slice(i + 1)}`;
+      if (hasValidVinCheckDigit(next)) brute.add(next);
+      if (brute.size > 1) return null;
+    }
+  }
+  if (brute.size === 1) return brute.values().next().value ?? null;
   return null;
 }
 
 type OcrVinHit = {
   vin: string;
-  /** True when lookalike repair (B↔8 etc.) produced the check-digit match. */
+  /** True when lookalike / brute repair produced the check-digit match. */
   repaired: boolean;
+  /** Charset-valid 17-char without proven check digit — needs multi-frame votes. */
+  formatOnly?: boolean;
 };
 
 /**
- * Printed VIN OCR — only ISO 3779 check-digit matches.
- * Exact hits beat repairs; multiple distinct valid VINs → reject (ambiguous).
+ * Printed VIN OCR.
+ * Prefer ISO check digit; unique repairs; then format-only for multi-frame confirm.
  */
 function extractVinFromOcr(raw: string): OcrVinHit | null {
   const upper = normalizeOcrVinText(raw);
@@ -264,7 +291,7 @@ function extractVinFromOcr(raw: string): OcrVinHit | null {
   }
 
   const repaired = new Set<string>();
-  if (labeled) {
+  if (labeled && VIN_EXACT_RE.test(labeled)) {
     const r = repairVinByCheckDigit(labeled);
     if (r) repaired.add(r);
   }
@@ -275,7 +302,76 @@ function extractVinFromOcr(raw: string): OcrVinHit | null {
   if (repaired.size === 1) {
     return { vin: repaired.values().next().value as string, repaired: true };
   }
+  if (repaired.size > 1) return null;
+
+  const formatOnly = new Set<string>();
+  if (labeled && VIN_EXACT_RE.test(labeled)) formatOnly.add(labeled);
+  for (const c of candidates) {
+    if (VIN_EXACT_RE.test(c)) formatOnly.add(c);
+  }
+  if (formatOnly.size === 1) {
+    return {
+      vin: formatOnly.values().next().value as string,
+      repaired: false,
+      formatOnly: true,
+    };
+  }
   return null;
+}
+
+function editDistance17(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length !== 17 || b.length !== 17) return 99;
+  let d = 0;
+  for (let i = 0; i < 17; i++) if (a[i] !== b[i]) d += 1;
+  return d;
+}
+
+/**
+ * Merge near-identical OCR reads into one vote bucket.
+ * Prefer a check-digit-valid spelling as the bucket key when available.
+ */
+function addFuzzyOcrVote(
+  votes: Map<string, number>,
+  vin: string,
+  inc: number,
+): { key: string; votes: number } {
+  let target: string | null = null;
+  let targetCount = -1;
+  for (const [key, count] of votes) {
+    if (editDistance17(key, vin) <= 2 && count > targetCount) {
+      target = key;
+      targetCount = count;
+    }
+  }
+
+  if (!target) {
+    votes.set(vin, inc);
+    return { key: vin, votes: inc };
+  }
+
+  if (hasValidVinCheckDigit(vin) && target !== vin) {
+    const moved = (votes.get(target) ?? 0) + inc;
+    votes.delete(target);
+    votes.set(vin, moved);
+    return { key: vin, votes: moved };
+  }
+
+  const next = (votes.get(target) ?? 0) + inc;
+  votes.set(target, next);
+  return { key: target, votes: next };
+}
+
+function topOcrVotes(votes: Map<string, number>, limit = 3): string[] {
+  return [...votes.entries()]
+    .filter(([vin]) => VIN_EXACT_RE.test(vin))
+    .sort(
+      (a, b) =>
+        b[1] - a[1] ||
+        Number(hasValidVinCheckDigit(b[0])) - Number(hasValidVinCheckDigit(a[0])),
+    )
+    .slice(0, limit)
+    .map(([vin]) => vin);
 }
 
 type VinInputProps = {
@@ -315,10 +411,29 @@ async function createVinReader(
   const hints = new Map<number, unknown>();
   hints.set(HINT_TRY_HARDER, true);
   hints.set(HINT_POSSIBLE_FORMATS, formats);
+  // PURE_BARCODE is too strict on dirty door-jamb stickers — only for tight zoom crops.
   if (pureBarcode) hints.set(HINT_PURE_BARCODE, true);
   return new BrowserMultiFormatReader(
     hints as ConstructorParameters<typeof BrowserMultiFormatReader>[0],
   );
+}
+
+async function createReadersSafe(): Promise<{
+  live: ZxingReader | null;
+  code39: ZxingReader | null;
+  zoom: ZxingReader | null;
+}> {
+  const results = await Promise.allSettled([
+    createVinReader(false, "all"),
+    // Non-pure CODE_39 — mobile door jambs rarely look like a "pure" barcode crop.
+    createVinReader(false, "code39"),
+    createVinReader(true, "all"),
+  ]);
+  return {
+    live: results[0].status === "fulfilled" ? results[0].value : null,
+    code39: results[1].status === "fulfilled" ? results[1].value : null,
+    zoom: results[2].status === "fulfilled" ? results[2].value : null,
+  };
 }
 
 async function waitForVideoReady(
@@ -416,7 +531,7 @@ function cameraErrorMessage(err: unknown): string {
   return message;
 }
 
-type PreprocessMode = "raw" | "contrast" | "binary" | "invert" | "reflect" | "sharpen";
+type PreprocessMode = "raw" | "gray" | "contrast" | "binary" | "invert" | "reflect" | "sharpen";
 
 type ScanPreset = {
   /** Smaller widthFrac = more digital zoom (better at distance). */
@@ -447,49 +562,55 @@ const SCAN_GUIDE = {
   heightPct: 32,
 } as const;
 
-/** Close-up: match guide so letters filling the box are not clipped. */
+/** Close-up printed VIN — guide-sized + slightly tighter for dash plaques. */
 const NEAR_OCR_PRESETS: ScanPreset[] = [
-  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: SCAN_GUIDE.heightFrac, targetWidth: 1400, mode: "sharpen" },
-  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: SCAN_GUIDE.heightFrac, targetWidth: 1400, mode: "reflect" },
-  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: SCAN_GUIDE.heightFrac, targetWidth: 1400, mode: "contrast" },
-  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: SCAN_GUIDE.heightFrac, targetWidth: 1400, mode: "binary" },
-  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: SCAN_GUIDE.heightFrac, targetWidth: 1400, mode: "invert" },
+  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: SCAN_GUIDE.heightFrac, targetWidth: 1600, mode: "sharpen" },
+  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: SCAN_GUIDE.heightFrac, targetWidth: 1600, mode: "contrast" },
+  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: SCAN_GUIDE.heightFrac, targetWidth: 1600, mode: "gray" },
+  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: SCAN_GUIDE.heightFrac, targetWidth: 1600, mode: "reflect" },
+  { widthFrac: 0.88, heightFrac: 0.18, targetWidth: 1700, mode: "sharpen" },
+  { widthFrac: 0.88, heightFrac: 0.18, targetWidth: 1700, mode: "binary" },
+  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: SCAN_GUIDE.heightFrac, targetWidth: 1600, mode: "invert" },
 ];
 
 /** Mid / far: tighter crops with heavy upscale. */
 const FAR_OCR_PRESETS: ScanPreset[] = [
-  { widthFrac: 0.32, heightFrac: 0.06, targetWidth: 1800, mode: "sharpen" },
-  { widthFrac: 0.32, heightFrac: 0.06, targetWidth: 1800, mode: "reflect" },
-  { widthFrac: 0.45, heightFrac: 0.09, targetWidth: 1600, mode: "contrast" },
-  { widthFrac: 0.45, heightFrac: 0.09, targetWidth: 1600, mode: "invert" },
-  { widthFrac: 0.60, heightFrac: 0.12, targetWidth: 1500, mode: "binary" },
-  { widthFrac: 0.60, heightFrac: 0.12, targetWidth: 1500, mode: "reflect" },
+  { widthFrac: 0.4, heightFrac: 0.08, targetWidth: 1800, mode: "sharpen" },
+  { widthFrac: 0.4, heightFrac: 0.08, targetWidth: 1800, mode: "contrast" },
+  { widthFrac: 0.55, heightFrac: 0.1, targetWidth: 1700, mode: "reflect" },
+  { widthFrac: 0.55, heightFrac: 0.1, targetWidth: 1700, mode: "invert" },
+  { widthFrac: 0.7, heightFrac: 0.14, targetWidth: 1600, mode: "binary" },
+  { widthFrac: 0.7, heightFrac: 0.14, targetWidth: 1600, mode: "gray" },
 ];
 
 /**
  * Near → mid → far barcode crops.
- * First pass matches the reticle; slight taller overflow for CODE_39 stickers.
+ * Keep bands taller than the OCR reticle — 1D CODE_39 needs full bar height.
  */
 const BARCODE_ZOOM_PRESETS: ScanPreset[] = [
-  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: SCAN_GUIDE.heightFrac, targetWidth: 1400, mode: "raw" },
-  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: 0.4, targetWidth: 1400, mode: "raw" },
-  { widthFrac: 0.72, heightFrac: 0.24, targetWidth: 1500, mode: "raw" },
-  { widthFrac: 0.52, heightFrac: 0.18, targetWidth: 1600, mode: "raw" },
-  { widthFrac: 0.36, heightFrac: 0.14, targetWidth: 1700, mode: "raw" },
-  { widthFrac: 0.72, heightFrac: 0.24, targetWidth: 1500, mode: "contrast" },
-  { widthFrac: 0.52, heightFrac: 0.18, targetWidth: 1600, mode: "reflect" },
-  { widthFrac: 0.72, heightFrac: 0.24, targetWidth: 1500, mode: "invert" },
+  { widthFrac: 0.95, heightFrac: 0.55, targetWidth: 1280, mode: "raw" },
+  { widthFrac: 0.92, heightFrac: 0.42, targetWidth: 1400, mode: "raw" },
+  { widthFrac: 0.85, heightFrac: 0.36, targetWidth: 1500, mode: "raw" },
+  { widthFrac: 0.72, heightFrac: 0.28, targetWidth: 1600, mode: "raw" },
+  { widthFrac: 0.55, heightFrac: 0.22, targetWidth: 1700, mode: "raw" },
+  { widthFrac: 0.92, heightFrac: 0.42, targetWidth: 1400, mode: "contrast" },
+  { widthFrac: 0.85, heightFrac: 0.36, targetWidth: 1500, mode: "invert" },
+  { widthFrac: 0.72, heightFrac: 0.28, targetWidth: 1600, mode: "reflect" },
 ];
 
-const MOTION_SKIP = 18;
-const SHARP_OK = 22;
-const GLARE_HEAVY = 0.14;
-const BARCODE_LOOP_MS = 140;
-const OCR_LOOP_MS = 420;
-const NATIVE_LOOP_MS = 200;
+const MOTION_SKIP = 22;
+const SHARP_OK = 12;
+const GLARE_HEAVY = 0.2;
+const BARCODE_LOOP_MS = 280;
+const OCR_LOOP_MS = 360;
+/** Printed VIN path: start OCR quickly (barcode still runs in parallel). */
+const OCR_START_DELAY_MS = 400;
+const NATIVE_LOOP_MS = 250;
 const BARCODE_FORMAT_VOTES = 2;
-/** Repaired / low-quality OCR needs agreeing frames (exact+sharp accepts immediately). */
+/** Repaired / soft OCR — agreeing frames (fuzzy-merged). */
 const OCR_CONFIRM_VOTES = 2;
+/** Format-only after fuzzy merge. */
+const OCR_FORMAT_VOTES = 2;
 const FUSE_HISTORY = 3;
 const DIGITAL_ZOOM_MAX = 2.5;
 const DIGITAL_ZOOM_STEP = 0.25;
@@ -917,15 +1038,17 @@ function captureScanBand(
   const rect = cropRect(video, preset.widthFrac, preset.heightFrac, zoom);
   if (!rect.vw || !rect.vh) return null;
 
-  const scale = Math.max(1.5, preset.targetWidth / rect.bandW);
+  const scale = Math.max(1, preset.targetWidth / rect.bandW);
   const canvas = document.createElement("canvas");
   canvas.width = Math.floor(rect.bandW * scale);
   canvas.height = Math.floor(rect.bandH * scale);
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) return null;
 
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
+  // Smoothing destroys 1D barcode edges — keep raw/barcode crops crisp.
+  const smooth = preset.mode !== "raw" && preset.mode !== "gray";
+  ctx.imageSmoothingEnabled = smooth;
+  if (smooth) ctx.imageSmoothingQuality = "high";
   ctx.drawImage(
     video,
     rect.bandX,
@@ -938,6 +1061,7 @@ function captureScanBand(
     canvas.height,
   );
 
+  // Barcode path: untouched pixels.
   if (preset.mode === "raw") return canvas;
 
   const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -955,6 +1079,21 @@ function captureScanBand(
     }
   }
 
+  if (preset.mode === "gray") {
+    if (fuseHistory) {
+      pushFuseFrame(fuseHistory, gray);
+      const med = medianFuseGrays(fuseHistory);
+      if (med) {
+        const copy = new Uint8Array(med.length);
+        copy.set(med);
+        gray = copy;
+      }
+    }
+    writeGrayToImageData(data, gray);
+    ctx.putImageData(image, 0, 0);
+    return canvas;
+  }
+
   // Temporal median of last N stable frames — dust / flicker resistant.
   if (fuseHistory) {
     pushFuseFrame(fuseHistory, gray);
@@ -966,11 +1105,13 @@ function captureScanBand(
     }
   }
 
-  // Soft denoise before threshold/sharpen (dust / sensor noise).
-  gray = new Uint8Array(boxBlur3(gray, w, h));
+  // Denoise only for binary/invert — blur kills thin printed VIN strokes on phones.
+  if (preset.mode === "binary" || preset.mode === "invert") {
+    gray = new Uint8Array(boxBlur3(gray, w, h));
+  }
 
   if (preset.mode === "sharpen" || preset.mode === "contrast" || preset.mode === "reflect") {
-    if (preset.mode === "sharpen") gray = new Uint8Array(unsharpMask(gray, w, h, 1.5));
+    if (preset.mode === "sharpen") gray = new Uint8Array(unsharpMask(gray, w, h, 1.35));
     const hist = buildGrayHistogram(gray);
     const lo = percentileFromHist(hist, gray.length, 0.04);
     const hi = percentileFromHist(hist, gray.length, 0.96);
@@ -1010,8 +1151,8 @@ async function createOcrWorker(): Promise<OcrWorker> {
   await worker.setParameters({
     tessedit_char_whitelist: VIN_CHAR_WHITELIST,
     tessedit_pageseg_mode: PSM.SINGLE_LINE,
-    user_defined_dpi: "300",
-    preserve_interword_spaces: "1",
+    user_defined_dpi: "220",
+    preserve_interword_spaces: "0",
   });
   return worker as unknown as OcrWorker;
 }
@@ -1094,6 +1235,8 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
   const [focusOk, setFocusOk] = useState(false);
   const [focusRing, setFocusRing] = useState<{ x: number; y: number } | null>(null);
   const [scanSuccess, setScanSuccess] = useState<string | null>(null);
+  /** OCR candidates the tech can tap when auto-lock fails. */
+  const [ocrSuggestions, setOcrSuggestions] = useState<string[]>([]);
   /** Client-only: portal scan UI past overflow-hidden dashboard shells. */
   const [portalReady, setPortalReady] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -1105,6 +1248,7 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
   const cameraOpenFailedRef = useRef(false);
   const ocrWorkerRef = useRef<OcrWorker | null>(null);
   const captureHandlerRef = useRef<(() => Promise<void>) | null>(null);
+  const acceptVinRef = useRef<((vin: string) => void) | null>(null);
   const zoomRef = useRef(1);
   const hwZoomRef = useRef(false);
   const zoomMinRef = useRef(1);
@@ -1184,6 +1328,7 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
       settled = true;
       notifyScanSuccess();
       setScanSuccess(vin);
+      setOcrSuggestions([]);
       setScanHint(`Scanned ${vin}`);
       onChangeRef.current(vin);
       stopEverything();
@@ -1193,10 +1338,16 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
         dismissScannerUi();
       }, 480);
     };
+    acceptVinRef.current = acceptVin;
 
     const acceptBarcodeVin = (raw: string) => {
       const vin = extractVin(raw);
-      if (!vin || cancelled || settled) return false;
+      if (!vin || cancelled || settled) {
+        if (raw && !cancelled && !settled && raw.replace(/\s/g, "").length >= 8) {
+          setScanHint("Barcode found — no 17-char VIN inside, aim at VIN barcode");
+        }
+        return false;
+      }
       // Barcode wins over OCR — clear soft OCR votes so a wrong repair cannot race in.
       ocrVotes.clear();
       if (hasValidVinCheckDigit(vin)) {
@@ -1215,48 +1366,39 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
     };
 
     /**
-     * Confidence tiers (recognition ↑ for clean reads, accuracy ↑ for risky ones):
-     * - exact + sharp/stable + no glare → accept now
-     * - repaired OR low quality → need OCR_CONFIRM_VOTES
-     * - competing VINs with votes → hold (ambiguous)
+     * Printed VIN — fuzzy-merge near reads (OCR jitter used to hard-block as "Ambiguous").
+     * Capture accepts a 17-char read immediately.
      */
     const noteOcrCandidate = (
       hit: OcrVinHit,
-      quality: FrameQuality,
+      _quality: FrameQuality,
       opts?: { fromCapture?: boolean },
     ): boolean => {
-      if (!hasValidVinCheckDigit(hit.vin)) return false;
+      if (!VIN_EXACT_RE.test(hit.vin)) return false;
 
-      for (const [other, count] of ocrVotes) {
-        if (other !== hit.vin && count > 0) {
-          ocrVotes.set(hit.vin, (ocrVotes.get(hit.vin) ?? 0) + 1);
-          setScanHint("Ambiguous VIN — hold steady on one line, or scan barcode");
-          return false;
-        }
-      }
-
-      const lowQuality =
-        !quality.stable || !quality.sharpEnough || quality.glareHeavy;
-      // Capture is an intentional freeze — treat as sharp enough for exact hits.
-      const trustExact =
-        !hit.repaired && (!lowQuality || Boolean(opts?.fromCapture));
-
-      if (trustExact) {
+      // Capture = user intent — accept format-valid 17 immediately.
+      if (opts?.fromCapture) {
         acceptVin(hit.vin);
         return true;
       }
 
-      const votes = (ocrVotes.get(hit.vin) ?? 0) + 1;
-      ocrVotes.set(hit.vin, votes);
-      if (votes >= OCR_CONFIRM_VOTES) {
+      if (!hit.formatOnly && hasValidVinCheckDigit(hit.vin) && !hit.repaired) {
         acceptVin(hit.vin);
         return true;
       }
-      setScanHint(
-        hit.repaired
-          ? `Confirming ${hit.vin.slice(0, 8)}… hold steady`
-          : "Low quality — hold still or tap Capture again",
-      );
+
+      const inc = hit.formatOnly ? 1 : hit.repaired ? 1 : 2;
+      const { key, votes } = addFuzzyOcrVote(ocrVotes, hit.vin, inc);
+      const suggestions = topOcrVotes(ocrVotes, 3);
+      setOcrSuggestions(suggestions);
+
+      const need = hasValidVinCheckDigit(key) ? OCR_CONFIRM_VOTES : OCR_FORMAT_VOTES;
+      if (votes >= need) {
+        acceptVin(key);
+        return true;
+      }
+
+      setScanHint(`Candidate ${key.slice(0, 11)}… — tap below or Capture`);
       return false;
     };
 
@@ -1267,7 +1409,6 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
       quality: FrameQuality,
       opts?: { fromCapture?: boolean },
     ): Promise<boolean> => {
-      // Hardware zoom already magnifies the stream — don't also shrink the crop.
       const cropZoom = hwZoomRef.current ? 1 : zoomRef.current;
       const band = captureScanBand(
         video,
@@ -1278,7 +1419,42 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
       if (!band) return false;
       const { data } = await worker.recognize(band);
       const hit = extractVinFromOcr(data.text);
-      return Boolean(hit && noteOcrCandidate(hit, quality, opts));
+      if (hit) return noteOcrCandidate(hit, quality, opts);
+
+      const upper = normalizeOcrVinText(data.text);
+      const compact = upper.replace(/[\s\-:_]/g, "");
+      const { candidates } = gatherVinCandidates(upper);
+
+      // Capture: take the best 17-char window immediately (repair if unique).
+      if (opts?.fromCapture && candidates.length) {
+        for (const c of candidates) {
+          if (hasValidVinCheckDigit(c)) {
+            acceptVin(c);
+            return true;
+          }
+        }
+        for (const c of candidates) {
+          const repaired = repairVinByCheckDigit(c);
+          if (repaired) {
+            acceptVin(repaired);
+            return true;
+          }
+        }
+        acceptVin(candidates[0]);
+        return true;
+      }
+
+      if (candidates.length) {
+        for (const c of candidates.slice(0, 5)) addFuzzyOcrVote(ocrVotes, c, 1);
+        const suggestions = topOcrVotes(ocrVotes, 3);
+        setOcrSuggestions(suggestions);
+        setScanHint(`Saw ${candidates[0].slice(0, 11)}… — tap it below or Capture`);
+      } else if (compact.length >= 8) {
+        setScanHint(
+          `Reading… ${compact.slice(0, 14)}${compact.length > 14 ? "…" : ""} — need clearer 17`,
+        );
+      }
+      return false;
     };
 
     const scanBarcodeCrops = (video: HTMLVideoElement, passes: number): boolean => {
@@ -1298,6 +1474,27 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
         if (settled) return true;
       }
       return false;
+    };
+
+    /** Occasional full-frame pass — helps when the sticker is outside the guide. */
+    const scanFullFrameBarcode = (video: HTMLVideoElement): boolean => {
+      if (!liveReader && !code39Reader && !zoomReader) return false;
+      if (!video.videoWidth || !video.videoHeight) return false;
+      const canvas = document.createElement("canvas");
+      const maxW = 1280;
+      const scale = Math.min(1, maxW / video.videoWidth);
+      canvas.width = Math.max(1, Math.floor(video.videoWidth * scale));
+      canvas.height = Math.max(1, Math.floor(video.videoHeight * scale));
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (!ctx) return false;
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const text =
+        (code39Reader && tryDecodeBarcodeCanvas(code39Reader, canvas)) ||
+        (zoomReader && tryDecodeBarcodeCanvas(zoomReader, canvas)) ||
+        (liveReader && tryDecodeBarcodeCanvas(liveReader, canvas)) ||
+        null;
+      return Boolean(text && acceptBarcodeVin(text));
     };
 
     (async () => {
@@ -1373,19 +1570,25 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
         setScanHint("Point at the VIN barcode or printed VIN — keep inside the box");
 
         try {
-          [liveReader, code39Reader, zoomReader] = await Promise.all([
-            createVinReader(false, "all"),
-            createVinReader(true, "code39"),
-            createVinReader(true, "all"),
-          ]);
+          const readers = await createReadersSafe();
+          liveReader = readers.live;
+          code39Reader = readers.code39;
+          zoomReader = readers.zoom;
+          if (!liveReader && !code39Reader && !zoomReader) {
+            setScanHint("Barcode engine slow to load — try Capture, or type the VIN");
+          }
         } catch {
           // Native + OCR paths still work without ZXing.
         }
         if (cancelled) return;
 
-        // 1) Live ZXing stream (full-frame backup; ROI canvas is primary).
+        // 1) Live ZXing stream — skip on iOS; decodeFromStream often starves canvas frames.
+        const isAppleTouch =
+          typeof navigator !== "undefined" &&
+          (/iPad|iPhone|iPod/i.test(navigator.userAgent) ||
+            (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
         try {
-          if (liveReader) {
+          if (liveReader && !isAppleTouch) {
             controlsRef.current = await liveReader.decodeFromStream(stream, video, (result) => {
               if (!result || cancelled || settled) return;
               acceptBarcodeVin(result.getText());
@@ -1412,13 +1615,19 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
           }, NATIVE_LOOP_MS);
         }
 
-        // 3) ROI barcode canvas loop — primary path for door-jamb stickers.
+        // 3) ROI barcode — throttled so printed-VIN OCR gets CPU on Android.
+        let barcodeTicks = 0;
+        let ocrReady = false;
         const runBarcode = () => {
           if (cancelled || settled) return;
-          if (!busyOcr && !busyBarcode && video.videoWidth > 0) {
+          if (!busyBarcode && video.videoWidth > 0) {
             busyBarcode = true;
             try {
-              scanBarcodeCrops(video, 2);
+              barcodeTicks += 1;
+              // Once OCR is up, barcode runs less often / fewer crops.
+              const passes = ocrReady ? (barcodeTicks % 3 === 0 ? 1 : 0) : 3;
+              if (passes > 0 && scanBarcodeCrops(video, passes)) return;
+              if (!ocrReady && barcodeTicks % 8 === 0 && scanFullFrameBarcode(video)) return;
             } finally {
               busyBarcode = false;
             }
@@ -1427,7 +1636,7 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
             barcodeTimer = window.setTimeout(runBarcode, BARCODE_LOOP_MS);
           }
         };
-        barcodeTimer = window.setTimeout(runBarcode, 120);
+        barcodeTimer = window.setTimeout(runBarcode, 80);
 
         // 4) Manual capture — short multi-frame burst (barcode + OCR).
         captureHandlerRef.current = async () => {
@@ -1480,9 +1689,19 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
               }
             }
             if (!worker) {
-              setScanHint("No VIN yet — try closer to the barcode, or type it.");
+              setScanHint("No VIN yet — try closer, tap a suggestion, or type it.");
             } else {
-              setScanHint("Couldn’t read that burst — tilt to cut glare, zoom in, try again.");
+              const top = topOcrVotes(ocrVotes, 1)[0];
+              if (top) {
+                acceptVin(top);
+                return;
+              }
+              setScanHint(
+                ocrSuggestions.length || topOcrVotes(ocrVotes, 1).length
+                  ? "Tap a candidate below, or move closer and Capture again"
+                  : "Couldn’t lock VIN — fill the box, Capture again, or type it",
+              );
+              setOcrSuggestions(topOcrVotes(ocrVotes, 3));
             }
           } finally {
             busyOcr = false;
@@ -1498,7 +1717,8 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
             return;
           }
           ocrWorkerRef.current = worker;
-          setScanHint("Aim at barcode (fastest) or printed VIN…");
+          ocrReady = true;
+          setScanHint("Printed VIN — fill the box, hold still, or tap Capture");
 
           const scheduleOcr = (delay = OCR_LOOP_MS) => {
             if (cancelled || settled) return;
@@ -1511,7 +1731,7 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
             if (cancelled || settled) return;
             ocrTick += 1;
             if (busyBarcode || busyOcr) {
-              scheduleOcr(OCR_LOOP_MS);
+              scheduleOcr(120);
               return;
             }
             busyOcr = true;
@@ -1528,18 +1748,18 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
                 if (!quality.stable) {
                   fuseHistory.length = 0;
                   setScanHint("Too shaky — hold still, or tap Capture");
-                  // Skip most shaky frames but keep the loop alive.
-                  if (ocrTick % 2 !== 0) return;
+                  // Still try every 3rd shaky frame — printed VIN often needs the attempt.
+                  if (ocrTick % 3 !== 0) return;
                 } else if (!quality.sharpEnough) {
                   setScanHint(
                     canTapFocus
-                      ? "Focusing… tap VIN to focus, or tap Capture"
-                      : "Focusing… hold steady or tap Capture",
+                      ? "Soft focus — tap the VIN, zoom in, or Capture"
+                      : "Soft focus — move closer, then tap Capture",
                   );
                 } else if (quality.glareHeavy) {
                   setScanHint("Glare — tilt phone or tap Light, then Capture");
                 } else {
-                  setScanHint("Reading printed VIN… barcode is faster if available");
+                  setScanHint("Reading printed VIN… keep letters inside the box");
                 }
               }
 
@@ -1552,14 +1772,14 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
                 glareHeavy: false,
               };
 
-              await setOcrPageSeg(worker, ocrTick % 3 === 0);
+              await setOcrPageSeg(worker, false);
               const nearPreset = pickPresetsForQuality(NEAR_OCR_PRESETS, q, nearIndex);
               nearIndex += 1;
               if (await recognizePreset(worker, video, nearPreset, q)) return;
 
               if (cancelled || settled) return;
-              // Far OCR every other tick to keep CPU free for barcode.
               if (ocrTick % 2 === 0) {
+                await setOcrPageSeg(worker, true);
                 const farPreset = pickPresetsForQuality(FAR_OCR_PRESETS, q, farIndex);
                 farIndex += 1;
                 if (await recognizePreset(worker, video, farPreset, q)) return;
@@ -1573,9 +1793,9 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
           };
           ocrTimer = window.setTimeout(() => {
             void runOcr();
-          }, 350);
+          }, OCR_START_DELAY_MS);
         } catch {
-          setScanHint("Barcode scan active. Aim at the VIN barcode, or tap Capture.");
+          setScanHint("OCR unavailable — tap Capture for barcode, or type the VIN.");
         }
       } catch (err) {
         if (cancelled) return;
@@ -1610,6 +1830,7 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
     zoomRef.current = 1;
     setFocusRing(null);
     setScanSuccess(null);
+    setOcrSuggestions([]);
     cameraOpenFailedRef.current = false;
 
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
@@ -1717,6 +1938,8 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
     setFocusRing(null);
     setFocusOk(false);
     setScanSuccess(null);
+    setOcrSuggestions([]);
+    acceptVinRef.current = null;
   }
 
   const vinLen = Math.min(value.replace(/[\s-]/g, "").length, 17);
@@ -1920,8 +2143,8 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
                     {scanSuccess
                       ? "VIN locked"
                       : focusOk
-                        ? "Tap to focus · align VIN"
-                        : "Align barcode or VIN"}
+                        ? "Fill box · tap to focus · Capture"
+                        : "Fill box with printed VIN · Capture"}
                   </p>
                 </div>
 
@@ -2009,6 +2232,33 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
                   ) : null}
                   <p className="min-w-0 flex-1">{scanError ?? scanHint}</p>
                 </div>
+
+                {ocrSuggestions.length > 0 && !scanSuccess && !scanError ? (
+                  <div className="flex flex-col gap-2">
+                    <p className="text-[11px] font-medium tracking-wide text-white/55 uppercase">
+                      Tap to use
+                    </p>
+                    <div className="flex flex-col gap-2">
+                      {ocrSuggestions.map((vin) => (
+                        <button
+                          key={vin}
+                          type="button"
+                          onClick={() => {
+                            acceptVinRef.current?.(vin);
+                          }}
+                          className="rounded-xl border border-white/15 bg-white/10 px-3 py-2.5 text-left font-mono text-[13px] tracking-[0.12em] text-white transition hover:border-[var(--accent)]/60 hover:bg-[var(--accent)]/20"
+                        >
+                          {vin}
+                          {hasValidVinCheckDigit(vin) ? (
+                            <span className="ml-2 text-[10px] tracking-normal text-emerald-300">
+                              check OK
+                            </span>
+                          ) : null}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="flex flex-col items-center">
                   <button
