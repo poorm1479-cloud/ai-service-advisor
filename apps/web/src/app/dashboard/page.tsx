@@ -37,14 +37,26 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [aiPaused, setAiPaused] = useState(false);
   const [aiUsageAvailable, setAiUsageAvailable] = useState(true);
+  const [hasTwilioNumber, setHasTwilioNumber] = useState(false);
   const [pauseBusy, setPauseBusy] = useState(false);
   // null until mount — avoids SSR/client clock mismatch (hydration error)
   const [now, setNow] = useState<Date | null>(null);
 
-  const applyShopSettings = useCallback((s: { ai_paused?: boolean; ai_usage_available?: boolean }) => {
-    setAiPaused(Boolean(s.ai_paused));
-    setAiUsageAvailable(s.ai_usage_available !== false);
-  }, []);
+  const applyShopSettings = useCallback(
+    (s: {
+      ai_paused?: boolean;
+      ai_usage_available?: boolean;
+      sms_phone_e164?: string | null;
+      voice_phone_e164?: string | null;
+    }) => {
+      setAiPaused(Boolean(s.ai_paused));
+      setAiUsageAvailable(s.ai_usage_available !== false);
+      setHasTwilioNumber(
+        Boolean(s.sms_phone_e164?.trim() || s.voice_phone_e164?.trim()),
+      );
+    },
+    [],
+  );
 
   const load = useCallback(async () => {
     try {
@@ -91,6 +103,7 @@ export default function DashboardPage() {
   }, [session, load]);
 
   async function onToggleAiPause() {
+    if (!hasTwilioNumber) return;
     if (!aiUsageAvailable && aiPaused) return;
     setPauseBusy(true);
     try {
@@ -191,6 +204,7 @@ export default function DashboardPage() {
                 live={!aiPaused}
                 busy={pauseBusy}
                 usageAvailable={aiUsageAvailable}
+                hasTwilioNumber={hasTwilioNumber}
                 onToggle={() => void onToggleAiPause()}
               />
             </div>
@@ -462,25 +476,29 @@ function StatusPill({
   live,
   busy,
   usageAvailable,
+  hasTwilioNumber,
   onToggle,
 }: {
   live: boolean;
   busy: boolean;
   usageAvailable: boolean;
+  hasTwilioNumber: boolean;
   onToggle: () => void;
 }) {
-  // Resume requires quota; pause stays available so shops can stop AI when over limit.
-  const canToggle = usageAvailable || live;
+  // Resume requires a Twilio number and quota; pause stays available when over quota.
+  const canToggle = hasTwilioNumber && (usageAvailable || live);
   const disabled = busy || !canToggle;
-  const label = !usageAvailable && !live
-    ? "AI quota used up — upgrade plan to resume"
-    : !usageAvailable && live
-      ? "AI quota used up — click to pause"
-      : busy
-        ? "Updating…"
-        : live
-          ? "AI answering — click to pause"
-          : "Calls paused — click to resume";
+  const label = !hasTwilioNumber
+    ? "No AI phone number assigned yet"
+    : !usageAvailable && !live
+      ? "AI quota used up — upgrade plan to resume"
+      : !usageAvailable && live
+        ? "AI quota used up — click to pause"
+        : busy
+          ? "Updating…"
+          : live
+            ? "AI answering — click to pause"
+            : "Calls paused — click to resume";
 
   return (
     <button
@@ -491,15 +509,17 @@ function StatusPill({
       aria-label={label}
       aria-pressed={!live}
       className={`group inline-flex items-center gap-2 rounded-full border p-1.5 pr-2.5 text-xs font-semibold tracking-wide transition-[background-color,border-color,opacity,transform] duration-200 hover:scale-[1.02] disabled:pointer-events-none disabled:opacity-55 disabled:hover:scale-100 ${
-        !usageAvailable
-          ? "border-red-200/80 bg-red-50 text-red-800 hover:bg-red-100/80"
-          : live
-            ? "border-[var(--line)] bg-white/80 text-[var(--foreground)] shadow-[var(--shadow-soft)] hover:bg-white"
-            : "border-amber-300/50 bg-amber-50 text-amber-900 hover:bg-amber-100/80"
+        !hasTwilioNumber
+          ? "border-[var(--line)] bg-[var(--background)] text-[var(--muted)]"
+          : !usageAvailable
+            ? "border-red-200/80 bg-red-50 text-red-800 hover:bg-red-100/80"
+            : live
+              ? "border-[var(--line)] bg-white/80 text-[var(--foreground)] shadow-[var(--shadow-soft)] hover:bg-white"
+              : "border-amber-300/50 bg-amber-50 text-amber-900 hover:bg-amber-100/80"
       }`}
     >
       <span className="relative inline-flex h-8 w-8 items-center justify-center">
-        {live && !busy && usageAvailable && (
+        {live && !busy && usageAvailable && hasTwilioNumber && (
           <span
             aria-hidden
             className="absolute inset-0 animate-ping rounded-full bg-emerald-400/35"
@@ -508,29 +528,36 @@ function StatusPill({
         <span
           aria-hidden
           className={`relative inline-flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
-            !usageAvailable
-              ? "bg-red-500/12 text-red-700"
-              : live
-                ? "bg-emerald-500/12 text-emerald-700"
-                : "bg-amber-500/15 text-amber-800"
+            !hasTwilioNumber
+              ? "bg-[rgba(0,0,0,0.05)] text-[var(--muted)]"
+              : !usageAvailable
+                ? "bg-red-500/12 text-red-700"
+                : live
+                  ? "bg-emerald-500/12 text-emerald-700"
+                  : "bg-amber-500/15 text-amber-800"
           }`}
         >
-          <IconAiAnswering paused={!live || !usageAvailable} className="h-4 w-4" />
+          <IconAiAnswering
+            paused={!hasTwilioNumber || !live || !usageAvailable}
+            className="h-4 w-4"
+          />
         </span>
       </span>
       <span
         aria-hidden
         className={`inline-flex h-6 w-6 items-center justify-center rounded-full transition-colors ${
-          !usageAvailable
-            ? "bg-red-200/60 text-red-900"
-            : live
-              ? "bg-[rgba(0,0,0,0.05)] text-[var(--foreground)]"
-              : "bg-amber-200/60 text-amber-900"
+          !hasTwilioNumber
+            ? "bg-[rgba(0,0,0,0.06)] text-[var(--muted)]"
+            : !usageAvailable
+              ? "bg-red-200/60 text-red-900"
+              : live
+                ? "bg-[rgba(0,0,0,0.05)] text-[var(--foreground)]"
+                : "bg-amber-200/60 text-amber-900"
         }`}
       >
         {busy ? (
           <span className="text-[10px] leading-none">…</span>
-        ) : !usageAvailable && !live ? (
+        ) : !hasTwilioNumber || (!usageAvailable && !live) ? (
           <IconPause className="h-3 w-3 opacity-50" />
         ) : live ? (
           <IconPause className="h-3 w-3" />

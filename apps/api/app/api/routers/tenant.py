@@ -377,12 +377,19 @@ async def set_shop_ai_paused(
     shop = await uow.shops.get_by_id(current.shop_id)
     if shop is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
-    # Resuming AI requires remaining monthly AI call quota.
-    if not body.ai_paused and not await QuotaService().ai_usage_available(shop.id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="AI monthly quota exceeded. Upgrade your plan to resume AI.",
-        )
+    if not body.ai_paused:
+        sms_phone, voice_phone = await uow.shops.get_channel_phones(shop.id)
+        if not (sms_phone or voice_phone):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="AI phone number not assigned yet.",
+            )
+        # Resuming AI requires remaining monthly AI call quota.
+        if not await QuotaService().ai_usage_available(shop.id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="AI monthly quota exceeded. Upgrade your plan to resume AI.",
+            )
     shop.ai_paused = bool(body.ai_paused)
     updated = await uow.shops.update(shop)
     await uow.commit()
