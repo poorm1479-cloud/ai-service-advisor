@@ -67,3 +67,40 @@ async def test_bootstrap_creates_missing_admin(admin_username: str) -> None:
         assert row is not None
         assert row.account_type == AccountType.PLATFORM_ADMIN.value
         assert verify_password("BootstrapPass123!", row.password_hash)
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_creates_missing_admin_in_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    username = f"padmin_{uuid4().hex[:8]}"
+    monkeypatch.setattr(settings, "platform_admin_usernames", username)
+    monkeypatch.setattr(settings, "platform_admin_bootstrap_password", "BootstrapPass123!")
+    monkeypatch.setattr(settings, "environment", "production")
+
+    await ensure_platform_admin()
+
+    async with SessionLocal() as session:
+        row = (
+            await session.execute(select(UserModel).where(UserModel.username == username))
+        ).scalar_one_or_none()
+        assert row is not None
+        assert verify_password("BootstrapPass123!", row.password_hash)
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_skips_weak_password_in_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    username = f"padmin_{uuid4().hex[:8]}"
+    monkeypatch.setattr(settings, "platform_admin_usernames", username)
+    monkeypatch.setattr(settings, "platform_admin_bootstrap_password", "admin")
+    monkeypatch.setattr(settings, "environment", "production")
+
+    await ensure_platform_admin()
+
+    async with SessionLocal() as session:
+        row = (
+            await session.execute(select(UserModel).where(UserModel.username == username))
+        ).scalar_one_or_none()
+        assert row is None

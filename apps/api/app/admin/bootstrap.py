@@ -1,4 +1,4 @@
-"""Ensure the default platform admin account exists (non-production only)."""
+"""Ensure the default platform admin account exists on first boot."""
 
 from __future__ import annotations
 
@@ -14,15 +14,19 @@ from app.infrastructure.unit_of_work import SqlAlchemyUnitOfWork
 
 logger = logging.getLogger(__name__)
 
+_WEAK_BOOTSTRAP_PASSWORDS = frozenset({"admin", "password", "changeme"})
+
 
 async def ensure_platform_admin() -> None:
-    """Create or sync the first PLATFORM_ADMIN_USERNAMES account in development.
+    """Create the first PLATFORM_ADMIN_USERNAMES account if it is missing.
 
     Creates a platform_admin user with no shop / membership.
     Bootstrap password is used only for initial create — never overwrite an
     existing admin password (Settings → Change password must survive restart).
+    Production skips weak default passwords like ``admin``.
     """
-    if settings.environment.lower() in {"production", "prod", "test", "testing"}:
+    env = settings.environment.lower()
+    if env in {"test", "testing"}:
         return
 
     allowlist = sorted(settings.platform_admin_username_set)
@@ -33,6 +37,12 @@ async def ensure_platform_admin() -> None:
     password = (settings.platform_admin_bootstrap_password or "").strip()
     if not password:
         logger.warning("platform admin bootstrap skipped: empty PLATFORM_ADMIN_BOOTSTRAP_PASSWORD")
+        return
+    if env in {"production", "prod"} and password.lower() in _WEAK_BOOTSTRAP_PASSWORDS:
+        logger.warning(
+            "platform admin bootstrap skipped in production: set a strong "
+            "PLATFORM_ADMIN_BOOTSTRAP_PASSWORD (not a default like 'admin')"
+        )
         return
 
     try:
