@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 
 const VIN_EXACT_RE = /^[A-HJ-NPR-Z0-9]{17}$/;
@@ -239,23 +239,41 @@ function repairVinByCheckDigit(vin: string): string | null {
   return null;
 }
 
+type OcrVinHit = {
+  vin: string;
+  /** True when lookalike repair (B↔8 etc.) produced the check-digit match. */
+  repaired: boolean;
+};
+
 /**
- * Printed VIN OCR — only accept ISO 3779 check-digit matches.
- * Rejects nearby labels/part numbers that merely look VIN-shaped.
+ * Printed VIN OCR — only ISO 3779 check-digit matches.
+ * Exact hits beat repairs; multiple distinct valid VINs → reject (ambiguous).
  */
-function extractVinFromOcr(raw: string): string | null {
+function extractVinFromOcr(raw: string): OcrVinHit | null {
   const upper = normalizeOcrVinText(raw);
   const { candidates, labeled } = gatherVinCandidates(upper);
-  if (labeled && hasValidVinCheckDigit(labeled)) return labeled;
-  if (labeled) {
-    const repairedLabeled = repairVinByCheckDigit(labeled);
-    if (repairedLabeled) return repairedLabeled;
+
+  const exact = new Set<string>();
+  if (labeled && hasValidVinCheckDigit(labeled)) exact.add(labeled);
+  for (const c of candidates) {
+    if (hasValidVinCheckDigit(c)) exact.add(c);
   }
-  const exact = pickVin(candidates, labeled, true);
-  if (exact) return exact;
-  for (const candidate of candidates) {
-    const repaired = repairVinByCheckDigit(candidate);
-    if (repaired) return repaired;
+  if (exact.size > 1) return null;
+  if (exact.size === 1) {
+    return { vin: exact.values().next().value as string, repaired: false };
+  }
+
+  const repaired = new Set<string>();
+  if (labeled) {
+    const r = repairVinByCheckDigit(labeled);
+    if (r) repaired.add(r);
+  }
+  for (const c of candidates) {
+    const r = repairVinByCheckDigit(c);
+    if (r) repaired.add(r);
+  }
+  if (repaired.size === 1) {
+    return { vin: repaired.values().next().value as string, repaired: true };
   }
   return null;
 }
@@ -276,17 +294,24 @@ type OcrWorker = {
   terminate: () => Promise<unknown>;
 };
 
-async function createVinReader(pureBarcode = false): Promise<ZxingReader> {
+async function createVinReader(
+  pureBarcode = false,
+  mode: "all" | "code39" = "all",
+): Promise<ZxingReader> {
   const { BarcodeFormat, BrowserMultiFormatReader } = await loadZxing();
-  const formats = [
-    BarcodeFormat.CODE_39,
-    BarcodeFormat.CODE_128,
-    BarcodeFormat.PDF_417,
-    BarcodeFormat.QR_CODE,
-    BarcodeFormat.DATA_MATRIX,
-    BarcodeFormat.CODABAR,
-    BarcodeFormat.ITF,
-  ];
+  // Door-jamb VIN stickers are almost always CODE_39 — dedicated reader is faster.
+  const formats =
+    mode === "code39"
+      ? [BarcodeFormat.CODE_39]
+      : [
+          BarcodeFormat.CODE_39,
+          BarcodeFormat.CODE_128,
+          BarcodeFormat.PDF_417,
+          BarcodeFormat.QR_CODE,
+          BarcodeFormat.DATA_MATRIX,
+          BarcodeFormat.CODABAR,
+          BarcodeFormat.ITF,
+        ];
   const hints = new Map<number, unknown>();
   hints.set(HINT_TRY_HARDER, true);
   hints.set(HINT_POSSIBLE_FORMATS, formats);
@@ -410,13 +435,25 @@ type FrameQuality = {
   glareHeavy: boolean;
 };
 
-/** Close-up: wide/tall band so large VIN letters are not clipped. */
+/**
+ * On-screen reticle ↔ decode crops must stay in sync.
+ * sideInset = (1 - widthFrac) / 2; top = (1 - heightFrac) / 2.
+ */
+const SCAN_GUIDE = {
+  widthFrac: 0.92,
+  heightFrac: 0.32,
+  sideInsetPct: 4,
+  topPct: 34,
+  heightPct: 32,
+} as const;
+
+/** Close-up: match guide so letters filling the box are not clipped. */
 const NEAR_OCR_PRESETS: ScanPreset[] = [
-  { widthFrac: 0.92, heightFrac: 0.22, targetWidth: 1400, mode: "sharpen" },
-  { widthFrac: 0.92, heightFrac: 0.22, targetWidth: 1400, mode: "reflect" },
-  { widthFrac: 0.92, heightFrac: 0.22, targetWidth: 1400, mode: "contrast" },
-  { widthFrac: 0.92, heightFrac: 0.22, targetWidth: 1400, mode: "binary" },
-  { widthFrac: 0.92, heightFrac: 0.22, targetWidth: 1400, mode: "invert" },
+  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: SCAN_GUIDE.heightFrac, targetWidth: 1400, mode: "sharpen" },
+  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: SCAN_GUIDE.heightFrac, targetWidth: 1400, mode: "reflect" },
+  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: SCAN_GUIDE.heightFrac, targetWidth: 1400, mode: "contrast" },
+  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: SCAN_GUIDE.heightFrac, targetWidth: 1400, mode: "binary" },
+  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: SCAN_GUIDE.heightFrac, targetWidth: 1400, mode: "invert" },
 ];
 
 /** Mid / far: tighter crops with heavy upscale. */
@@ -429,15 +466,19 @@ const FAR_OCR_PRESETS: ScanPreset[] = [
   { widthFrac: 0.60, heightFrac: 0.12, targetWidth: 1500, mode: "reflect" },
 ];
 
-/** Near → mid → far barcode crops (raw + contrast for tough stickers). */
+/**
+ * Near → mid → far barcode crops.
+ * First pass matches the reticle; slight taller overflow for CODE_39 stickers.
+ */
 const BARCODE_ZOOM_PRESETS: ScanPreset[] = [
-  { widthFrac: 0.92, heightFrac: 0.48, targetWidth: 1400, mode: "raw" },
-  { widthFrac: 0.72, heightFrac: 0.36, targetWidth: 1500, mode: "raw" },
-  { widthFrac: 0.52, heightFrac: 0.28, targetWidth: 1600, mode: "raw" },
-  { widthFrac: 0.36, heightFrac: 0.20, targetWidth: 1700, mode: "raw" },
-  { widthFrac: 0.72, heightFrac: 0.36, targetWidth: 1500, mode: "contrast" },
-  { widthFrac: 0.52, heightFrac: 0.28, targetWidth: 1600, mode: "reflect" },
-  { widthFrac: 0.72, heightFrac: 0.36, targetWidth: 1500, mode: "invert" },
+  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: SCAN_GUIDE.heightFrac, targetWidth: 1400, mode: "raw" },
+  { widthFrac: SCAN_GUIDE.widthFrac, heightFrac: 0.4, targetWidth: 1400, mode: "raw" },
+  { widthFrac: 0.72, heightFrac: 0.24, targetWidth: 1500, mode: "raw" },
+  { widthFrac: 0.52, heightFrac: 0.18, targetWidth: 1600, mode: "raw" },
+  { widthFrac: 0.36, heightFrac: 0.14, targetWidth: 1700, mode: "raw" },
+  { widthFrac: 0.72, heightFrac: 0.24, targetWidth: 1500, mode: "contrast" },
+  { widthFrac: 0.52, heightFrac: 0.18, targetWidth: 1600, mode: "reflect" },
+  { widthFrac: 0.72, heightFrac: 0.24, targetWidth: 1500, mode: "invert" },
 ];
 
 const MOTION_SKIP = 18;
@@ -447,7 +488,13 @@ const BARCODE_LOOP_MS = 140;
 const OCR_LOOP_MS = 420;
 const NATIVE_LOOP_MS = 200;
 const BARCODE_FORMAT_VOTES = 2;
-const OCR_VOTE_THRESHOLD = 2;
+/** Repaired / low-quality OCR needs agreeing frames (exact+sharp accepts immediately). */
+const OCR_CONFIRM_VOTES = 2;
+const FUSE_HISTORY = 3;
+const DIGITAL_ZOOM_MAX = 2.5;
+const DIGITAL_ZOOM_STEP = 0.25;
+const CAPTURE_BURST_FRAMES = 3;
+const CAPTURE_BURST_GAP_MS = 70;
 
 async function enhanceCameraTrack(track: MediaStreamTrack): Promise<void> {
   const caps = track.getCapabilities?.() as
@@ -465,12 +512,90 @@ async function enhanceCameraTrack(track: MediaStreamTrack): Promise<void> {
   if (caps.focusMode?.includes("continuous")) advanced.push({ focusMode: "continuous" });
   if (caps.exposureMode?.includes("continuous")) advanced.push({ exposureMode: "continuous" });
   if (caps.whiteBalanceMode?.includes("continuous")) advanced.push({ whiteBalanceMode: "continuous" });
+  // Keep native zoom at min — digital zoom handles UI magnification.
   if (caps.zoom && caps.zoom.max > caps.zoom.min) advanced.push({ zoom: caps.zoom.min });
   if (!advanced.length) return;
   try {
     await track.applyConstraints({ advanced } as MediaTrackConstraints);
   } catch {
     // Optional — many browsers reject unsupported advanced constraints.
+  }
+}
+
+function readZoomCapability(track: MediaStreamTrack | null): {
+  min: number;
+  max: number;
+  hardware: boolean;
+} {
+  if (!track) return { min: 1, max: DIGITAL_ZOOM_MAX, hardware: false };
+  const caps = track.getCapabilities?.() as { zoom?: { min: number; max: number } } | undefined;
+  if (caps?.zoom && caps.zoom.max > caps.zoom.min + 0.01) {
+    return {
+      min: caps.zoom.min,
+      max: Math.max(caps.zoom.max, DIGITAL_ZOOM_MAX),
+      hardware: true,
+    };
+  }
+  return { min: 1, max: DIGITAL_ZOOM_MAX, hardware: false };
+}
+
+function focusTapSupported(track: MediaStreamTrack | null): boolean {
+  if (!track) return false;
+  const caps = track.getCapabilities?.() as
+    | { focusMode?: string[]; pointsOfInterest?: boolean }
+    | undefined;
+  if (!caps) return false;
+  return Boolean(
+    caps.pointsOfInterest ||
+      caps.focusMode?.includes("single-shot") ||
+      caps.focusMode?.includes("continuous"),
+  );
+}
+
+async function applyCameraZoom(
+  track: MediaStreamTrack | null,
+  zoom: number,
+  hardware: boolean,
+  hwMin: number,
+  hwMax: number,
+): Promise<void> {
+  if (!track || !hardware) return;
+  const clamped = Math.max(hwMin, Math.min(hwMax, zoom));
+  try {
+    await track.applyConstraints({
+      advanced: [{ zoom: clamped }],
+    } as unknown as MediaTrackConstraints);
+  } catch {
+    // Digital crop zoom still applies.
+  }
+}
+
+/** Normalized 0–1 tap → pointsOfInterest / single-shot focus (Chrome Android). */
+async function tapToFocus(
+  track: MediaStreamTrack | null,
+  nx: number,
+  ny: number,
+): Promise<boolean> {
+  if (!track) return false;
+  const caps = track.getCapabilities?.() as
+    | { focusMode?: string[]; pointsOfInterest?: boolean }
+    | undefined;
+  if (!caps) return false;
+  const x = Math.max(0, Math.min(1, nx));
+  const y = Math.max(0, Math.min(1, ny));
+  const advanced: Record<string, unknown>[] = [];
+  if (caps.pointsOfInterest) advanced.push({ pointsOfInterest: [{ x, y }] });
+  if (caps.focusMode?.includes("single-shot")) {
+    advanced.push({ focusMode: "single-shot" });
+  } else if (caps.focusMode?.includes("continuous")) {
+    advanced.push({ focusMode: "continuous" });
+  }
+  if (!advanced.length) return false;
+  try {
+    await track.applyConstraints({ advanced } as unknown as MediaTrackConstraints);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -664,11 +789,17 @@ function writeGrayToImageData(data: Uint8ClampedArray, gray: Uint8Array): void {
   }
 }
 
-function cropRect(video: HTMLVideoElement, widthFrac: number, heightFrac: number) {
+function cropRect(
+  video: HTMLVideoElement,
+  widthFrac: number,
+  heightFrac: number,
+  zoom = 1,
+) {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
-  const bandW = Math.max(32, Math.floor(vw * widthFrac));
-  const bandH = Math.max(16, Math.floor(vh * heightFrac));
+  const z = Math.max(1, Math.min(zoom, DIGITAL_ZOOM_MAX));
+  const bandW = Math.max(32, Math.floor((vw * widthFrac) / z));
+  const bandH = Math.max(16, Math.floor((vh * heightFrac) / z));
   return {
     vw,
     vh,
@@ -682,8 +813,9 @@ function cropRect(video: HTMLVideoElement, widthFrac: number, heightFrac: number
 /** Small center probe for blur / shake / glass-glare gating. */
 function captureProbe(
   video: HTMLVideoElement,
+  zoom = 1,
 ): { gray: Uint8Array; w: number; h: number } | null {
-  const rect = cropRect(video, 0.7, 0.2);
+  const rect = cropRect(video, 0.7, 0.2, zoom);
   if (!rect.vw || !rect.vh) return null;
   const w = 320;
   const h = Math.max(24, Math.round((rect.bandH / rect.bandW) * w));
@@ -700,6 +832,40 @@ function captureProbe(
     gray[p] = Math.min(image.data[i], image.data[i + 1], image.data[i + 2]);
   }
   return { gray, w, h };
+}
+
+function median3(a: number, b: number, c: number): number {
+  if (a > b) {
+    if (b > c) return b;
+    return a > c ? c : a;
+  }
+  if (a > c) return a;
+  return b > c ? c : b;
+}
+
+/** 1–3 frame temporal fuse — median knocks out dust / flicker better than average. */
+function medianFuseGrays(frames: Uint8Array[]): Uint8Array | null {
+  if (!frames.length) return null;
+  if (frames.length === 1) return frames[0];
+  const len = frames[0].length;
+  for (const f of frames) if (f.length !== len) return frames[frames.length - 1] ?? null;
+  const out = new Uint8Array(len);
+  if (frames.length === 2) {
+    const [a, b] = frames;
+    for (let i = 0; i < len; i++) out[i] = (a[i] + b[i]) >> 1;
+    return out;
+  }
+  const a = frames[frames.length - 3];
+  const b = frames[frames.length - 2];
+  const c = frames[frames.length - 1];
+  for (let i = 0; i < len; i++) out[i] = median3(a[i], b[i], c[i]);
+  return out;
+}
+
+function pushFuseFrame(history: Uint8Array[], gray: Uint8Array): void {
+  if (history.length && history[0].length !== gray.length) history.length = 0;
+  history.push(gray);
+  while (history.length > FUSE_HISTORY) history.shift();
 }
 
 function assessFrameQuality(
@@ -745,9 +911,10 @@ function pickPresetsForQuality(
 function captureScanBand(
   video: HTMLVideoElement,
   preset: ScanPreset,
-  fuseGray?: Uint8Array | null,
+  fuseHistory?: Uint8Array[] | null,
+  zoom = 1,
 ): HTMLCanvasElement | null {
-  const rect = cropRect(video, preset.widthFrac, preset.heightFrac);
+  const rect = cropRect(video, preset.widthFrac, preset.heightFrac, zoom);
   if (!rect.vw || !rect.vh) return null;
 
   const scale = Math.max(1.5, preset.targetWidth / rect.bandW);
@@ -788,13 +955,15 @@ function captureScanBand(
     }
   }
 
-  // Temporal fuse (stable frames) reduces shake noise and dust flicker.
-  if (fuseGray && fuseGray.length === gray.length) {
-    const fused = new Uint8Array(gray.length);
-    for (let i = 0; i < gray.length; i++) {
-      fused[i] = Math.round(fuseGray[i] * 0.45 + gray[i] * 0.55);
+  // Temporal median of last N stable frames — dust / flicker resistant.
+  if (fuseHistory) {
+    pushFuseFrame(fuseHistory, gray);
+    const med = medianFuseGrays(fuseHistory);
+    if (med) {
+      const copy = new Uint8Array(med.length);
+      copy.set(med);
+      gray = copy;
     }
-    gray = fused;
   }
 
   // Soft denoise before threshold/sharpen (dust / sensor noise).
@@ -831,16 +1000,8 @@ function captureScanBand(
   return canvas;
 }
 
-/** Keep last stable gray for temporal fusion. */
-function extractGrayFromCanvas(canvas: HTMLCanvasElement): Uint8Array | null {
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) return null;
-  const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const gray = new Uint8Array(canvas.width * canvas.height);
-  for (let i = 0, p = 0; i < image.data.length; i += 4, p++) {
-    gray[p] = image.data[i];
-  }
-  return gray;
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => window.setTimeout(r, ms));
 }
 
 async function createOcrWorker(): Promise<OcrWorker> {
@@ -887,6 +1048,38 @@ function createNativeBarcodeDetector(): { detect: (source: HTMLVideoElement) => 
   }
 }
 
+/** Light haptic + short beep on successful VIN accept. */
+function notifyScanSuccess(): void {
+  try {
+    navigator.vibrate?.([35, 25, 45]);
+  } catch {
+    // Optional — desktop / denied.
+  }
+  try {
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 880;
+    gain.gain.value = 0.055;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    const t0 = ctx.currentTime;
+    osc.start(t0);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.11);
+    osc.stop(t0 + 0.12);
+    window.setTimeout(() => {
+      void ctx.close().catch(() => undefined);
+    }, 180);
+  } catch {
+    // Autoplay / AudioContext may be blocked — haptic alone is enough.
+  }
+}
+
 export function VinInput({ value, onChange, status, looking, required = true }: VinInputProps) {
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
@@ -895,6 +1088,12 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
   const [torchAvailable, setTorchAvailable] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [zoomMax, setZoomMax] = useState(DIGITAL_ZOOM_MAX);
+  const [hwZoom, setHwZoom] = useState(false);
+  const [focusOk, setFocusOk] = useState(false);
+  const [focusRing, setFocusRing] = useState<{ x: number; y: number } | null>(null);
+  const [scanSuccess, setScanSuccess] = useState<string | null>(null);
   /** Client-only: portal scan UI past overflow-hidden dashboard shells. */
   const [portalReady, setPortalReady] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -906,8 +1105,14 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
   const cameraOpenFailedRef = useRef(false);
   const ocrWorkerRef = useRef<OcrWorker | null>(null);
   const captureHandlerRef = useRef<(() => Promise<void>) | null>(null);
+  const zoomRef = useRef(1);
+  const hwZoomRef = useRef(false);
+  const zoomMinRef = useRef(1);
+  const zoomMaxRef = useRef(DIGITAL_ZOOM_MAX);
+  const focusTimerRef = useRef<number | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  zoomRef.current = zoom;
 
   useEffect(() => {
     setPortalReady(true);
@@ -928,11 +1133,13 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
     let busyBarcode = false;
     let busyOcr = false;
     let prevProbeGray: Uint8Array | null = null;
-    let fuseGray: Uint8Array | null = null;
+    const fuseHistory: Uint8Array[] = [];
     const ocrVotes = new Map<string, number>();
     const barcodeVotes = new Map<string, number>();
     let liveReader: ZxingReader | null = null;
+    let code39Reader: ZxingReader | null = null;
     let zoomReader: ZxingReader | null = null;
+    let successCloseTimer: number | null = null;
 
     const stopEverything = () => {
       if (ocrTimer !== null) {
@@ -960,22 +1167,38 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
       void worker?.terminate();
     };
 
-    const acceptVin = (vin: string) => {
-      if (cancelled || settled) return;
-      settled = true;
-      stopEverything();
-      onChangeRef.current(vin);
+    const dismissScannerUi = () => {
       setScanning(false);
       setCapturing(false);
       setCameraReady(false);
       setTorchOn(false);
       setTorchAvailable(false);
+      setScanSuccess(null);
+      setFocusRing(null);
+      setZoom(1);
+      zoomRef.current = 1;
+    };
+
+    const acceptVin = (vin: string) => {
+      if (cancelled || settled) return;
+      settled = true;
+      notifyScanSuccess();
+      setScanSuccess(vin);
       setScanHint(`Scanned ${vin}`);
+      onChangeRef.current(vin);
+      stopEverything();
+      if (successCloseTimer !== null) window.clearTimeout(successCloseTimer);
+      successCloseTimer = window.setTimeout(() => {
+        if (cancelled) return;
+        dismissScannerUi();
+      }, 480);
     };
 
     const acceptBarcodeVin = (raw: string) => {
       const vin = extractVin(raw);
       if (!vin || cancelled || settled) return false;
+      // Barcode wins over OCR — clear soft OCR votes so a wrong repair cannot race in.
+      ocrVotes.clear();
       if (hasValidVinCheckDigit(vin)) {
         acceptVin(vin);
         return true;
@@ -991,14 +1214,49 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
       return false;
     };
 
-    const noteOcrCandidate = (vin: string) => {
-      const votes = (ocrVotes.get(vin) ?? 0) + 1;
-      ocrVotes.set(vin, votes);
-      if (votes >= OCR_VOTE_THRESHOLD) {
-        acceptVin(vin);
+    /**
+     * Confidence tiers (recognition ↑ for clean reads, accuracy ↑ for risky ones):
+     * - exact + sharp/stable + no glare → accept now
+     * - repaired OR low quality → need OCR_CONFIRM_VOTES
+     * - competing VINs with votes → hold (ambiguous)
+     */
+    const noteOcrCandidate = (
+      hit: OcrVinHit,
+      quality: FrameQuality,
+      opts?: { fromCapture?: boolean },
+    ): boolean => {
+      if (!hasValidVinCheckDigit(hit.vin)) return false;
+
+      for (const [other, count] of ocrVotes) {
+        if (other !== hit.vin && count > 0) {
+          ocrVotes.set(hit.vin, (ocrVotes.get(hit.vin) ?? 0) + 1);
+          setScanHint("Ambiguous VIN — hold steady on one line, or scan barcode");
+          return false;
+        }
+      }
+
+      const lowQuality =
+        !quality.stable || !quality.sharpEnough || quality.glareHeavy;
+      // Capture is an intentional freeze — treat as sharp enough for exact hits.
+      const trustExact =
+        !hit.repaired && (!lowQuality || Boolean(opts?.fromCapture));
+
+      if (trustExact) {
+        acceptVin(hit.vin);
         return true;
       }
-      setScanHint(`Confirming ${vin.slice(0, 8)}… hold steady`);
+
+      const votes = (ocrVotes.get(hit.vin) ?? 0) + 1;
+      ocrVotes.set(hit.vin, votes);
+      if (votes >= OCR_CONFIRM_VOTES) {
+        acceptVin(hit.vin);
+        return true;
+      }
+      setScanHint(
+        hit.repaired
+          ? `Confirming ${hit.vin.slice(0, 8)}… hold steady`
+          : "Low quality — hold still or tap Capture again",
+      );
       return false;
     };
 
@@ -1006,26 +1264,36 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
       worker: OcrWorker,
       video: HTMLVideoElement,
       preset: ScanPreset,
+      quality: FrameQuality,
+      opts?: { fromCapture?: boolean },
     ): Promise<boolean> => {
-      const band = captureScanBand(video, preset, fuseGray);
+      // Hardware zoom already magnifies the stream — don't also shrink the crop.
+      const cropZoom = hwZoomRef.current ? 1 : zoomRef.current;
+      const band = captureScanBand(
+        video,
+        preset,
+        quality.stable ? fuseHistory : null,
+        cropZoom,
+      );
       if (!band) return false;
-      if (preset.mode !== "raw") {
-        const g = extractGrayFromCanvas(band);
-        if (g) fuseGray = g;
-      }
       const { data } = await worker.recognize(band);
-      const vin = extractVinFromOcr(data.text);
-      return Boolean(vin && noteOcrCandidate(vin));
+      const hit = extractVinFromOcr(data.text);
+      return Boolean(hit && noteOcrCandidate(hit, quality, opts));
     };
 
     const scanBarcodeCrops = (video: HTMLVideoElement, passes: number): boolean => {
-      if (!zoomReader) return false;
+      if (!code39Reader && !zoomReader) return false;
+      const cropZoom = hwZoomRef.current ? 1 : zoomRef.current;
       for (let i = 0; i < passes; i++) {
         const preset = BARCODE_ZOOM_PRESETS[barcodeIndex % BARCODE_ZOOM_PRESETS.length];
         barcodeIndex += 1;
-        const crop = captureScanBand(video, preset, null);
+        const crop = captureScanBand(video, preset, null, cropZoom);
         if (!crop) continue;
-        const text = tryDecodeBarcodeCanvas(zoomReader, crop);
+        // CODE_39 first (door-jamb), then multi-format fallback.
+        const text =
+          (code39Reader && tryDecodeBarcodeCanvas(code39Reader, crop)) ||
+          (zoomReader && tryDecodeBarcodeCanvas(zoomReader, crop)) ||
+          null;
         if (text && acceptBarcodeVin(text)) return true;
         if (settled) return true;
       }
@@ -1082,6 +1350,16 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
         streamRef.current = stream;
         const track = stream.getVideoTracks()[0] ?? null;
         setTorchAvailable(torchSupported(track));
+        const zCap = readZoomCapability(track);
+        hwZoomRef.current = zCap.hardware;
+        zoomMinRef.current = zCap.min;
+        zoomMaxRef.current = Math.min(DIGITAL_ZOOM_MAX, zCap.hardware ? Math.max(zCap.max, DIGITAL_ZOOM_MAX) : DIGITAL_ZOOM_MAX);
+        setHwZoom(zCap.hardware);
+        setZoomMax(zoomMaxRef.current);
+        setZoom(1);
+        zoomRef.current = 1;
+        const canTapFocus = focusTapSupported(track);
+        setFocusOk(canTapFocus);
         await attachStreamToVideo(video, stream);
 
         const ready = await waitForVideoReady(video, () => cancelled);
@@ -1095,9 +1373,10 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
         setScanHint("Point at the VIN barcode or printed VIN — keep inside the box");
 
         try {
-          [liveReader, zoomReader] = await Promise.all([
-            createVinReader(false),
-            createVinReader(true),
+          [liveReader, code39Reader, zoomReader] = await Promise.all([
+            createVinReader(false, "all"),
+            createVinReader(true, "code39"),
+            createVinReader(true, "all"),
           ]);
         } catch {
           // Native + OCR paths still work without ZXing.
@@ -1150,43 +1429,61 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
         };
         barcodeTimer = window.setTimeout(runBarcode, 120);
 
-        // 4) Manual capture — multi-pass barcode + OCR on one frozen effort burst.
+        // 4) Manual capture — short multi-frame burst (barcode + OCR).
         captureHandlerRef.current = async () => {
           if (cancelled || settled || busyOcr) return;
           setCapturing(true);
-          setScanHint("Capturing… hold still");
           busyOcr = true;
           try {
-            if (scanBarcodeCrops(video, BARCODE_ZOOM_PRESETS.length)) return;
             const worker = ocrWorkerRef.current;
+            for (let burst = 0; burst < CAPTURE_BURST_FRAMES; burst++) {
+              if (cancelled || settled) return;
+              if (burst > 0) await sleep(CAPTURE_BURST_GAP_MS);
+              setScanHint(`Capturing ${burst + 1}/${CAPTURE_BURST_FRAMES}… hold still`);
+
+              if (scanBarcodeCrops(video, BARCODE_ZOOM_PRESETS.length)) return;
+
+              if (!worker) continue;
+
+              const probe = captureProbe(
+                video,
+                hwZoomRef.current ? 1 : zoomRef.current,
+              );
+              const q = probe
+                ? assessFrameQuality(probe, prevProbeGray)
+                : {
+                    sharpness: 0,
+                    motion: 0,
+                    glareRatio: 0,
+                    stable: true,
+                    sharpEnough: true,
+                    glareHeavy: false,
+                  };
+              if (probe) prevProbeGray = probe.gray;
+              if (!q.stable) fuseHistory.length = 0;
+
+              await setOcrPageSeg(worker, false);
+              // Two near presets per burst frame — rotates across the burst.
+              for (let i = 0; i < 2; i++) {
+                if (cancelled || settled) return;
+                const preset = pickPresetsForQuality(NEAR_OCR_PRESETS, q, burst * 2 + i);
+                if (await recognizePreset(worker, video, preset, q, { fromCapture: true })) return;
+              }
+
+              if (burst === CAPTURE_BURST_FRAMES - 1) {
+                await setOcrPageSeg(worker, true);
+                for (let i = 0; i < FAR_OCR_PRESETS.length; i++) {
+                  if (cancelled || settled) return;
+                  const preset = pickPresetsForQuality(FAR_OCR_PRESETS, q, i);
+                  if (await recognizePreset(worker, video, preset, q, { fromCapture: true })) return;
+                }
+              }
+            }
             if (!worker) {
               setScanHint("No VIN yet — try closer to the barcode, or type it.");
-              return;
+            } else {
+              setScanHint("Couldn’t read that burst — tilt to cut glare, zoom in, try again.");
             }
-            const probe = captureProbe(video);
-            const q = probe
-              ? assessFrameQuality(probe, prevProbeGray)
-              : {
-                  sharpness: 0,
-                  motion: 0,
-                  glareRatio: 0,
-                  stable: true,
-                  sharpEnough: true,
-                  glareHeavy: false,
-                };
-            await setOcrPageSeg(worker, false);
-            for (let i = 0; i < NEAR_OCR_PRESETS.length; i++) {
-              if (cancelled || settled) return;
-              const preset = pickPresetsForQuality(NEAR_OCR_PRESETS, q, i);
-              if (await recognizePreset(worker, video, preset)) return;
-            }
-            await setOcrPageSeg(worker, true);
-            for (let i = 0; i < FAR_OCR_PRESETS.length; i++) {
-              if (cancelled || settled) return;
-              const preset = pickPresetsForQuality(FAR_OCR_PRESETS, q, i);
-              if (await recognizePreset(worker, video, preset)) return;
-            }
-            setScanHint("Couldn’t read that frame — tilt to cut glare, move closer, try again.");
           } finally {
             busyOcr = false;
             setCapturing(false);
@@ -1219,19 +1516,26 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
             }
             busyOcr = true;
             try {
-              const probe = captureProbe(video);
+              const probe = captureProbe(
+                video,
+                hwZoomRef.current ? 1 : zoomRef.current,
+              );
               let quality: FrameQuality | null = null;
               if (probe) {
                 quality = assessFrameQuality(probe, prevProbeGray);
                 prevProbeGray = probe.gray;
 
                 if (!quality.stable) {
-                  fuseGray = null;
+                  fuseHistory.length = 0;
                   setScanHint("Too shaky — hold still, or tap Capture");
                   // Skip most shaky frames but keep the loop alive.
                   if (ocrTick % 2 !== 0) return;
                 } else if (!quality.sharpEnough) {
-                  setScanHint("Focusing… hold steady or tap Capture");
+                  setScanHint(
+                    canTapFocus
+                      ? "Focusing… tap VIN to focus, or tap Capture"
+                      : "Focusing… hold steady or tap Capture",
+                  );
                 } else if (quality.glareHeavy) {
                   setScanHint("Glare — tilt phone or tap Light, then Capture");
                 } else {
@@ -1251,14 +1555,14 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
               await setOcrPageSeg(worker, ocrTick % 3 === 0);
               const nearPreset = pickPresetsForQuality(NEAR_OCR_PRESETS, q, nearIndex);
               nearIndex += 1;
-              if (await recognizePreset(worker, video, nearPreset)) return;
+              if (await recognizePreset(worker, video, nearPreset, q)) return;
 
               if (cancelled || settled) return;
               // Far OCR every other tick to keep CPU free for barcode.
               if (ocrTick % 2 === 0) {
                 const farPreset = pickPresetsForQuality(FAR_OCR_PRESETS, q, farIndex);
                 farIndex += 1;
-                if (await recognizePreset(worker, video, farPreset)) return;
+                if (await recognizePreset(worker, video, farPreset, q)) return;
               }
             } catch {
               // Keep scanning; OCR can miss frames.
@@ -1282,6 +1586,10 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
 
     return () => {
       cancelled = true;
+      if (successCloseTimer !== null) {
+        window.clearTimeout(successCloseTimer);
+        successCloseTimer = null;
+      }
       // If effect cleans up before attaching, release the pending stream too.
       const pending = pendingStreamRef.current;
       pendingStreamRef.current = null;
@@ -1298,6 +1606,10 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
     setTorchAvailable(false);
     setCapturing(false);
     setCameraReady(false);
+    setZoom(1);
+    zoomRef.current = 1;
+    setFocusRing(null);
+    setScanSuccess(null);
     cameraOpenFailedRef.current = false;
 
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
@@ -1335,6 +1647,41 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
     if (ok) setTorchOn(next);
   }
 
+  async function nudgeZoom(delta: number) {
+    const next = Math.max(
+      1,
+      Math.min(zoomMaxRef.current, Math.round((zoom + delta) / DIGITAL_ZOOM_STEP) * DIGITAL_ZOOM_STEP),
+    );
+    if (Math.abs(next - zoom) < 0.01) return;
+    zoomRef.current = next;
+    setZoom(next);
+    const track = streamRef.current?.getVideoTracks()[0] ?? null;
+    await applyCameraZoom(
+      track,
+      next,
+      hwZoomRef.current,
+      zoomMinRef.current,
+      zoomMaxRef.current,
+    );
+  }
+
+  async function handlePreviewTap(e: ReactPointerEvent<HTMLDivElement>) {
+    if (!cameraReady || capturing || scanError) return;
+    const el = e.currentTarget;
+    const rect = el.getBoundingClientRect();
+    const xPct = ((e.clientX - rect.left) / rect.width) * 100;
+    const yPct = ((e.clientY - rect.top) / rect.height) * 100;
+    const nx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const ny = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+    setFocusRing({ x: xPct, y: yPct });
+    if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current);
+    focusTimerRef.current = window.setTimeout(() => setFocusRing(null), 700);
+
+    const track = streamRef.current?.getVideoTracks()[0] ?? null;
+    const ok = await tapToFocus(track, nx, ny);
+    if (ok) setScanHint("Focusing… hold steady");
+  }
+
   async function captureNow() {
     const handler = captureHandlerRef.current;
     if (!handler || capturing) return;
@@ -1355,24 +1702,35 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
     const worker = ocrWorkerRef.current;
     ocrWorkerRef.current = null;
     void worker?.terminate();
+    if (focusTimerRef.current !== null) {
+      window.clearTimeout(focusTimerRef.current);
+      focusTimerRef.current = null;
+    }
     setScanning(false);
     setScanError(null);
     setCapturing(false);
     setCameraReady(false);
     setTorchOn(false);
     setTorchAvailable(false);
+    setZoom(1);
+    zoomRef.current = 1;
+    setFocusRing(null);
+    setFocusOk(false);
+    setScanSuccess(null);
   }
 
   const vinLen = Math.min(value.replace(/[\s-]/g, "").length, 17);
   const vinComplete = vinLen === 17;
-  const scanBusy = cameraReady && !scanError && !capturing;
+  const scanBusy = cameraReady && !scanError && !capturing && !scanSuccess;
   const statusTone = scanError
     ? "error"
-    : /glare|tilt|light/i.test(scanHint)
-      ? "warn"
-      : /confirm|barcode|scanned|reading|captur/i.test(scanHint)
-        ? "active"
-        : "idle";
+    : scanSuccess
+      ? "success"
+      : /glare|tilt|light/i.test(scanHint)
+        ? "warn"
+        : /confirm|barcode|scanned|reading|captur/i.test(scanHint)
+          ? "active"
+          : "idle";
 
   return (
     <div className="space-y-2 sm:col-span-2 lg:col-span-2">
@@ -1483,25 +1841,64 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
                 </div>
               </div>
 
-              <div className="relative mx-3 overflow-hidden rounded-2xl bg-black ring-1 ring-white/10 sm:mx-4">
+              <div
+                className="relative mx-3 cursor-crosshair overflow-hidden rounded-2xl bg-black ring-1 ring-white/10 sm:mx-4"
+                onPointerDown={(e) => {
+                  // Ignore chrome buttons; only preview taps.
+                  if ((e.target as HTMLElement).closest("button")) return;
+                  void handlePreviewTap(e);
+                }}
+              >
                 <video
                   ref={videoRef}
-                  className="aspect-[4/3] w-full bg-black object-cover"
+                  className="aspect-[4/3] w-full bg-black object-cover transition-transform duration-200 ease-out"
+                  style={{
+                    transform: hwZoom ? undefined : `scale(${zoom})`,
+                    transformOrigin: "center center",
+                  }}
                   muted
                   playsInline
                   autoPlay
                 />
-                {/* Guide matches barcode + near OCR center band. */}
+                {/* Guide geometry from SCAN_GUIDE — same as barcode + near OCR crops. */}
                 <div className="pointer-events-none absolute inset-0">
-                  <div className="absolute inset-x-0 top-0 h-[34%] bg-gradient-to-b from-black/70 via-black/45 to-transparent" />
-                  <div className="absolute inset-x-0 bottom-0 h-[34%] bg-gradient-to-t from-black/70 via-black/45 to-transparent" />
-                  <div className="absolute inset-y-[34%] left-0 w-[4%] bg-black/40" />
-                  <div className="absolute inset-y-[34%] right-0 w-[4%] bg-black/40" />
+                  <div
+                    className="absolute inset-x-0 top-0 bg-gradient-to-b from-black/70 via-black/45 to-transparent"
+                    style={{ height: `${SCAN_GUIDE.topPct}%` }}
+                  />
+                  <div
+                    className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/45 to-transparent"
+                    style={{ height: `${SCAN_GUIDE.topPct}%` }}
+                  />
+                  <div
+                    className="absolute left-0 bg-black/40"
+                    style={{
+                      top: `${SCAN_GUIDE.topPct}%`,
+                      height: `${SCAN_GUIDE.heightPct}%`,
+                      width: `${SCAN_GUIDE.sideInsetPct}%`,
+                    }}
+                  />
+                  <div
+                    className="absolute right-0 bg-black/40"
+                    style={{
+                      top: `${SCAN_GUIDE.topPct}%`,
+                      height: `${SCAN_GUIDE.heightPct}%`,
+                      width: `${SCAN_GUIDE.sideInsetPct}%`,
+                    }}
+                  />
 
                   <div
-                    className={`vin-reticle-glow absolute inset-x-[4%] top-[34%] h-[32%] rounded-xl border border-[var(--accent)]/70 ${
-                      scanBusy ? "" : "opacity-70"
-                    }`}
+                    className={`vin-reticle-glow absolute rounded-xl border ${
+                      scanSuccess
+                        ? "vin-reticle-success border-emerald-400/90"
+                        : "border-[var(--accent)]/70"
+                    } ${scanBusy ? "" : scanSuccess ? "" : "opacity-70"}`}
+                    style={{
+                      left: `${SCAN_GUIDE.sideInsetPct}%`,
+                      right: `${SCAN_GUIDE.sideInsetPct}%`,
+                      top: `${SCAN_GUIDE.topPct}%`,
+                      height: `${SCAN_GUIDE.heightPct}%`,
+                    }}
                   >
                     <span className="absolute -left-px -top-px h-5 w-5 rounded-tl-xl border-l-[3px] border-t-[3px] border-white" />
                     <span className="absolute -right-px -top-px h-5 w-5 rounded-tr-xl border-r-[3px] border-t-[3px] border-white" />
@@ -1512,10 +1909,65 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
                     ) : null}
                   </div>
 
+                  {focusRing ? (
+                    <span
+                      className="absolute h-12 w-12 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white/90 shadow-[0_0_0_1px_rgba(0,0,0,0.35)]"
+                      style={{ left: `${focusRing.x}%`, top: `${focusRing.y}%` }}
+                    />
+                  ) : null}
+
                   <p className="absolute inset-x-0 bottom-[22%] text-center text-[11px] font-medium tracking-[0.14em] text-white/80 uppercase">
-                    Align barcode or VIN
+                    {scanSuccess
+                      ? "VIN locked"
+                      : focusOk
+                        ? "Tap to focus · align VIN"
+                        : "Align barcode or VIN"}
                   </p>
                 </div>
+
+                {scanSuccess ? (
+                  <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/55 backdrop-blur-[2px]">
+                    <span className="vin-success-pop flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500 text-white shadow-[0_0_32px_rgba(16,185,129,0.45)]">
+                      <CheckIcon />
+                    </span>
+                    <p className="font-mono text-sm tracking-[0.14em] text-emerald-100">
+                      {scanSuccess}
+                    </p>
+                  </div>
+                ) : null}
+
+                {/* Zoom controls — above dim layers for hit targets */}
+                {cameraReady && !scanError ? (
+                  <div className="absolute bottom-3 right-3 z-10 flex items-center gap-1 rounded-full border border-white/15 bg-black/55 p-1 backdrop-blur-sm">
+                    <button
+                      type="button"
+                      disabled={zoom <= 1.01}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={() => {
+                        void nudgeZoom(-DIGITAL_ZOOM_STEP);
+                      }}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-full text-white/90 transition hover:bg-white/10 disabled:opacity-35"
+                      aria-label="Zoom out"
+                    >
+                      −
+                    </button>
+                    <span className="min-w-[2.75rem] text-center font-mono text-[11px] tabular-nums text-white/80">
+                      {zoom.toFixed(2).replace(/\.?0+$/, "")}×
+                    </span>
+                    <button
+                      type="button"
+                      disabled={zoom >= zoomMax - 0.01}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={() => {
+                        void nudgeZoom(DIGITAL_ZOOM_STEP);
+                      }}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-full text-white/90 transition hover:bg-white/10 disabled:opacity-35"
+                      aria-label="Zoom in"
+                    >
+                      +
+                    </button>
+                  </div>
+                ) : null}
 
                 {!cameraReady && !scanError ? (
                   <div className="absolute inset-0 flex items-center justify-center bg-black/55 backdrop-blur-[1px]">
@@ -1534,9 +1986,11 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
                   className={`flex min-h-[2.5rem] items-start gap-2.5 rounded-xl px-3 py-2.5 text-sm leading-snug ${
                     statusTone === "error"
                       ? "bg-red-500/15 text-red-200 ring-1 ring-red-400/30"
-                      : statusTone === "warn"
-                        ? "bg-amber-500/12 text-amber-100 ring-1 ring-amber-400/25"
-                        : "bg-white/[0.06] text-white/75 ring-1 ring-white/10"
+                      : statusTone === "success"
+                        ? "bg-emerald-500/15 text-emerald-100 ring-1 ring-emerald-400/30"
+                        : statusTone === "warn"
+                          ? "bg-amber-500/12 text-amber-100 ring-1 ring-amber-400/25"
+                          : "bg-white/[0.06] text-white/75 ring-1 ring-white/10"
                   }`}
                 >
                   {!scanError ? (
@@ -1544,9 +1998,11 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
                       className={`vin-status-dot mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${
                         statusTone === "warn"
                           ? "bg-amber-300"
-                          : statusTone === "active"
-                            ? "bg-[var(--accent)]"
-                            : "bg-white/50"
+                          : statusTone === "success"
+                            ? "bg-emerald-300"
+                            : statusTone === "active"
+                              ? "bg-[var(--accent)]"
+                              : "bg-white/50"
                       }`}
                       aria-hidden
                     />
@@ -1557,7 +2013,7 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
                 <div className="flex flex-col items-center">
                   <button
                     type="button"
-                    disabled={!cameraReady || capturing || Boolean(scanError)}
+                    disabled={!cameraReady || capturing || Boolean(scanError) || Boolean(scanSuccess)}
                     onClick={() => {
                       void captureNow();
                     }}

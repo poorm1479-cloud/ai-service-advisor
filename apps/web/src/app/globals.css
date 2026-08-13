@@ -1155,6 +1155,30 @@ code,
   }
 }
 
+@keyframes vin-reticle-success {
+  0% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.55), 0 0 0 0 rgba(16, 185, 129, 0.25);
+  }
+  100% {
+    box-shadow: 0 0 0 8px rgba(16, 185, 129, 0), 0 0 40px -4px rgba(16, 185, 129, 0.65);
+  }
+}
+
+@keyframes vin-success-pop {
+  0% {
+    transform: scale(0.7);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
 @keyframes vin-status-pulse {
   0%,
   100% {
@@ -1173,6 +1197,14 @@ code,
 
 .vin-reticle-glow {
   animation: vin-reticle-pulse 2.8s ease-in-out infinite;
+}
+
+.vin-reticle-success {
+  animation: vin-reticle-success 0.55s ease-out forwards;
+}
+
+.vin-success-pop {
+  animation: vin-success-pop 0.35s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
 .vin-status-dot {
@@ -1203,6 +1235,8 @@ code,
 
   .vin-scan-beam,
   .vin-reticle-glow,
+  .vin-reticle-success,
+  .vin-success-pop,
   .vin-status-dot {
     animation: none;
   }
