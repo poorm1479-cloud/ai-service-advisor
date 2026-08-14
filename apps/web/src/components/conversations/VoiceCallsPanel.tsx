@@ -504,9 +504,6 @@ export function VoiceCallsPanel() {
                   <p className="font-display text-base font-semibold tracking-tight">
                     No calls yet
                   </p>
-                  <p className="mt-1 max-w-[14rem] text-sm text-[var(--muted)]">
-                    Start a call above to open your first live line.
-                  </p>
                 </li>
               )}
               {history.map((c, index) => {
@@ -707,11 +704,10 @@ export function VoiceCallsPanel() {
                   <IconPhone className="h-6 w-6" />
                 </span>
                 <p className="font-display text-lg font-semibold tracking-tight">
-                  Ready when you are
+                  Select a call
                 </p>
                 <p className="mt-1.5 max-w-sm text-sm leading-relaxed text-[var(--muted)]">
-                  Start with a phone number, then chat turn-by-turn — book, change, or cancel,
-                  then say goodbye to hang up.
+                  Choose a call from the history to view the conversation details.
                 </p>
               </div>
             )}
