@@ -540,11 +540,26 @@ function formatPreferredStartLabel(value: string) {
 }
 
 const VEHICLE_OPTIONS = [
-  { id: "sedan", label: "Sedan" },
   { id: "suv", label: "SUV" },
+  { id: "crossover", label: "Crossover" },
+  { id: "pickup", label: "Pickup" },
+  { id: "sedan", label: "Sedan" },
   { id: "truck", label: "Truck" },
+  { id: "minivan", label: "Minivan" },
   { id: "van", label: "Van" },
+  { id: "cargo_van", label: "Cargo van" },
+  { id: "hatchback", label: "Hatchback" },
+  { id: "coupe", label: "Coupe" },
+  { id: "convertible", label: "Convertible" },
+  { id: "hybrid", label: "Hybrid" },
+  { id: "phev", label: "Plug-in hybrid" },
   { id: "ev", label: "EV" },
+  { id: "motorcycle", label: "Motorcycle" },
+  { id: "rv", label: "RV" },
+  { id: "trailer", label: "Trailer" },
+  { id: "fleet", label: "Fleet" },
+  { id: "commercial", label: "Commercial" },
+  { id: "other", label: "Other" },
 ] as const;
 
 const PRIORITY_OPTIONS = ["low", "normal", "high", "emergency"] as const;

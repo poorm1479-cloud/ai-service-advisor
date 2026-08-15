@@ -90,7 +90,28 @@ async def sync_catalog_hours(
     return list(range(5)), default_start, default_end
 
 
-_ALL_VEHICLE_TYPES = ["sedan", "suv", "truck", "van", "ev", "other"]
+_ALL_VEHICLE_TYPES = [
+    "suv",
+    "crossover",
+    "pickup",
+    "sedan",
+    "truck",
+    "minivan",
+    "van",
+    "cargo_van",
+    "hatchback",
+    "coupe",
+    "convertible",
+    "hybrid",
+    "phev",
+    "ev",
+    "motorcycle",
+    "rv",
+    "trailer",
+    "fleet",
+    "commercial",
+    "other",
+]
 
 
 async def sync_catalog_bays(

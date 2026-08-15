@@ -45,7 +45,30 @@ class Bay:
     shop_id: UUID
     name: str
     bay_type: str = "general"  # general | alignment | quick_service | heavy
-    supports_vehicle_types: list[str] = field(default_factory=lambda: ["sedan", "suv", "truck", "van", "ev", "other"])
+    supports_vehicle_types: list[str] = field(
+        default_factory=lambda: [
+            "suv",
+            "crossover",
+            "pickup",
+            "sedan",
+            "truck",
+            "minivan",
+            "van",
+            "cargo_van",
+            "hatchback",
+            "coupe",
+            "convertible",
+            "hybrid",
+            "phev",
+            "ev",
+            "motorcycle",
+            "rv",
+            "trailer",
+            "fleet",
+            "commercial",
+            "other",
+        ]
+    )
     active: bool = True
 
 

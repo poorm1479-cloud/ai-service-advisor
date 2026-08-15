@@ -35,11 +35,25 @@ class RepairType(str, Enum):
 
 
 class VehicleCategory(str, Enum):
-    SEDAN = "sedan"
     SUV = "suv"
+    CROSSOVER = "crossover"
+    PICKUP = "pickup"
+    SEDAN = "sedan"
     TRUCK = "truck"
+    MINIVAN = "minivan"
     VAN = "van"
+    CARGO_VAN = "cargo_van"
+    HATCHBACK = "hatchback"
+    COUPE = "coupe"
+    CONVERTIBLE = "convertible"
+    HYBRID = "hybrid"
+    PHEV = "phev"
     EV = "ev"
+    MOTORCYCLE = "motorcycle"
+    RV = "rv"
+    TRAILER = "trailer"
+    FLEET = "fleet"
+    COMMERCIAL = "commercial"
     OTHER = "other"
 
 
