@@ -506,7 +506,8 @@ code,
   html:has(.auth-lock) .auth-form-scroll {
     overscroll-behavior: contain;
     -webkit-overflow-scrolling: touch;
-    scrollbar-gutter: stable;
+    /* Keep L/R field edges aligned with segment/actions (no reserved scrollbar lane). */
+    scrollbar-gutter: auto;
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
   }
@@ -973,7 +974,8 @@ code,
   }
 
   .auth-form-scroll {
-    scrollbar-gutter: stable;
+    /* Match panel content width — stable gutter inset inputs on the right only. */
+    scrollbar-gutter: auto;
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
   }

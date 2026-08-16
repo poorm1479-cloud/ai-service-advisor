@@ -195,7 +195,7 @@ export function LoginForm({
           : "flex min-h-0 w-full flex-1 flex-col overflow-hidden"
       }
     >
-      <div className={`min-w-0 shrink-0 ${variant === "modal" ? "pr-10" : ""}`}>
+      <div className="min-w-0 shrink-0">
         {variant === "page" ? (
           <Link
             href="/"
@@ -217,25 +217,27 @@ export function LoginForm({
           </button>
         )}
 
-        <p className={`section-label ${variant === "page" ? "mt-4" : ""}`}>Welcome back</p>
-        <h1
-          id={variant === "modal" ? "home-login-title" : undefined}
-          className="mt-1.5 inline-flex items-center gap-2.5 font-display text-[1.5rem] font-extrabold tracking-tight sm:text-[1.75rem]"
-        >
+        <div className={variant === "modal" ? "pr-10" : undefined}>
+          <p className={`section-label ${variant === "page" ? "mt-4" : ""}`}>Welcome back</p>
+          <h1
+            id={variant === "modal" ? "home-login-title" : undefined}
+            className="mt-1.5 inline-flex items-center gap-2.5 font-display text-[1.5rem] font-extrabold tracking-tight sm:text-[1.75rem]"
+          >
+            {mfaToken ? (
+              "Two-factor authentication"
+            ) : (
+              <>
+                <IconUser className="h-6 w-6 shrink-0 text-[var(--accent)] sm:h-7 sm:w-7" />
+                Sign in
+              </>
+            )}
+          </h1>
           {mfaToken ? (
-            "Two-factor authentication"
-          ) : (
-            <>
-              <IconUser className="h-6 w-6 shrink-0 text-[var(--accent)] sm:h-7 sm:w-7" />
-              Sign in
-            </>
-          )}
-        </h1>
-        {mfaToken ? (
-          <p className="mt-2 text-sm leading-relaxed text-[var(--muted)]">
-            Enter the 6-digit authenticator code or a one-time backup code.
-          </p>
-        ) : null}
+            <p className="mt-2 text-sm leading-relaxed text-[var(--muted)]">
+              Enter the 6-digit authenticator code or a one-time backup code.
+            </p>
+          ) : null}
+        </div>
 
         {!mfaToken && (
           <div className="auth-segment mt-5" role="tablist" aria-label="Sign-in method">
@@ -273,7 +275,7 @@ export function LoginForm({
         className="mt-5 flex min-h-0 flex-1 flex-col overflow-hidden"
         autoComplete="off"
       >
-        <div className="auth-form-scroll min-h-0 flex-1 space-y-3.5 overflow-y-auto overscroll-contain pr-1 [-webkit-overflow-scrolling:touch]">
+        <div className="auth-form-scroll min-h-0 flex-1 space-y-3.5 overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
           {!mfaToken ? (
             <>
               <Field

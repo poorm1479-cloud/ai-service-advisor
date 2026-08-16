@@ -337,15 +337,17 @@ export function RegisterForm({
           </span>
         </button>
 
-        <div className="min-w-0 shrink-0 pr-10">
-          <p className="section-label">Get started</p>
-          <h1
-            id="home-register-title"
-            className="mt-1.5 inline-flex items-center gap-2.5 font-display text-[1.5rem] font-extrabold tracking-tight sm:text-[1.75rem]"
-          >
-            <IconBuilding className="h-6 w-6 shrink-0 text-[var(--accent)] sm:h-7 sm:w-7" />
-            Register your shop
-          </h1>
+        <div className="min-w-0 shrink-0">
+          <div className="pr-10">
+            <p className="section-label">Get started</p>
+            <h1
+              id="home-register-title"
+              className="mt-1.5 inline-flex items-center gap-2.5 font-display text-[1.5rem] font-extrabold tracking-tight sm:text-[1.75rem]"
+            >
+              <IconBuilding className="h-6 w-6 shrink-0 text-[var(--accent)] sm:h-7 sm:w-7" />
+              Register your shop
+            </h1>
+          </div>
 
           <div className="auth-segment mt-5" role="tablist" aria-label="Registration method">
             {(
@@ -376,7 +378,7 @@ export function RegisterForm({
           className="mt-5 flex min-h-0 flex-1 flex-col overflow-hidden"
           autoComplete="off"
         >
-          <div className="auth-form-scroll min-h-0 flex-1 space-y-3.5 overflow-y-auto overscroll-contain pr-1 [-webkit-overflow-scrolling:touch]">
+          <div className="auth-form-scroll min-h-0 flex-1 space-y-3.5 overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
             <div aria-hidden="true" className="pointer-events-none absolute -left-[9999px] h-0 w-0 opacity-0">
               <input type="text" name="username" tabIndex={-1} defaultValue="" />
               <input type="email" name="email" tabIndex={-1} defaultValue="" />
@@ -599,7 +601,7 @@ export function RegisterForm({
         </div>
       </div>
 
-      <div className="auth-form-scroll mt-5 min-h-0 flex-1 space-y-3.5 overflow-y-auto overscroll-contain pr-1 [-webkit-overflow-scrolling:touch]">
+      <div className="auth-form-scroll mt-5 min-h-0 flex-1 space-y-3.5 overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
         <div aria-hidden="true" className="pointer-events-none absolute -left-[9999px] h-0 w-0 opacity-0">
           <input type="text" name="username" tabIndex={-1} defaultValue="" />
           <input type="email" name="email" tabIndex={-1} defaultValue="" />
