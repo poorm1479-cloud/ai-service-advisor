@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="RatchetHub">
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="256" cy="32" r="26" stroke="#121820" stroke-width="22"/>
+    <path d="M256 56 V72" stroke="#121820" stroke-width="32"/>
+    <rect x="20" y="64" width="472" height="428" rx="124" stroke="#121820" stroke-width="40"/>
+    <polygon points="256,148 368,214 368,346 256,412 144,346 144,214" stroke="#121820" stroke-width="38"/>
+    <path d="M128 372 Q256 498 384 372" stroke="#121820" stroke-width="34"/>
+    <circle cx="256" cy="32" r="26" stroke="#FFFFFF" stroke-width="14"/>
+    <path d="M256 56 V72" stroke="#FF6A12" stroke-width="22"/>
+    <rect x="20" y="64" width="472" height="428" rx="124" stroke="#FF6A12" stroke-width="30"/>
+    <polygon points="256,148 368,214 368,346 256,412 144,346 144,214" stroke="#FF6A12" stroke-width="24"/>
+    <path d="M128 372 Q256 498 384 372" stroke="#FFFFFF" stroke-width="22"/>
+  </g>
+  <circle cx="20" cy="278" r="26" fill="#121820"/>
+  <circle cx="492" cy="278" r="26" fill="#121820"/>
+  <circle cx="20" cy="278" r="20" fill="#FF6A12"/>
+  <circle cx="492" cy="278" r="20" fill="#FF6A12"/>
+  <circle cx="256" cy="280" r="60" fill="#121820"/>
+  <circle cx="256" cy="280" r="50" fill="#FF6A12"/>
+</svg>

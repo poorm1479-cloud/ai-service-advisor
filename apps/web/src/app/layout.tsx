@@ -25,8 +25,13 @@ export const metadata: Metadata = {
   description: "RatchetHub for Independent Auto Repair Shops",
   applicationName: "RatchetHub",
   icons: {
-    icon: [{ url: "/brand/ratchethub-icon.png", type: "image/png" }],
-    apple: [{ url: "/brand/ratchethub-icon.png", type: "image/png" }],
+    icon: [
+      { url: "/brand/ratchethub-icon.svg", type: "image/svg+xml" },
+      { url: "/brand/favicon-32.png", sizes: "32x32", type: "image/png" },
+      { url: "/brand/favicon-16.png", sizes: "16x16", type: "image/png" },
+      { url: "/brand/ratchethub-icon.png", type: "image/png" },
+    ],
+    apple: [{ url: "/brand/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
   },
 };
 
