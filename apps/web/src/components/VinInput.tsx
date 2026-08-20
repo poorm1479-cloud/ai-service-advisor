@@ -1164,7 +1164,7 @@ async function setOcrPageSeg(worker: OcrWorker, sparse: boolean): Promise<void> 
       tessedit_pageseg_mode: sparse ? PSM.SPARSE_TEXT : PSM.SINGLE_LINE,
     });
   } catch {
-    // Optional — keep previous page-seg mode.
+    // Optional — keep previous page-seg mode / ignore terminated worker.
   }
 }
 
@@ -1276,6 +1276,8 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
     let ocrTick = 0;
     let busyBarcode = false;
     let busyOcr = false;
+    /** False once terminate starts — blocks in-flight OCR from calling postMessage. */
+    let ocrWorkerAlive = false;
     let prevProbeGray: Uint8Array | null = null;
     const fuseHistory: Uint8Array[] = [];
     const ocrVotes = new Map<string, number>();
@@ -1284,6 +1286,9 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
     let code39Reader: ZxingReader | null = null;
     let zoomReader: ZxingReader | null = null;
     let successCloseTimer: number | null = null;
+
+    const isOcrLive = (worker: OcrWorker) =>
+      ocrWorkerAlive && !cancelled && !settled && ocrWorkerRef.current === worker;
 
     const stopEverything = () => {
       if (ocrTimer !== null) {
@@ -1306,6 +1311,7 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
       releaseZxingStreams();
+      ocrWorkerAlive = false;
       const worker = ocrWorkerRef.current;
       ocrWorkerRef.current = null;
       void worker?.terminate();
@@ -1409,6 +1415,7 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
       quality: FrameQuality,
       opts?: { fromCapture?: boolean },
     ): Promise<boolean> => {
+      if (!isOcrLive(worker)) return false;
       const cropZoom = hwZoomRef.current ? 1 : zoomRef.current;
       const band = captureScanBand(
         video,
@@ -1417,7 +1424,17 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
         cropZoom,
       );
       if (!band) return false;
-      const { data } = await worker.recognize(band);
+      if (!isOcrLive(worker)) return false;
+
+      let data: { text: string };
+      try {
+        ({ data } = await worker.recognize(band));
+      } catch {
+        // Worker terminated mid-flight (acceptVin / close / effect cleanup).
+        return false;
+      }
+      if (!isOcrLive(worker)) return false;
+
       const hit = extractVinFromOcr(data.text);
       if (hit) return noteOcrCandidate(hit, quality, opts);
 
@@ -1671,18 +1688,20 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
               if (probe) prevProbeGray = probe.gray;
               if (!q.stable) fuseHistory.length = 0;
 
+              if (!isOcrLive(worker)) continue;
               await setOcrPageSeg(worker, false);
               // Two near presets per burst frame — rotates across the burst.
               for (let i = 0; i < 2; i++) {
-                if (cancelled || settled) return;
+                if (!isOcrLive(worker)) return;
                 const preset = pickPresetsForQuality(NEAR_OCR_PRESETS, q, burst * 2 + i);
                 if (await recognizePreset(worker, video, preset, q, { fromCapture: true })) return;
               }
 
               if (burst === CAPTURE_BURST_FRAMES - 1) {
+                if (!isOcrLive(worker)) return;
                 await setOcrPageSeg(worker, true);
                 for (let i = 0; i < FAR_OCR_PRESETS.length; i++) {
-                  if (cancelled || settled) return;
+                  if (!isOcrLive(worker)) return;
                   const preset = pickPresetsForQuality(FAR_OCR_PRESETS, q, i);
                   if (await recognizePreset(worker, video, preset, q, { fromCapture: true })) return;
                 }
@@ -1717,18 +1736,19 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
             return;
           }
           ocrWorkerRef.current = worker;
+          ocrWorkerAlive = true;
           ocrReady = true;
           setScanHint("Printed VIN — fill the box, hold still, or tap Capture");
 
           const scheduleOcr = (delay = OCR_LOOP_MS) => {
-            if (cancelled || settled) return;
+            if (!isOcrLive(worker)) return;
             ocrTimer = window.setTimeout(() => {
               void runOcr();
             }, delay);
           };
 
           const runOcr = async () => {
-            if (cancelled || settled) return;
+            if (!isOcrLive(worker)) return;
             ocrTick += 1;
             if (busyBarcode || busyOcr) {
               scheduleOcr(120);
@@ -1772,12 +1792,13 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
                 glareHeavy: false,
               };
 
+              if (!isOcrLive(worker)) return;
               await setOcrPageSeg(worker, false);
               const nearPreset = pickPresetsForQuality(NEAR_OCR_PRESETS, q, nearIndex);
               nearIndex += 1;
               if (await recognizePreset(worker, video, nearPreset, q)) return;
 
-              if (cancelled || settled) return;
+              if (!isOcrLive(worker)) return;
               if (ocrTick % 2 === 0) {
                 await setOcrPageSeg(worker, true);
                 const farPreset = pickPresetsForQuality(FAR_OCR_PRESETS, q, farIndex);
@@ -1785,7 +1806,7 @@ export function VinInput({ value, onChange, status, looking, required = true }: 
                 if (await recognizePreset(worker, video, farPreset, q)) return;
               }
             } catch {
-              // Keep scanning; OCR can miss frames.
+              // Keep scanning; OCR can miss frames / terminated worker.
             } finally {
               busyOcr = false;
               scheduleOcr(OCR_LOOP_MS);
