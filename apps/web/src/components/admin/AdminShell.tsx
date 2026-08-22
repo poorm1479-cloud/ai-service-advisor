@@ -42,7 +42,6 @@ export function AdminShell({ children }: Props) {
   const [unreadCount, setUnreadCount] = useState(0);
   const [toast, setToast] = useState<LiveToast | null>(null);
   const [forbidden, setForbidden] = useState(false);
-  const [maintenanceMode, setMaintenanceMode] = useState(false);
   const seenIdsRef = useRef<Set<string> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastEnabledRef = useRef(true);
@@ -99,7 +98,6 @@ export function AdminShell({ children }: Props) {
   useEffect(() => {
     if (!accessToken) {
       toastEnabledRef.current = true;
-      setMaintenanceMode(false);
       return;
     }
     let cancelled = false;
@@ -108,7 +106,6 @@ export function AdminShell({ children }: Props) {
         const s = await getAdminSettings(accessToken);
         if (cancelled) return;
         toastEnabledRef.current = s.editable?.toast_enabled !== false;
-        setMaintenanceMode(Boolean(s.editable?.maintenance_mode));
       } catch {
         /* keep defaults */
       }
@@ -266,21 +263,6 @@ export function AdminShell({ children }: Props) {
 
         <main className="asa-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5 sm:py-5 md:px-7 md:py-7 [scrollbar-gutter:stable]">
           <div className="space-y-6">
-            {maintenanceMode ? (
-              <div
-                role="status"
-                className="relative overflow-hidden rounded-2xl border border-amber-200/80 bg-amber-50/90 px-4 py-3 text-sm text-amber-900 shadow-[var(--shadow-soft)]"
-              >
-                <div
-                  aria-hidden
-                  className="pointer-events-none absolute inset-y-0 left-0 w-1 bg-amber-500"
-                />
-                <p className="pl-2 font-medium">Maintenance mode is enabled</p>
-                <p className="mt-0.5 pl-2 text-amber-800/80">
-                  Platform ops banners are active for admins.
-                </p>
-              </div>
-            ) : null}
             {!forbidden ? children({ username, accessToken }) : null}
           </div>
         </main>
